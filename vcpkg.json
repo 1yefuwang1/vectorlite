@@ -1,0 +1,11 @@
+{
+  "name": "sqlite-hnsw",
+  "version-string": "0.1.0",
+  "license": "MIT",
+  "description": "SQLite extension for HNSW index",
+  "dependencies": [
+    "sqlite3",
+    "rapidjson",
+    "hnswlib"
+  ]
+}
