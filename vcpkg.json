@@ -6,6 +6,7 @@
   "dependencies": [
     "sqlite3",
     "rapidjson",
-    "hnswlib"
+    "hnswlib",
+    "gtest"
   ]
 }

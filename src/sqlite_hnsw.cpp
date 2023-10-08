@@ -1,4 +1,6 @@
-#include "sqlite3ext.h"
+#include <sqlite3ext.h>
+
+#include "macros.h"
 
 SQLITE_EXTENSION_INIT1;
 /* Hello World function */
@@ -10,7 +12,7 @@ static void HelloWorld(sqlite3_context *context, int argc, sqlite3_value **argv)
 extern "C" {
 #endif
 
-int sqlite3_extension_init(
+SQLITE_HNSW_EXPORT int sqlite3_extension_init(
     sqlite3 *db,
     char **pzErrMsg,
     const sqlite3_api_routines *pApi
