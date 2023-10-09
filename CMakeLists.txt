@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
-project(sqlite-hnsw VERSION 0.1.0 LANGUAGES CXX)
+project(sqlite-vector VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_library(RapidJSON CONFIG REQUIRED)
+find_package(RapidJSON CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
-find_library(hnswlib CONFIG REQUIRED)
+find_package(hnswlib CONFIG REQUIRED)
 
-add_library(sqlite-hnsw SHARED src/sqlite_hnsw.cpp)
-target_link_libraries(sqlite-hnsw PRIVATE unofficial::sqlite3::sqlite3)
+add_library(sqlite-vector SHARED src/sqlite_vector.cpp)
+target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3)
