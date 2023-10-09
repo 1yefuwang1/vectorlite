@@ -9,5 +9,5 @@ find_package(RapidJSON CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
 
-add_library(sqlite-vector SHARED src/sqlite_vector.cpp)
+add_library(sqlite-vector SHARED src/sqlite_vector.cpp src/vector.cpp)
 target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3)

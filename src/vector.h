@@ -1,27 +1,26 @@
 #pragma once
 
-#include <string_view>
-
-#include <rapidjson/document.h>
 #include <hnswlib/hnswlib.h>
+#include <rapidjson/document.h>
+
+#include <string_view>
+#include <string>
+#include <vector>
+
+#include "macros.h"
 
 namespace sqlite_vector {
 
 class Vector {
  public:
-	Vector() = delete;
+  Vector() = default;
 
-	static Vector FromJSON(std::string_view json) {
-		rapidjson::Document doc;
-		doc.Parse(json.data(), json.size());
-		auto err = doc.GetParseError();
-		if (err != rapidjson::ParseErrorCode::kParseErrorNone) {
-			throw std::runtime_error("Failed to parse JSON");
-		}
-	}
+  static int FromJSON(std::string_view json, Vector* out);
+
+  std::string ToJSON() const;
 
  private:
-
+  std::vector<float> data_;
 };
 
-} // end namespace sqlite_hnsw
+}  // namespace sqlite_vector
