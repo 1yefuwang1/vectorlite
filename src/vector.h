@@ -14,8 +14,8 @@ class Vector {
   Vector(const Vector&) = default;
   Vector(Vector&&) = default;
 
-  Vector(std::vector<float>&& data) : data_(std::move(data)) {}
-  Vector(const std::vector<float>& data) : data_(data) {}
+  explicit Vector(std::vector<float>&& data) : data_(std::move(data)) {}
+  explicit Vector(const std::vector<float>& data) : data_(data) {}
 
   enum class ParseResult {
     kOk,
