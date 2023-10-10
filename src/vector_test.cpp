@@ -45,3 +45,18 @@ TEST(VectorTest, ToJSON) {
   EXPECT_FLOAT_EQ(v.get_data()[1], 2.0);
   EXPECT_FLOAT_EQ(v.get_data()[2], 3.0);
 }
+
+TEST(VectorDistance, L2) {
+  // Test valid input
+  sqlite_vector::Vector v1({1.0, 2.0, 3.0});
+  sqlite_vector::Vector v2({4.0, 5.0, 6.0});
+  float distance = L2Distance(v1, v2);
+  EXPECT_FLOAT_EQ(distance, 27);
+
+  // Test empty input
+  sqlite_vector::Vector v3;
+  sqlite_vector::Vector v4;
+  distance = L2Distance(v3, v4);
+  EXPECT_FLOAT_EQ(distance, 0);
+
+}

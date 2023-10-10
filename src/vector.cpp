@@ -1,5 +1,8 @@
 #include "vector.h"
 
+#include "hnswlib/hnswlib.h"
+#include "hnswlib/space_l2.h"
+#include "macros.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -47,8 +50,15 @@ std::string Vector::ToJSON() const {
   rapidjson::StringBuffer buf;
   rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
   doc.Accept(writer);
-  
+
   return buf.GetString();
+}
+
+float L2Distance(const Vector& v1, const Vector& v2) {
+  SQLITE_VECTOR_ASSERT(v1.get_dim() == v2.get_dim());
+  hnswlib::L2Space space(v1.get_dim());
+  return space.get_dist_func()(v1.get_data().data(), v2.get_data().data(),
+                               space.get_dist_func_param());
 }
 
 }  // namespace sqlite_vector

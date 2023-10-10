@@ -1,5 +1,7 @@
 #pragma once
 
+#include <hnswlib/space_l2.h>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,8 +34,14 @@ class Vector {
 
   const std::vector<float>& get_data() const { return data_; }
 
+  std::size_t get_dim() const { return data_.size(); }
+
  private:
   std::vector<float> data_;
 };
+
+// Calculate the L2 distance between two vectors.
+// v1 and v2 must have the same dimension.
+float L2Distance(const Vector& v1, const Vector& v2);
 
 }  // namespace sqlite_vector
