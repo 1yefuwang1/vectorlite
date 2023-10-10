@@ -10,8 +10,7 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
-
-add_library(sqlite-vector-impl STATIC src/vector.cpp)
+add_library(sqlite-vector-impl SHARED src/vector.cpp)
 target_include_directories(sqlite-vector-impl PUBLIC ${RAPIDJSON_INCLUDE_DIRS})
 
 add_library(sqlite-vector SHARED src/sqlite_vector.cpp)
