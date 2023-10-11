@@ -1,10 +1,8 @@
+#include <set>
 #include <memory>
 
-#include "hnswlib/hnswalg.h"
 #include "hnswlib/hnswlib.h"
-#include "hnswlib/space_l2.h"
 #include "macros.h"
-#include "sqlite3.h"
 #include "sqlite3ext.h"
 #include "vector.h"
 
@@ -12,7 +10,7 @@ namespace sqlite_vector {
 
 // Note there shouldn't be any virtual functions in this class.
 // Because VectorVTable* is expected to be static_cast-ed to sqlite3_vtab*.
-class VectorVTable : sqlite3_vtab {
+class VectorVTable : public sqlite3_vtab {
  public:
   VectorVTable(sqlite3* db, size_t dim, size_t max_elements)
       : db_(db),
@@ -28,6 +26,7 @@ class VectorVTable : sqlite3_vtab {
   sqlite3* db_;
   std::unique_ptr<hnswlib::SpaceInterface<float>> space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
+  std::set<int64_t> rowids;
 };
 
 int Create(sqlite3* db, void* pAux, int argc, char* const* argv,
