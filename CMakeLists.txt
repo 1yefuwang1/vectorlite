@@ -10,7 +10,7 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
-add_library(sqlite-vector-impl SHARED src/vector.cpp)
+add_library(sqlite-vector-impl SHARED src/vector.cpp src/vector_vtab.cpp)
 target_include_directories(sqlite-vector-impl PUBLIC ${RAPIDJSON_INCLUDE_DIRS})
 
 add_library(sqlite-vector SHARED src/sqlite_vector.cpp)
@@ -21,6 +21,8 @@ enable_testing()
 file(GLOB TEST_SOURCES src/*_test.cpp)
 add_executable(unit-test ${TEST_SOURCES})
 target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main sqlite-vector-impl)
+target_compile_options(unit-test PRIVATE -Wall -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(unit-test PRIVATE -fsanitize=address)
 
 gtest_discover_tests(unit-test)
 
