@@ -1,5 +1,6 @@
 #include "vector_vtab.h"
 #include <absl/strings/str_cat.h>
+#include <sqlite3.h>
 
 #include <charconv>
 #include <exception>
@@ -89,6 +90,56 @@ int VectorVTable::Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor) {
 int VectorVTable::Close(sqlite3_vtab_cursor* pCursor) {
   SQLITE_VECTOR_ASSERT(pCursor != nullptr);
   delete static_cast<Cursor*>(pCursor);
+  return SQLITE_OK;
+}
+
+
+int VectorVTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
+  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  SQLITE_VECTOR_ASSERT(pRowid != nullptr);
+
+  Cursor* cursor = static_cast<Cursor*>(pCur);
+  if (cursor->current_row != cursor->result.cend()) {
+    *pRowid = cursor->current_row->second;
+    return SQLITE_OK;
+  } else {
+    return SQLITE_ERROR;
+  }
+}
+
+int VectorVTable::Eof(sqlite3_vtab_cursor* pCur) {
+  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+
+  Cursor* cursor = static_cast<Cursor*>(pCur);
+  return cursor->current_row == cursor->result.cend();
+}
+
+int VectorVTable::Next(sqlite3_vtab_cursor* pCur) {
+  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+
+  Cursor* cursor = static_cast<Cursor*>(pCur);
+  if (cursor->current_row != cursor->result.cend()) {
+    ++cursor->current_row;
+  } 
+
+  return SQLITE_OK;
+}
+
+int VectorVTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx, int N) {
+  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  SQLITE_VECTOR_ASSERT(pCtx != nullptr);
+
+  Cursor* cursor = static_cast<Cursor*>(pCur);
+  if (cursor->current_row == cursor->result.cend()) {
+    return SQLITE_ERROR;
+  }
+
+  if (N == 0) {
+    sqlite3_result_double(pCtx, static_cast<double>(cursor->current_row->first));
+  } else {
+    return SQLITE_ERROR;
+  }
+
   return SQLITE_OK;
 }
 

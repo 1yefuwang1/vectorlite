@@ -1,5 +1,6 @@
 #include <memory>
 #include <set>
+#include <utility> // std::pair
 
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
@@ -12,15 +13,19 @@ namespace sqlite_vector {
 // Because VectorVTable* is expected to be static_cast-ed to sqlite3_vtab*.
 class VectorVTable : public sqlite3_vtab {
  public:
-  class Cursor : public sqlite3_vtab_cursor {
-   public:
-    Cursor(VectorVTable* vtab) : rowid_(0) {
+  struct Cursor : public sqlite3_vtab_cursor {
+    using Distance = float;
+    using Rowid = int64_t;
+    using ResultSet = std::vector<std::pair<Distance, Rowid>>;
+    using ResultSetIter = std::vector<std::pair<Distance, Rowid>>::const_iterator;
+
+    Cursor(VectorVTable* vtab) : result(), current_row(result.cend()) {
       SQLITE_VECTOR_ASSERT(vtab != nullptr);
       pVtab = vtab;
     }
 
-   private:
-    uint64_t rowid_;
+    std::vector<std::pair<float, int64_t>> result; // result rowid set, pair is (distance, rowid)
+    ResultSetIter current_row; // points to current row
   };
 
   VectorVTable(std::string_view col_name, size_t dim, size_t max_elements)
@@ -52,16 +57,16 @@ class VectorVTable : public sqlite3_vtab {
 
   static int BestIndex(sqlite3_vtab* pVTab, sqlite3_index_info*);
   static int Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor);
-  static int Close(sqlite3_vtab_cursor* cur);
-  static int Eof(sqlite3_vtab_cursor* cur);
+  static int Close(sqlite3_vtab_cursor* pCur);
+  static int Eof(sqlite3_vtab_cursor* pCur);
   static int Filter(sqlite3_vtab_cursor*, int idxNum, const char* idxStr,
                     int argc, sqlite3_value** argv);
-  static int Next(sqlite3_vtab_cursor*);
-  static int Column(sqlite3_vtab_cursor*, sqlite3_context*, int N);
+  static int Next(sqlite3_vtab_cursor* pCur);
+  static int Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx, int N);
   static int Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid);
   static int Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                     sqlite_int64* pRowid);
-  static int xFindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
+  static int FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
                            void (**pxFunc)(sqlite3_context*, int,
                                            sqlite3_value**),
                            void** ppArg);
