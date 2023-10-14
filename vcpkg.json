@@ -7,6 +7,7 @@
     "sqlite3",
     "rapidjson",
     "hnswlib",
-    "gtest"
+    "gtest",
+    { "name": "abseil", "features": ["cxx17"] }
   ]
 }
