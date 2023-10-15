@@ -10,6 +10,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 
 #include "macros.h"
 #include "sqlite3ext.h"
@@ -136,11 +137,13 @@ int VectorVTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx, int N
 
   if (N == 0) {
     sqlite3_result_double(pCtx, static_cast<double>(cursor->current_row->first));
+    return SQLITE_OK;
   } else {
+    std::string err = absl::StrFormat("Invalid column index: %d", N);
+    sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
     return SQLITE_ERROR;
   }
 
-  return SQLITE_OK;
 }
 
 }  // end namespace sqlite_vector

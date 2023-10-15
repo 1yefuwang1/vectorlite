@@ -13,13 +13,13 @@ find_package(GTest CONFIG REQUIRED)
 
 add_library(sqlite-vector SHARED src/sqlite_vector.cpp src/vector_vtab.cpp src/vector.cpp src/util.cpp)
 target_include_directories(sqlite-vector PUBLIC ${RAPIDJSON_INCLUDE_DIRS})
-target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor)
+target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings)
 
 include(GoogleTest)
 enable_testing()
 file(GLOB TEST_SOURCES src/*.cpp)
 add_executable(unit-test ${TEST_SOURCES})
-target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor)
+target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings)
 target_compile_options(unit-test PRIVATE -Wall -fsanitize=address -fno-omit-frame-pointer -g)
 target_link_options(unit-test PRIVATE -fsanitize=address)
 
