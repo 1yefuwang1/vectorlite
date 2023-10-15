@@ -12,9 +12,12 @@
 namespace sqlite_vector {
 
 // Note there shouldn't be any virtual functions in this class.
-// Because VectorVTable* is expected to be static_cast-ed to sqlite3_vtab*.
+// Because VirtualTable* is expected to be static_cast-ed to sqlite3_vtab*.
+// vptr could cause UB.
 class VirtualTable : public sqlite3_vtab {
  public:
+
+  // No virtual function
   struct Cursor : public sqlite3_vtab_cursor {
     using Distance = float;
     using Rowid = int64_t;
