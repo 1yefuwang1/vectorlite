@@ -1,4 +1,5 @@
-#include "vector_vtab.h"
+#include "virtual_table.h"
+
 #include <absl/strings/str_cat.h>
 #include <sqlite3.h>
 
@@ -31,7 +32,7 @@ static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
   return value;
 }
 
-int VectorVTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
+int VirtualTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
                          sqlite3_vtab** ppVTab, char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
   if (rc != SQLITE_OK) {
@@ -67,7 +68,7 @@ int VectorVTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
   }
 
   try {
-    *ppVTab = new VectorVTable(col_name, *dim, *max_elements);
+    *ppVTab = new VirtualTable(col_name, *dim, *max_elements);
   } catch (const std::exception& ex) {
     *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
     return SQLITE_ERROR;
@@ -75,27 +76,27 @@ int VectorVTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
   return SQLITE_OK;
 }
 
-int VectorVTable::Destroy(sqlite3_vtab* pVTab) {
+int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
   SQLITE_VECTOR_ASSERT(pVTab != nullptr);
-  delete static_cast<VectorVTable*>(pVTab);
+  delete static_cast<VirtualTable*>(pVTab);
   return SQLITE_OK;
 }
 
-int VectorVTable::Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor) {
+int VirtualTable::Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor) {
   SQLITE_VECTOR_ASSERT(pVtab != nullptr);
   SQLITE_VECTOR_ASSERT(ppCursor != nullptr);
-  *ppCursor = new Cursor(static_cast<VectorVTable*>(pVtab));
+  *ppCursor = new Cursor(static_cast<VirtualTable*>(pVtab));
   return SQLITE_OK;
 }
 
-int VectorVTable::Close(sqlite3_vtab_cursor* pCursor) {
+int VirtualTable::Close(sqlite3_vtab_cursor* pCursor) {
   SQLITE_VECTOR_ASSERT(pCursor != nullptr);
   delete static_cast<Cursor*>(pCursor);
   return SQLITE_OK;
 }
 
 
-int VectorVTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
+int VirtualTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
   SQLITE_VECTOR_ASSERT(pCur != nullptr);
   SQLITE_VECTOR_ASSERT(pRowid != nullptr);
 
@@ -108,14 +109,14 @@ int VectorVTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
   }
 }
 
-int VectorVTable::Eof(sqlite3_vtab_cursor* pCur) {
+int VirtualTable::Eof(sqlite3_vtab_cursor* pCur) {
   SQLITE_VECTOR_ASSERT(pCur != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   return cursor->current_row == cursor->result.cend();
 }
 
-int VectorVTable::Next(sqlite3_vtab_cursor* pCur) {
+int VirtualTable::Next(sqlite3_vtab_cursor* pCur) {
   SQLITE_VECTOR_ASSERT(pCur != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
@@ -126,7 +127,7 @@ int VectorVTable::Next(sqlite3_vtab_cursor* pCur) {
   return SQLITE_OK;
 }
 
-int VectorVTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx, int N) {
+int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx, int N) {
   SQLITE_VECTOR_ASSERT(pCur != nullptr);
   SQLITE_VECTOR_ASSERT(pCtx != nullptr);
 

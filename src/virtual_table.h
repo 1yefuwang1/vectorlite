@@ -13,7 +13,7 @@ namespace sqlite_vector {
 
 // Note there shouldn't be any virtual functions in this class.
 // Because VectorVTable* is expected to be static_cast-ed to sqlite3_vtab*.
-class VectorVTable : public sqlite3_vtab {
+class VirtualTable : public sqlite3_vtab {
  public:
   struct Cursor : public sqlite3_vtab_cursor {
     using Distance = float;
@@ -21,7 +21,7 @@ class VectorVTable : public sqlite3_vtab {
     using ResultSet = std::vector<std::pair<Distance, Rowid>>;
     using ResultSetIter = std::vector<std::pair<Distance, Rowid>>::const_iterator;
 
-    Cursor(VectorVTable* vtab) : result(), current_row(result.cend()) {
+    Cursor(VirtualTable* vtab) : result(), current_row(result.cend()) {
       SQLITE_VECTOR_ASSERT(vtab != nullptr);
       pVtab = vtab;
     }
@@ -30,7 +30,7 @@ class VectorVTable : public sqlite3_vtab {
     ResultSetIter current_row; // points to current row
   };
 
-  VectorVTable(std::string_view col_name, size_t dim, size_t max_elements)
+  VirtualTable(std::string_view col_name, size_t dim, size_t max_elements)
       : col_name_(col_name),
         space_(std::make_unique<hnswlib::L2Space>(dim)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
