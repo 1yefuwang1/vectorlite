@@ -8,6 +8,7 @@
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "vector.h"
+#include "absl/status/statusor.h"
 
 namespace sqlite_vector {
 
@@ -77,6 +78,9 @@ class VirtualTable : public sqlite3_vtab {
                            void** ppArg);
 
  private:
+
+  absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
+  
   std::string col_name_;  // vector column name
   std::unique_ptr<hnswlib::SpaceInterface<float>> space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;

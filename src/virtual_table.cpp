@@ -1,12 +1,15 @@
 #include "virtual_table.h"
 
 #include <absl/strings/str_cat.h>
+#include <hnswlib/hnswlib.h>
 #include <sqlite3.h>
 
 #include <charconv>
 #include <exception>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -18,6 +21,16 @@
 extern const sqlite3_api_routines* sqlite3_api;
 
 namespace sqlite_vector {
+
+enum ColumnIndexInTable {
+  kColumnIndexDistance,
+  kColumnIndexVector,
+};
+
+enum IndexConstraintUsage {
+  kVector,
+  kRowid,
+};
 
 static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
   size_t value = 0;
@@ -63,7 +76,9 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
     return SQLITE_ERROR;
   }
 
-  rc = sqlite3_declare_vtab(db, "CREATE TABLE vector(distance INTEGER hidden)");
+  std::string sql =
+      absl::StrFormat("CREATE TABLE X(distance REAL hidden, %s)", col_name);
+  rc = sqlite3_declare_vtab(db, sql.c_str());
   if (rc != SQLITE_OK) {
     return rc;
   }
@@ -127,6 +142,18 @@ int VirtualTable::Next(sqlite3_vtab_cursor* pCur) {
   return SQLITE_OK;
 }
 
+absl::StatusOr<Vector> VirtualTable::GetVectorByRowid(int64_t rowid) const {
+  try {
+    // TODO: handle cases where sizeof(rowid) != sizeof(hnswlib::labeltype)
+    std::vector<float> vec =
+        index_->getDataByLabel<float>(static_cast<hnswlib::labeltype>(rowid));
+    SQLITE_VECTOR_ASSERT(vec.size() == dimension());
+    return Vector(std::move(vec));
+  } catch (const std::runtime_error& ex) {
+    return absl::Status(absl::StatusCode::kNotFound, ex.what());
+  }
+}
+
 int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
                          int N) {
   SQLITE_VECTOR_ASSERT(pCur != nullptr);
@@ -137,15 +164,91 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
     return SQLITE_ERROR;
   }
 
-  if (N == 0) {
+  if (kColumnIndexDistance == N) {
     sqlite3_result_double(pCtx,
                           static_cast<double>(cursor->current_row->first));
     return SQLITE_OK;
+  } else if (kColumnIndexVector == N) {
+    Cursor::Rowid rowid = cursor->current_row->second;
+    VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
+    auto vector = vtab->GetVectorByRowid(rowid);
+    if (vector.ok()) {
+      std::string json = vector->ToJSON();
+      sqlite3_result_text(pCtx, json.c_str(), json.size(), SQLITE_TRANSIENT);
+      return SQLITE_OK;
+    } else {
+      std::string err =
+          absl::StrFormat("Can't find vector with rowid %d", rowid);
+      sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
+      return SQLITE_ERROR;
+    }
   } else {
     std::string err = absl::StrFormat("Invalid column index: %d", N);
     sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
     return SQLITE_ERROR;
   }
+}
+
+int VirtualTable::BestIndex(sqlite3_vtab* vtab,
+                            sqlite3_index_info* index_info) {
+  SQLITE_VECTOR_ASSERT(vtab != nullptr);
+  SQLITE_VECTOR_ASSERT(index_info != nullptr);
+
+  for (int i = 0; i < index_info->nConstraint; i++) {
+    const auto& constraint = index_info->aConstraint[i];
+    if (!constraint.usable) {
+      continue;
+    }
+    int column = constraint.iColumn;
+    if (constraint.op == SQLITE_INDEX_CONSTRAINT_FUNCTION &&
+        column == kColumnIndexVector) {
+      index_info->idxNum = IndexConstraintUsage::kVector;
+      index_info->aConstraintUsage[i].argvIndex = 1;
+      index_info->aConstraintUsage[i].omit = 1;
+    } else if (column == -1) {
+      // in this case the constraint is on rowid
+      index_info->idxNum = IndexConstraintUsage::kRowid;
+      index_info->aConstraintUsage[i].argvIndex = 1;
+      index_info->aConstraintUsage[i].omit = 1;
+    }
+  }
+
+  return SQLITE_OK;
+}
+
+int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
+                         const char* idxStr, int argc, sqlite3_value** argv) {
+  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  Cursor* cursor = static_cast<Cursor*>(pCur);
+  SQLITE_VECTOR_ASSERT(pCur->pVtab != nullptr);
+
+  VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
+
+  if (idxNum == IndexConstraintUsage::kVector) {
+
+  } else {
+    vtab->zErrMsg = sqlite3_mprintf("Invalid index number: %d", idxNum);
+    return SQLITE_ERROR;
+  }
+  return SQLITE_OK;
+}
+
+static void VectorSearchKnn(sqlite3_context *context,
+                          int argc,
+                          sqlite3_value **argv) { }
+
+int VirtualTable::FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
+                               void (**pxFunc)(sqlite3_context*, int,
+                                               sqlite3_value**),
+                               void** ppArg) {
+  SQLITE_VECTOR_ASSERT(pVtab != nullptr);
+  if (std::string_view(zName) == "vector_search_knn") {
+    *pxFunc = VectorSearchKnn;
+    *ppArg = nullptr;
+    return SQLITE_INDEX_CONSTRAINT_FUNCTION;
+  }
+
+  return 0;
 }
 
 }  // end namespace sqlite_vector
