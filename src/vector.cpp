@@ -55,9 +55,9 @@ std::string Vector::ToJSON() const {
 }
 
 float L2Distance(const Vector& v1, const Vector& v2) {
-  SQLITE_VECTOR_ASSERT(v1.get_dim() == v2.get_dim());
-  hnswlib::L2Space space(v1.get_dim());
-  return space.get_dist_func()(v1.get_data().data(), v2.get_data().data(),
+  SQLITE_VECTOR_ASSERT(v1.dim() == v2.dim());
+  hnswlib::L2Space space(v1.dim());
+  return space.get_dist_func()(v1.data().data(), v2.data().data(),
                                space.get_dist_func_param());
 }
 

@@ -1,6 +1,12 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+
+#include "vector.h"
+
+#include "absl/status/statusor.h"
+
 
 namespace sqlite_vector {
 
@@ -12,4 +18,5 @@ namespace sqlite_vector {
 // The input is of string type because built-in regex doesn't work with string_view
 bool IsValidColumnName(const std::string& name);
 
+absl::StatusOr<Vector> ParseVector(std::string_view json);
 } // end namespace sqlite_vector

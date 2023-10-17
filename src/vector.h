@@ -26,15 +26,18 @@ class Vector {
     kInvalidJSONType,
   };
 
+  Vector& operator=(const Vector&) = default;
+  Vector& operator=(Vector&&) = default;
+
   // Pasrse a JSON string into [out]. [out] should not be nullptr.
   // and should points to an empty vector.
   static ParseResult FromJSON(std::string_view json, Vector* out);
 
   std::string ToJSON() const;
 
-  const std::vector<float>& get_data() const { return data_; }
+  const std::vector<float>& data() const { return data_; }
 
-  std::size_t get_dim() const { return data_.size(); }
+  std::size_t dim() const { return data_.size(); }
 
  private:
   std::vector<float> data_;

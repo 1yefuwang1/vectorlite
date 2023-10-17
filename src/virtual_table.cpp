@@ -1,19 +1,22 @@
 #include "virtual_table.h"
 
-#include <absl/strings/str_cat.h>
-#include <hnswlib/hnswlib.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <charconv>
 #include <exception>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "util.h"
@@ -23,8 +26,8 @@ extern const sqlite3_api_routines* sqlite3_api;
 namespace sqlite_vector {
 
 enum ColumnIndexInTable {
-  kColumnIndexDistance,
   kColumnIndexVector,
+  kColumnIndexDistance,
 };
 
 enum IndexConstraintUsage {
@@ -32,7 +35,12 @@ enum IndexConstraintUsage {
   kRowid,
 };
 
+enum FunctionConstraint {
+  kFunctionConstraintVectorSearchKnn = SQLITE_INDEX_CONSTRAINT_FUNCTION,
+};
+
 static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
+  DLOG(INFO) << "Parsing string " << s;
   size_t value = 0;
   auto result = std::from_chars(s.data(), s.data() + s.size(), value);
   if (result.ec == std::errc::invalid_argument ||
@@ -41,43 +49,63 @@ static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
                                absl::StrCat("Failed to parse number: ", s));
   }
 
+  DLOG(INFO) << "Value: " << s;
   return value;
 }
 
-int VirtualTable::Create(sqlite3* db, void* pAux, int argc, char* const* argv,
-                         sqlite3_vtab** ppVTab, char** pzErr) {
+int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
+                         const char* const* argv, sqlite3_vtab** ppVTab,
+                         char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
   if (rc != SQLITE_OK) {
     return rc;
   }
 
-  if (argc != 3) {
-    *pzErr = sqlite3_mprintf("Expected 3 argument, got %d", argc);
+  // The first string, argv[0], is the name of the module being invoked. The
+  // module name is the name provided as the second argument to
+  // sqlite3_create_module() and as the argument to the USING clause of the
+  // CREATE VIRTUAL TABLE statement that is running. The second, argv[1], is the
+  // name of the database in which the new virtual table is being created. The
+  // database name is "main" for the primary database, or "temp" for TEMP
+  // database, or the name given at the end of the ATTACH statement for attached
+  // databases. The third element of the array, argv[2], is the name of the new
+  // virtual table, as specified following the TABLE keyword in the CREATE
+  // VIRTUAL TABLE statement. If present, the fourth and subsequent strings in
+  // the argv[] array report the arguments to the module name in the CREATE
+  // VIRTUAL TABLE statement.
+  constexpr int kModuleParamOffset = 3;
+
+  if (argc != 3 + kModuleParamOffset) {
+    *pzErr = sqlite3_mprintf("Expected 3 argument, got %d",
+                             argc - kModuleParamOffset);
     return SQLITE_ERROR;
   }
 
-  std::string col_name = argv[0];
+  std::string col_name = argv[0 + kModuleParamOffset];
   if (!IsValidColumnName(col_name)) {
-    *pzErr = sqlite3_mprintf("Invalid column name: %s", argv[0]);
+    *pzErr = sqlite3_mprintf("Invalid column name: %s",
+                             argv[0 + kModuleParamOffset]);
     return SQLITE_ERROR;
   }
 
-  auto dim = ParseNumber(argv[1]);
+  auto dim = ParseNumber(argv[1 + kModuleParamOffset]);
   if (!dim.ok()) {
-    *pzErr = sqlite3_mprintf("Invalid dimension %s. Reason: %s", argv[1],
+    *pzErr = sqlite3_mprintf("Invalid dimension %s. Reason: %s",
+                             argv[1 + kModuleParamOffset],
                              absl::StatusMessageAsCStr(dim.status()));
     return SQLITE_ERROR;
   }
 
-  auto max_elements = ParseNumber(argv[2]);
+  auto max_elements = ParseNumber(argv[2 + kModuleParamOffset]);
   if (!max_elements.ok()) {
-    *pzErr = sqlite3_mprintf("Invalid max_elements: %s. Reason: %s", argv[2],
+    *pzErr = sqlite3_mprintf("Invalid max_elements: %s. Reason: %s",
+                             argv[2 + kModuleParamOffset],
                              absl::StatusMessageAsCStr(max_elements.status()));
     return SQLITE_ERROR;
   }
 
   std::string sql =
-      absl::StrFormat("CREATE TABLE X(distance REAL hidden, %s)", col_name);
+      absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)", col_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
   if (rc != SQLITE_OK) {
     return rc;
@@ -200,7 +228,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
       continue;
     }
     int column = constraint.iColumn;
-    if (constraint.op == SQLITE_INDEX_CONSTRAINT_FUNCTION &&
+    if (constraint.op == kFunctionConstraintVectorSearchKnn &&
         column == kColumnIndexVector) {
       index_info->idxNum = IndexConstraintUsage::kVector;
       index_info->aConstraintUsage[i].argvIndex = 1;
@@ -225,30 +253,147 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
 
   if (idxNum == IndexConstraintUsage::kVector) {
+    if (SQLITE_TEXT != sqlite3_value_type(argv[0])) {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg =
+          sqlite3_mprintf("Vector is expected to be of type TEXT, but got: %d",
+                          sqlite3_value_type(argv[0]));
+      return SQLITE_ERROR;
+    }
+    auto query_vector = ParseVector(std::string_view(
+        reinterpret_cast<const char*>(sqlite3_value_text(argv[0])),
+        sqlite3_value_bytes(argv[0])));
+    if (!query_vector.ok()) {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg = sqlite3_mprintf(
+          "Failed to parse vector: %s. Reason: %s", sqlite3_value_text(argv[0]),
+          absl::StatusMessageAsCStr(query_vector.status()));
+      return SQLITE_ERROR;
+    } else if (query_vector->dim() != vtab->dimension()) {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg = sqlite3_mprintf(
+          "Dimension mismatch: query vector has dimension %d, but the table "
+          "has dimension %d",
+          query_vector->dim(), vtab->dimension());
+      return SQLITE_ERROR;
+    } else {
+      cursor->query_vector = std::move(*query_vector);
+      // todo: do not hard-code k = 10
+      auto knn = vtab->index_->searchKnnCloserFirst(
+          cursor->query_vector.data().data(), 10);
+
+      SQLITE_VECTOR_ASSERT(cursor->result.empty());
+
+      std::transform(
+          knn.cbegin(), knn.cend(), std::back_inserter(cursor->result),
+          [](const auto& p) { return std::make_pair(p.first, p.second); });
+      cursor->current_row = cursor->result.cbegin();
+      return SQLITE_OK;
+    }
 
   } else {
+    if (vtab->zErrMsg) {
+      sqlite3_free(vtab->zErrMsg);
+      vtab->zErrMsg = nullptr;
+    }
     vtab->zErrMsg = sqlite3_mprintf("Invalid index number: %d", idxNum);
     return SQLITE_ERROR;
   }
   return SQLITE_OK;
 }
 
-static void VectorSearchKnn(sqlite3_context *context,
-                          int argc,
-                          sqlite3_value **argv) { }
+// a marker function with empty implementation
+void VectorSearchKnnMarker(sqlite3_context* context, int argc,
+                           sqlite3_value** argv) {}
 
 int VirtualTable::FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
                                void (**pxFunc)(sqlite3_context*, int,
                                                sqlite3_value**),
                                void** ppArg) {
   SQLITE_VECTOR_ASSERT(pVtab != nullptr);
-  if (std::string_view(zName) == "vector_search_knn") {
-    *pxFunc = VectorSearchKnn;
+  if (std::string_view(zName) == "vector_search") {
+    *pxFunc = VectorSearchKnnMarker;
     *ppArg = nullptr;
-    return SQLITE_INDEX_CONSTRAINT_FUNCTION;
+    return kFunctionConstraintVectorSearchKnn;
   }
 
   return 0;
+}
+
+// Only insert is supported for now
+int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
+                         sqlite_int64* pRowid) {
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  if (argc > 1 && sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+    // Insert with a new row
+    if (sqlite3_value_type(argv[1]) == SQLITE_NULL) {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg =
+          sqlite3_mprintf("rowid must be specified during insertion");
+      return SQLITE_ERROR;
+    }
+    Cursor::Rowid rowid = sqlite3_value_int64(argv[1]);
+    *pRowid = rowid;
+
+    if (sqlite3_value_type(argv[2]) != SQLITE_TEXT) {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg = sqlite3_mprintf("vector must be of type TEXT");
+      return SQLITE_ERROR;
+    }
+
+    auto vector = ParseVector(std::string_view(
+        reinterpret_cast<const char*>(sqlite3_value_text(argv[2])),
+        sqlite3_value_bytes(argv[2])));
+    if (vector.ok()) {
+      if (vector->dim() != vtab->dimension()) {
+        if (vtab->zErrMsg) {
+          sqlite3_free(vtab->zErrMsg);
+          vtab->zErrMsg = nullptr;
+        }
+        vtab->zErrMsg = sqlite3_mprintf(
+            "Dimension mismatch: vector has "
+            "dimension %d, but the table has "
+            "dimension %d",
+            vector->dim(), vtab->dimension());
+        return SQLITE_ERROR;
+      }
+      vtab->index_->addPoint(vector->data().data(),
+                             static_cast<hnswlib::labeltype>(rowid));
+      vtab->rowids_.insert(rowid);
+      return SQLITE_OK;
+    } else {
+      if (vtab->zErrMsg) {
+        sqlite3_free(vtab->zErrMsg);
+        vtab->zErrMsg = nullptr;
+      }
+      vtab->zErrMsg =
+          sqlite3_mprintf("Failed to perform insertion due to: %s",
+                          absl::StatusMessageAsCStr(vector.status()));
+      return SQLITE_ERROR;
+    }
+  } else {
+    if (vtab->zErrMsg) {
+      sqlite3_free(vtab->zErrMsg);
+      vtab->zErrMsg = nullptr;
+    }
+    vtab->zErrMsg = sqlite3_mprintf("Operation not supported for now");
+    return SQLITE_ERROR;
+  }
 }
 
 }  // end namespace sqlite_vector

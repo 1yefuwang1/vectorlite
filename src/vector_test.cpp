@@ -8,10 +8,10 @@ TEST(VectorTest, FromJSON) {
   sqlite_vector::Vector v;
   auto result = sqlite_vector::Vector::FromJSON(json, &v);
   EXPECT_EQ(result, sqlite_vector::Vector::ParseResult::kOk);
-  EXPECT_EQ(v.get_data().size(), 3);
-  EXPECT_FLOAT_EQ(v.get_data()[0], 1.0);
-  EXPECT_FLOAT_EQ(v.get_data()[1], 2.0);
-  EXPECT_FLOAT_EQ(v.get_data()[2], 3.0);
+  EXPECT_EQ(v.data().size(), 3);
+  EXPECT_FLOAT_EQ(v.data()[0], 1.0);
+  EXPECT_FLOAT_EQ(v.data()[1], 2.0);
+  EXPECT_FLOAT_EQ(v.data()[2], 3.0);
 
   // Test invalid JSON type
   json = R"({"data": "invalid"})";
@@ -40,10 +40,10 @@ TEST(VectorTest, ToJSON) {
   json = v1.ToJSON();
   auto parse_result = sqlite_vector::Vector::FromJSON(json, &v);
   EXPECT_EQ(parse_result, sqlite_vector::Vector::ParseResult::kOk);
-  EXPECT_EQ(v.get_data().size(), 3);
-  EXPECT_FLOAT_EQ(v.get_data()[0], 1.0);
-  EXPECT_FLOAT_EQ(v.get_data()[1], 2.0);
-  EXPECT_FLOAT_EQ(v.get_data()[2], 3.0);
+  EXPECT_EQ(v.data().size(), 3);
+  EXPECT_FLOAT_EQ(v.data()[0], 1.0);
+  EXPECT_FLOAT_EQ(v.data()[1], 2.0);
+  EXPECT_FLOAT_EQ(v.data()[2], 3.0);
 }
 
 TEST(VectorDistance, L2) {

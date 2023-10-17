@@ -2,13 +2,13 @@
 
 #include <memory>
 #include <set>
-#include <utility> // std::pair
+#include <utility>  // std::pair
 
+#include "absl/status/statusor.h"
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "vector.h"
-#include "absl/status/statusor.h"
 
 namespace sqlite_vector {
 
@@ -17,21 +17,24 @@ namespace sqlite_vector {
 // vptr could cause UB.
 class VirtualTable : public sqlite3_vtab {
  public:
-
   // No virtual function
   struct Cursor : public sqlite3_vtab_cursor {
     using Distance = float;
     using Rowid = int64_t;
     using ResultSet = std::vector<std::pair<Distance, Rowid>>;
-    using ResultSetIter = std::vector<std::pair<Distance, Rowid>>::const_iterator;
+    using ResultSetIter =
+        std::vector<std::pair<Distance, Rowid>>::const_iterator;
 
-    Cursor(VirtualTable* vtab) : result(), current_row(result.cend()) {
+    Cursor(VirtualTable* vtab)
+        : result(), current_row(result.cend()), query_vector() {
       SQLITE_VECTOR_ASSERT(vtab != nullptr);
       pVtab = vtab;
     }
 
-    std::vector<std::pair<float, int64_t>> result; // result rowid set, pair is (distance, rowid)
-    ResultSetIter current_row; // points to current row
+    std::vector<std::pair<float, int64_t>>
+        result;                 // result rowid set, pair is (distance, rowid)
+    ResultSetIter current_row;  // points to current row
+    Vector query_vector;        // query vector
   };
 
   VirtualTable(std::string_view col_name, size_t dim, size_t max_elements)
@@ -43,13 +46,15 @@ class VirtualTable : public sqlite3_vtab {
     SQLITE_VECTOR_ASSERT(index_ != nullptr);
   }
 
-  int dimension() const { return space_->get_data_size(); }
+  size_t dimension() const {
+    return *reinterpret_cast<size_t*>(space_->get_dist_func_param());
+  }
 
   // Implementation of the virtual table goes below.
   // For more info on what each function does, please check
   // https://www.sqlite.org/vtab.html
 
-  static int Create(sqlite3* db, void* pAux, int argc, char* const* argv,
+  static int Create(sqlite3* db, void* pAux, int argc, const char* const* argv,
                     sqlite3_vtab** ppVTab, char** pzErr);
   static int Destroy(sqlite3_vtab* pVTab);
   // Connect and Disconnect are not implemented because right now the vtab is
@@ -73,18 +78,21 @@ class VirtualTable : public sqlite3_vtab {
   static int Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                     sqlite_int64* pRowid);
   static int FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
-                           void (**pxFunc)(sqlite3_context*, int,
-                                           sqlite3_value**),
-                           void** ppArg);
+                          void (**pxFunc)(sqlite3_context*, int,
+                                          sqlite3_value**),
+                          void** ppArg);
 
  private:
-
   absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
-  
+
   std::string col_name_;  // vector column name
   std::unique_ptr<hnswlib::SpaceInterface<float>> space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
   std::set<int64_t> rowids_;
 };
+
+
+void VectorSearchKnnMarker(sqlite3_context* context, int argc,
+                           sqlite3_value** argv); 
 
 }  // end namespace sqlite_vector
