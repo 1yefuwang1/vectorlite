@@ -63,13 +63,12 @@ struct KnnParam {
 
 // A helper function to reduce boilerplate code when setting zErrMsg.
 static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
-  SQLITE_VECTOR_ASSERT(pzErr != nullptr);
   va_list args;
   va_start(args, fmt);
   if (*pzErr) {
     sqlite3_free(*pzErr);
   }
-  *pzErr = sqlite3_mprintf(fmt, args);
+  *pzErr = sqlite3_vmprintf(fmt, args);
 
   va_end(args);
 }
@@ -259,7 +258,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
       // in this case the constraint is on rowid
       DLOG(INFO) << "Found rowid constraint";
       index_info->idxNum = IndexConstraintUsage::kRowid;
-      index_info->aConstraintUsage[i].argvIndex = 1;
+      index_info->aConstraintUsage[i].argvIndex = 2;
       index_info->aConstraintUsage[i].omit = 1;
     } else {
       DLOG(INFO) << "Unknown constraint iColumn=" << column
@@ -314,6 +313,7 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
     }
 
   } else {
+    DLOG(INFO) << "Invalid idxNum: " << idxNum;
     SetZErrMsg(&vtab->zErrMsg, "Invalid index number: %d", idxNum);
     return SQLITE_ERROR;
   }
