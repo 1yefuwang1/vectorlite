@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdarg>
 #include <exception>
 #include <iterator>
 #include <optional>
@@ -40,7 +41,6 @@ enum FunctionConstraint {
 };
 
 static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
-  DLOG(INFO) << "Parsing string " << s;
   size_t value = 0;
   auto result = std::from_chars(s.data(), s.data() + s.size(), value);
   if (result.ec == std::errc::invalid_argument ||
@@ -49,8 +49,20 @@ static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
                                absl::StrCat("Failed to parse number: ", s));
   }
 
-  DLOG(INFO) << "Value: " << s;
   return value;
+}
+
+// A helper function to reduce boilerplate code when setting zErrMsg.
+static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
+  SQLITE_VECTOR_ASSERT(pzErr != nullptr);
+  va_list args;
+  va_start(args, fmt);
+  if (*pzErr) {
+    sqlite3_free(*pzErr);
+  }
+  *pzErr = sqlite3_mprintf(fmt, args);
+
+  va_end(args);
 }
 
 int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
@@ -254,33 +266,23 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
 
   if (idxNum == IndexConstraintUsage::kVector) {
     if (SQLITE_TEXT != sqlite3_value_type(argv[0])) {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg =
-          sqlite3_mprintf("Vector is expected to be of type TEXT, but got: %d",
-                          sqlite3_value_type(argv[0]));
+      SetZErrMsg(&vtab->zErrMsg,
+                 "Vector is expected to be of type TEXT, but got: %d",
+                 sqlite3_value_type(argv[0]));
+
       return SQLITE_ERROR;
     }
     auto query_vector = ParseVector(std::string_view(
         reinterpret_cast<const char*>(sqlite3_value_text(argv[0])),
         sqlite3_value_bytes(argv[0])));
     if (!query_vector.ok()) {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg = sqlite3_mprintf(
-          "Failed to parse vector: %s. Reason: %s", sqlite3_value_text(argv[0]),
-          absl::StatusMessageAsCStr(query_vector.status()));
+      SetZErrMsg(&vtab->zErrMsg, "Failed to parse vector: %s. Reason: %s",
+                 sqlite3_value_text(argv[0]),
+                 absl::StatusMessageAsCStr(query_vector.status()));
       return SQLITE_ERROR;
     } else if (query_vector->dim() != vtab->dimension()) {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg = sqlite3_mprintf(
+      SetZErrMsg(
+          &vtab->zErrMsg,
           "Dimension mismatch: query vector has dimension %d, but the table "
           "has dimension %d",
           query_vector->dim(), vtab->dimension());
@@ -301,11 +303,7 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
     }
 
   } else {
-    if (vtab->zErrMsg) {
-      sqlite3_free(vtab->zErrMsg);
-      vtab->zErrMsg = nullptr;
-    }
-    vtab->zErrMsg = sqlite3_mprintf("Invalid index number: %d", idxNum);
+    SetZErrMsg(&vtab->zErrMsg, "Invalid index number: %d", idxNum);
     return SQLITE_ERROR;
   }
   return SQLITE_OK;
@@ -336,23 +334,14 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
   if (argc > 1 && sqlite3_value_type(argv[0]) == SQLITE_NULL) {
     // Insert with a new row
     if (sqlite3_value_type(argv[1]) == SQLITE_NULL) {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg =
-          sqlite3_mprintf("rowid must be specified during insertion");
+      SetZErrMsg(&vtab->zErrMsg, "rowid must be specified during insertion");
       return SQLITE_ERROR;
     }
     Cursor::Rowid rowid = sqlite3_value_int64(argv[1]);
     *pRowid = rowid;
 
     if (sqlite3_value_type(argv[2]) != SQLITE_TEXT) {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg = sqlite3_mprintf("vector must be of type TEXT");
+      SetZErrMsg(&vtab->zErrMsg, "vector must be of type TEXT");
       return SQLITE_ERROR;
     }
 
@@ -361,15 +350,11 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
         sqlite3_value_bytes(argv[2])));
     if (vector.ok()) {
       if (vector->dim() != vtab->dimension()) {
-        if (vtab->zErrMsg) {
-          sqlite3_free(vtab->zErrMsg);
-          vtab->zErrMsg = nullptr;
-        }
-        vtab->zErrMsg = sqlite3_mprintf(
-            "Dimension mismatch: vector has "
-            "dimension %d, but the table has "
-            "dimension %d",
-            vector->dim(), vtab->dimension());
+        SetZErrMsg(&vtab->zErrMsg,
+                   "Dimension mismatch: vector has "
+                   "dimension %d, but the table has "
+                   "dimension %d",
+                   vector->dim(), vtab->dimension());
         return SQLITE_ERROR;
       }
       vtab->index_->addPoint(vector->data().data(),
@@ -377,21 +362,12 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       vtab->rowids_.insert(rowid);
       return SQLITE_OK;
     } else {
-      if (vtab->zErrMsg) {
-        sqlite3_free(vtab->zErrMsg);
-        vtab->zErrMsg = nullptr;
-      }
-      vtab->zErrMsg =
-          sqlite3_mprintf("Failed to perform insertion due to: %s",
-                          absl::StatusMessageAsCStr(vector.status()));
+      SetZErrMsg(&vtab->zErrMsg, "Failed to perform insertion due to: %s",
+                 absl::StatusMessageAsCStr(vector.status()));
       return SQLITE_ERROR;
     }
   } else {
-    if (vtab->zErrMsg) {
-      sqlite3_free(vtab->zErrMsg);
-      vtab->zErrMsg = nullptr;
-    }
-    vtab->zErrMsg = sqlite3_mprintf("Operation not supported for now");
+    SetZErrMsg(&vtab->zErrMsg, "Operation not supported for now");
     return SQLITE_ERROR;
   }
 }
