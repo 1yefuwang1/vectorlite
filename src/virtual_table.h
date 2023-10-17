@@ -91,8 +91,11 @@ class VirtualTable : public sqlite3_vtab {
   std::set<int64_t> rowids_;
 };
 
+// Just a marker function that tells BestIndex that this is a vector search
+void KnnSearch(sqlite3_context* context, int argc, sqlite3_value** argv);
 
-void VectorSearchKnnMarker(sqlite3_context* context, int argc,
-                           sqlite3_value** argv); 
+// Returns a sqlite3 value pointer that points to KnnSearch's second parameter.
+// including inpupt vector, k
+void KnnParamFunc(sqlite3_context* context, int argc, sqlite3_value** argv);
 
 }  // end namespace sqlite_vector

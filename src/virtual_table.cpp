@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdarg>
+#include <cstdint>
 #include <exception>
 #include <iterator>
 #include <optional>
@@ -32,7 +33,7 @@ enum ColumnIndexInTable {
 };
 
 enum IndexConstraintUsage {
-  kVector,
+  kVector = 1,
   kRowid,
 };
 
@@ -51,6 +52,14 @@ static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
 
   return value;
 }
+
+// Used to identify pointer type for sqlite_result_pointer/sqlite_value_pointer
+static constexpr std::string_view kKnnParamType = "vector_search_knn_param";
+
+struct KnnParam {
+  Vector query_vector;
+  uint32_t k;
+};
 
 // A helper function to reduce boilerplate code when setting zErrMsg.
 static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
@@ -242,14 +251,19 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
     int column = constraint.iColumn;
     if (constraint.op == kFunctionConstraintVectorSearchKnn &&
         column == kColumnIndexVector) {
+      DLOG(INFO) << "Found vector search constraint";
       index_info->idxNum = IndexConstraintUsage::kVector;
       index_info->aConstraintUsage[i].argvIndex = 1;
       index_info->aConstraintUsage[i].omit = 1;
     } else if (column == -1) {
       // in this case the constraint is on rowid
+      DLOG(INFO) << "Found rowid constraint";
       index_info->idxNum = IndexConstraintUsage::kRowid;
       index_info->aConstraintUsage[i].argvIndex = 1;
       index_info->aConstraintUsage[i].omit = 1;
+    } else {
+      DLOG(INFO) << "Unknown constraint iColumn=" << column
+                 << ", op=" << constraint.op;
     }
   }
 
@@ -262,36 +276,33 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   Cursor* cursor = static_cast<Cursor*>(pCur);
   SQLITE_VECTOR_ASSERT(pCur->pVtab != nullptr);
 
+  DLOG(INFO) << "Filter called with idxNum=" << idxNum << ", idxStr=" << idxStr
+             << ", argc=" << argc;
+
   VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
 
   if (idxNum == IndexConstraintUsage::kVector) {
-    if (SQLITE_TEXT != sqlite3_value_type(argv[0])) {
+    auto param = static_cast<KnnParam*>(sqlite3_value_pointer(argv[0], kKnnParamType.data()));
+    if (param == nullptr) {
       SetZErrMsg(&vtab->zErrMsg,
-                 "Vector is expected to be of type TEXT, but got: %d",
-                 sqlite3_value_type(argv[0]));
+                 "knn_param() should be used for the 2nd param of knn_search");
 
       return SQLITE_ERROR;
     }
-    auto query_vector = ParseVector(std::string_view(
-        reinterpret_cast<const char*>(sqlite3_value_text(argv[0])),
-        sqlite3_value_bytes(argv[0])));
-    if (!query_vector.ok()) {
-      SetZErrMsg(&vtab->zErrMsg, "Failed to parse vector: %s. Reason: %s",
-                 sqlite3_value_text(argv[0]),
-                 absl::StatusMessageAsCStr(query_vector.status()));
-      return SQLITE_ERROR;
-    } else if (query_vector->dim() != vtab->dimension()) {
+    auto& query_vector = param->query_vector;
+    uint32_t k = param->k;
+    if (query_vector.dim() != vtab->dimension()) {
       SetZErrMsg(
           &vtab->zErrMsg,
           "Dimension mismatch: query vector has dimension %d, but the table "
           "has dimension %d",
-          query_vector->dim(), vtab->dimension());
+          query_vector.dim(), vtab->dimension());
       return SQLITE_ERROR;
     } else {
-      cursor->query_vector = std::move(*query_vector);
+      cursor->query_vector = std::move(query_vector);
       // todo: do not hard-code k = 10
       auto knn = vtab->index_->searchKnnCloserFirst(
-          cursor->query_vector.data().data(), 10);
+          cursor->query_vector.data().data(), k);
 
       SQLITE_VECTOR_ASSERT(cursor->result.empty());
 
@@ -310,16 +321,63 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
 }
 
 // a marker function with empty implementation
-void VectorSearchKnnMarker(sqlite3_context* context, int argc,
-                           sqlite3_value** argv) {}
+void KnnSearch(sqlite3_context* context, int argc, sqlite3_value** argv) {}
+
+
+
+void KnnParamDeleter(void* param) {
+  KnnParam* p = static_cast<KnnParam*>(param);
+  delete p;
+}
+
+
+void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+  if (argc != 2) {
+    sqlite3_result_error(ctx, "Number of parameter is not 2", -1);
+    return;
+  }
+
+  if (sqlite3_value_type(argv[0]) != SQLITE_TEXT) {
+    sqlite3_result_error(ctx, "Vector(1st param) should be of type TEXT", -1);
+    return;
+  } 
+
+  if (sqlite3_value_type(argv[1]) != SQLITE_INTEGER) {
+    sqlite3_result_error(ctx, "k(2nd param) should be of type INTEGER", -1);
+    return;
+  }
+
+  std::string_view json(
+      reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
+      sqlite3_value_bytes(argv[0]));
+  auto vec = ParseVector(json);
+  if (!vec.ok()) {
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vec.status().message());
+    sqlite3_result_error(ctx, err.c_str(), -1);
+    return;
+  }
+
+  int32_t k = sqlite3_value_int(argv[1]);
+  if (k <= 0) {
+    sqlite3_result_error(ctx, "k should be greater than 0", -1);
+    return;
+  }
+
+  KnnParam* param = new KnnParam();
+  param->query_vector = std::move(*vec);
+  param->k = static_cast<uint32_t>(k);
+
+  sqlite3_result_pointer(ctx, param, kKnnParamType.data(), KnnParamDeleter);
+  return;
+}
 
 int VirtualTable::FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
                                void (**pxFunc)(sqlite3_context*, int,
                                                sqlite3_value**),
                                void** ppArg) {
   SQLITE_VECTOR_ASSERT(pVtab != nullptr);
-  if (std::string_view(zName) == "vector_search") {
-    *pxFunc = VectorSearchKnnMarker;
+  if (std::string_view(zName) == "knn_search") {
+    *pxFunc = KnnSearch;
     *ppArg = nullptr;
     return kFunctionConstraintVectorSearchKnn;
   }

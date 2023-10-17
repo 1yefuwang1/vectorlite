@@ -13,6 +13,7 @@ static void l2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   if (argc != 2 || (sqlite3_value_type(argv[0]) != SQLITE_TEXT) ||
       (sqlite3_value_type(argv[1]) != SQLITE_TEXT)) {
     sqlite3_result_error(ctx, "Invalid argument", -1);
+    return;
   }
 
   std::string_view json1(
@@ -91,17 +92,31 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
     return rc;
   }
 
-  rc = sqlite3_create_function(db, "vector_search", 2, SQLITE_UTF8, nullptr,
-                               sqlite_vector::VectorSearchKnnMarker, nullptr,
+  rc = sqlite3_create_function(db, "knn_search", 2, SQLITE_UTF8, nullptr,
+                               sqlite_vector::KnnSearch, nullptr,
                                nullptr);
   if (rc != SQLITE_OK) {
-    *pzErrMsg = sqlite3_mprintf("Failed to create hello_world function: %s",
+    *pzErrMsg = sqlite3_mprintf("Failed to create knn_search function: %s",
+                                sqlite3_errstr(rc));
+    return rc;
+  }
+
+  rc = sqlite3_create_function(db, "knn_param", 2, SQLITE_UTF8, nullptr,
+                               sqlite_vector::KnnParamFunc, nullptr, nullptr);
+
+  if (rc != SQLITE_OK) {
+    *pzErrMsg = sqlite3_mprintf("Failed to create knn_param function: %s",
                                 sqlite3_errstr(rc));
     return rc;
   }
 
   rc = sqlite3_create_module(db, "vector_search", &vector_search_module,
                              nullptr);
+  if (rc != SQLITE_OK) {
+    *pzErrMsg = sqlite3_mprintf("Failed to create module vector_search: %s",
+                                sqlite3_errstr(rc));
+    return rc;
+  }
 
   return rc;
 }
