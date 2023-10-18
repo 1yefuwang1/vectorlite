@@ -8,8 +8,9 @@
 #include "virtual_table.h"
 
 SQLITE_EXTENSION_INIT1;
-/* Hello World function */
-static void l2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+
+// L2distance takes two vector json and outputs their l2distance
+static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   if (argc != 2 || (sqlite3_value_type(argv[0]) != SQLITE_TEXT) ||
       (sqlite3_value_type(argv[1]) != SQLITE_TEXT)) {
     sqlite3_result_error(ctx, "Invalid argument", -1);
@@ -84,7 +85,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   SQLITE_EXTENSION_INIT2(pApi);
 
   rc = sqlite3_create_function(db, "l2distance", 2, SQLITE_UTF8, nullptr,
-                               l2distance, nullptr, nullptr);
+                               L2distance, nullptr, nullptr);
 
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create l2distance function: %s",
