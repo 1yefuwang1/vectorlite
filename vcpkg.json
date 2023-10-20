@@ -4,10 +4,11 @@
   "license": "MIT",
   "description": "SQLite extension for HNSW index",
   "dependencies": [
-    "sqlite3",
-    "rapidjson",
-    "hnswlib",
-    "gtest",
-    { "name": "abseil", "features": ["cxx17"] }
-  ]
+    { "name": "sqlite3", "version>=": "3.43.1" },
+    { "name": "rapidjson", "version>=": "2023-07-17" },
+    { "name": "hnswlib", "version>=": "0.7.0" },
+    { "name": "gtest", "version>=": "1.14.0" },
+    { "name": "abseil", "features": ["cxx17"], "version>=": "20230802.1" }
+  ],
+  "builtin-baseline": "8eb57355a4ffb410a2e94c07b4dca2dffbee8e50"
 }
