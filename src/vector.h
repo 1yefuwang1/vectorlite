@@ -1,6 +1,5 @@
 #pragma once
 
-#include <hnswlib/space_l2.h>
 #include <cstddef>
 #include <string>
 #include <string_view>

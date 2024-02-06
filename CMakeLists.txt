@@ -6,13 +6,18 @@ SET(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(absl CONFIG REQUIRED)
-find_package(RapidJSON CONFIG REQUIRED)
+# find_package(RapidJSON CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
-find_package(hnswlib CONFIG REQUIRED)
+# find_package(hnswlib CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
+find_path(RAPIDJSON_INCLUDE_DIRS rapidjson/rapidjson.h)
+message(STATUS "RapidJSON include dir: ${RAPIDJSON_INCLUDE_DIRS}")
+find_path(HNSWLIB_INCLUDE_DIRS hnswlib/hnswlib.h)
+message(STATUS "HNSWLIB include dir: ${HNSWLIB_INCLUDE_DIRS}")
+
 add_library(sqlite-vector SHARED src/sqlite_vector.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp)
-target_include_directories(sqlite-vector PUBLIC ${RAPIDJSON_INCLUDE_DIRS})
+target_include_directories(sqlite-vector PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS})
 target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log)
 
 include(GoogleTest)
