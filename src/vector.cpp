@@ -1,4 +1,5 @@
 #include "vector.h"
+#include <msgpack/v3/unpack_decl.hpp>
 
 #include "hnswlib/hnswlib.h"
 #include "hnswlib/space_l2.h"
@@ -7,8 +8,26 @@
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/error/en.h"
+#include "msgpack.hpp"
 
 namespace sqlite_vector {
+
+std::string Vector::ToMsgPack() const {
+  msgpack::sbuffer sbuf;
+  msgpack::pack(sbuf, data_);
+  return std::string(sbuf.data(), sbuf.size());
+}
+
+absl::StatusOr<Vector> Vector::FromMsgPack(std::string_view json) {
+  auto handle = msgpack::unpack(json.data(), json.size());
+  auto obj = handle.get();
+  try {
+    std::vector<float> result = obj.as<std::vector<float>>();
+    return Vector(std::move(result));
+  } catch (const msgpack::type_error& e) {
+    return absl::InvalidArgumentError(e.what());
+  }
+}
 
 absl::StatusOr<Vector> Vector::FromJSON(std::string_view json) {
   rapidjson::Document doc;

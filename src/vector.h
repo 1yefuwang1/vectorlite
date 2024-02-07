@@ -24,7 +24,11 @@ class Vector {
 
   static absl::StatusOr<Vector> FromJSON(std::string_view json);
 
+  static absl::StatusOr<Vector> FromMsgPack(std::string_view json);
+
   std::string ToJSON() const;
+
+  std::string ToMsgPack() const;
 
   const std::vector<float>& data() const { return data_; }
 
