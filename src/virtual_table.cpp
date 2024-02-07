@@ -350,7 +350,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   std::string_view json(
       reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
       sqlite3_value_bytes(argv[0]));
-  auto vec = ParseVector(json);
+  auto vec = Vector::FromJSON(json);
   if (!vec.ok()) {
     std::string err = absl::StrFormat("Failed to parse vector due to: %s", vec.status().message());
     sqlite3_result_error(ctx, err.c_str(), -1);
@@ -403,7 +403,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       return SQLITE_ERROR;
     }
 
-    auto vector = ParseVector(std::string_view(
+    auto vector = Vector::FromJSON(std::string_view(
         reinterpret_cast<const char*>(sqlite3_value_text(argv[2])),
         sqlite3_value_bytes(argv[2])));
     if (vector.ok()) {

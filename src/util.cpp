@@ -18,21 +18,4 @@ bool IsValidColumnName(const std::string& name) {
   return std::regex_match(name, kColumnNameRegex);
 }
 
-
-absl::StatusOr<Vector> ParseVector(std::string_view json) {
-  Vector v;
-  auto result = Vector::FromJSON(json, &v);
-  if (result == Vector::ParseResult::kOk) {
-    return v;
-  } else if (result == Vector::ParseResult::kParseFailed) {
-    return absl::InvalidArgumentError("Failed to parse JSON");
-  } else if (result == Vector::ParseResult::kInvalidElementType) {
-    return absl::InvalidArgumentError("Invalid element type in JSON");
-  } else if (result == Vector::ParseResult::kInvalidJSONType) {
-    return absl::InvalidArgumentError("Invalid JSON type");
-  }
-
-  return absl::InternalError("Unknown error");
-}
-
 } // end namespace sqlite_vector

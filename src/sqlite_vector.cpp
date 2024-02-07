@@ -1,4 +1,5 @@
-#include <sqlite3.h>
+#include "absl/strings/str_format.h"
+#include "sqlite3.h"
 
 #include <string_view>
 
@@ -21,29 +22,30 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
       reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  sqlite_vector::Vector v1;
-  auto parse_result = sqlite_vector::Vector::FromJSON(json1, &v1);
-  if (parse_result != sqlite_vector::Vector::ParseResult::kOk) {
-    sqlite3_result_error(ctx, "Failed to parse JSON", -1);
+  auto v1 = sqlite_vector::Vector::FromJSON(json1);
+  if (!v1.ok()) {
+    std::string err = absl::StrFormat("Failed to parse 1st vector due to: %s", v1.status().message());
+    sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
   std::string_view json2(
       reinterpret_cast<const char *>(sqlite3_value_text(argv[1])),
       sqlite3_value_bytes(argv[1]));
-  sqlite_vector::Vector v2;
-  parse_result = sqlite_vector::Vector::FromJSON(json2, &v2);
-  if (parse_result != sqlite_vector::Vector::ParseResult::kOk) {
-    sqlite3_result_error(ctx, "Failed to parse JSON", -1);
+  auto v2 = sqlite_vector::Vector::FromJSON(json2);
+  if (!v2.ok()) {
+    std::string err = absl::StrFormat("Failed to parse 2nd vector due to: %s", v2.status().message());
+    sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
-  if (v1.dim() != v2.dim()) {
-    sqlite3_result_error(ctx, "Dimension mismatch", -1);
+  if (v1->dim() != v2->dim()) {
+    std::string err = absl::StrFormat("Dimension mismatch: %d != %d", v1->dim(), v2->dim());
+    sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
-  float distance = sqlite_vector::L2Distance(v1, v2);
+  float distance = sqlite_vector::L2Distance(*v1, *v2);
   sqlite3_result_double(ctx, static_cast<double>(distance));
 }
 

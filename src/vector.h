@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "macros.h"
 
 namespace sqlite_vector {
@@ -18,19 +19,10 @@ class Vector {
   explicit Vector(std::vector<float>&& data) : data_(std::move(data)) {}
   explicit Vector(const std::vector<float>& data) : data_(data) {}
 
-  enum class ParseResult {
-    kOk,
-    kParseFailed,
-    kInvalidElementType,
-    kInvalidJSONType,
-  };
-
   Vector& operator=(const Vector&) = default;
   Vector& operator=(Vector&&) = default;
 
-  // Pasrse a JSON string into [out]. [out] should not be nullptr.
-  // and should points to an empty vector.
-  static ParseResult FromJSON(std::string_view json, Vector* out);
+  static absl::StatusOr<Vector> FromJSON(std::string_view json);
 
   std::string ToJSON() const;
 

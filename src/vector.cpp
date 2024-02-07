@@ -6,36 +6,32 @@
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
+#include "rapidjson/error/en.h"
 
 namespace sqlite_vector {
 
-Vector::ParseResult Vector::FromJSON(std::string_view json, Vector* out) {
-  SQLITE_VECTOR_ASSERT(out != nullptr);
-
+absl::StatusOr<Vector> Vector::FromJSON(std::string_view json) {
   rapidjson::Document doc;
   doc.Parse(json.data(), json.size());
   auto err = doc.GetParseError();
   if (err != rapidjson::ParseErrorCode::kParseErrorNone) {
-    return Vector::ParseResult::kParseFailed;
+    return absl::InvalidArgumentError(rapidjson::GetParseError_En(err));
   }
 
-  if (!out->data_.empty()) {
-    out->data_.clear();
-  }
+  Vector result;
 
   if (doc.IsArray()) {
     for (auto& v : doc.GetArray()) {
       if (v.IsNumber()) {
-        out->data_.push_back(v.GetFloat());
+        result.data_.push_back(v.GetFloat());
       } else {
-        out->data_.clear();
-        return Vector::ParseResult::kInvalidElementType;
+        return absl::InvalidArgumentError("JSON array contains non-numeric value.");
       }
     }
-    return Vector::ParseResult::kOk;
+    return result;
   }
 
-  return Vector::ParseResult::kInvalidJSONType;
+  return absl::InvalidArgumentError("Input JSON is not an array.");
 }
 
 std::string Vector::ToJSON() const {

@@ -1,13 +1,14 @@
 #include "vector.h"
+
 #include "gtest/gtest.h"
 #include "hnswlib/hnswlib.h"
 
 TEST(VectorTest, FromJSON) {
   // Test valid JSON input
   std::string json = "[1.0, 2.0, 3.0]";
-  sqlite_vector::Vector v;
-  auto result = sqlite_vector::Vector::FromJSON(json, &v);
-  EXPECT_EQ(result, sqlite_vector::Vector::ParseResult::kOk);
+  auto result = sqlite_vector::Vector::FromJSON(json);
+  EXPECT_TRUE(result.ok());
+  sqlite_vector::Vector v = result.value();
   EXPECT_EQ(v.data().size(), 3);
   EXPECT_FLOAT_EQ(v.data()[0], 1.0);
   EXPECT_FLOAT_EQ(v.data()[1], 2.0);
@@ -15,21 +16,21 @@ TEST(VectorTest, FromJSON) {
 
   // Test invalid JSON type
   json = R"({"data": "invalid"})";
-  result = sqlite_vector::Vector::FromJSON(json, &v);
-  EXPECT_EQ(result, sqlite_vector::Vector::ParseResult::kInvalidJSONType);
+  result = sqlite_vector::Vector::FromJSON(json);
+  EXPECT_FALSE(result.ok());
 
   // Test invalid array element
   json = R"([1.0, 2.0, "invalid"])";
-  result = sqlite_vector::Vector::FromJSON(json, &v);
-  EXPECT_EQ(result, sqlite_vector::Vector::ParseResult::kInvalidElementType);
+  result = sqlite_vector::Vector::FromJSON(json);
+  EXPECT_FALSE(result.ok());
 
   // Test invalid JSON
   json = R"(abc)";
-  result = sqlite_vector::Vector::FromJSON(json, &v);
-  EXPECT_EQ(result, sqlite_vector::Vector::ParseResult::kParseFailed);
+  result = sqlite_vector::Vector::FromJSON(json);
+  EXPECT_FALSE(result.ok());
 }
 
-TEST(VectorTest, ToJSON) {
+TEST(VectorTest, Reversible_ToJSON_FromJSON) {
   // Test empty vector
   sqlite_vector::Vector v;
   std::string json = v.ToJSON();
@@ -38,12 +39,13 @@ TEST(VectorTest, ToJSON) {
   // Test non-empty vector
   sqlite_vector::Vector v1({1.0, 2.0, 3.0});
   json = v1.ToJSON();
-  auto parse_result = sqlite_vector::Vector::FromJSON(json, &v);
-  EXPECT_EQ(parse_result, sqlite_vector::Vector::ParseResult::kOk);
-  EXPECT_EQ(v.data().size(), 3);
-  EXPECT_FLOAT_EQ(v.data()[0], 1.0);
-  EXPECT_FLOAT_EQ(v.data()[1], 2.0);
-  EXPECT_FLOAT_EQ(v.data()[2], 3.0);
+  auto parse_result = sqlite_vector::Vector::FromJSON(json);
+  EXPECT_TRUE(parse_result.ok());
+  const auto& parsed = *parse_result;
+  EXPECT_EQ(parsed.data().size(), 3);
+  EXPECT_FLOAT_EQ(parsed.data()[0], v1.data()[0]);
+  EXPECT_FLOAT_EQ(parsed.data()[1], v1.data()[1]);
+  EXPECT_FLOAT_EQ(parsed.data()[2], v1.data()[2]);
 }
 
 TEST(VectorDistance, L2) {
@@ -58,5 +60,4 @@ TEST(VectorDistance, L2) {
   sqlite_vector::Vector v4;
   distance = L2Distance(v3, v4);
   EXPECT_FLOAT_EQ(distance, 0);
-
 }
