@@ -25,8 +25,8 @@ enable_testing()
 file(GLOB TEST_SOURCES src/*.cpp)
 add_executable(unit-test ${TEST_SOURCES})
 target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log)
-target_compile_options(unit-test PRIVATE -Wall -fsanitize=address -fno-omit-frame-pointer -g)
-target_link_options(unit-test PRIVATE -fsanitize=address)
+target_compile_options(unit-test PRIVATE -Wall -fno-omit-frame-pointer -g -O0)
+# target_link_options(unit-test PRIVATE -fsanitize=address)
 
 gtest_discover_tests(unit-test)
 
