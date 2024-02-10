@@ -1,7 +1,8 @@
 #include "vector.h"
 
+#include <iostream>
+
 #include "gtest/gtest.h"
-#include "hnswlib/hnswlib.h"
 
 TEST(VectorTest, FromJSON) {
   // Test valid JSON input
@@ -46,6 +47,19 @@ TEST(VectorTest, Reversible_ToJSON_FromJSON) {
   EXPECT_FLOAT_EQ(parsed.data()[0], v1.data()[0]);
   EXPECT_FLOAT_EQ(parsed.data()[1], v1.data()[1]);
   EXPECT_FLOAT_EQ(parsed.data()[2], v1.data()[2]);
+}
+
+TEST(VectorTest, MsgPack) {
+  sqlite_vector::Vector v({1.01, 2.03, 3.01111});
+  std::string msgpack = v.ToMsgPack();
+  
+  auto parse_result = sqlite_vector::Vector::FromMsgPack(msgpack);
+  EXPECT_TRUE(parse_result.ok());
+  const auto& parsed = *parse_result;
+  EXPECT_EQ(parsed.data().size(), 3);
+  EXPECT_FLOAT_EQ(parsed.data()[0], v.data()[0]);
+  EXPECT_FLOAT_EQ(parsed.data()[1], v.data()[1]);
+  EXPECT_FLOAT_EQ(parsed.data()[2], v.data()[2]);
 }
 
 TEST(VectorDistance, L2) {
