@@ -37,6 +37,8 @@ class VirtualTable : public sqlite3_vtab {
     Vector query_vector;        // query vector
   };
 
+  ~VirtualTable();
+
   VirtualTable(std::string_view col_name, size_t dim, size_t max_elements)
       : col_name_(col_name),
         space_(std::make_unique<hnswlib::L2Space>(dim)),

@@ -140,11 +140,14 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   return SQLITE_OK;
 }
 
+VirtualTable::~VirtualTable() {
+  if (zErrMsg) {
+    sqlite3_free(zErrMsg);
+  }
+}
+
 int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
   SQLITE_VECTOR_ASSERT(pVTab != nullptr);
-  if (pVTab->zErrMsg) {
-    sqlite3_free(pVTab->zErrMsg);
-  }
   delete static_cast<VirtualTable*>(pVTab);
   return SQLITE_OK;
 }
