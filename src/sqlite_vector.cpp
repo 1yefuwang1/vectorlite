@@ -7,8 +7,17 @@
 #include "sqlite3ext.h"
 #include "vector.h"
 #include "virtual_table.h"
+#include "version.h"
+#include "util.h"
 
 SQLITE_EXTENSION_INIT1;
+
+static void ShowInfo(sqlite3_context *ctx, int, sqlite3_value**) {
+  auto simd = sqlite_vector::DetectSIMD().value_or("SIMD not enabled");
+  std::string info = absl::StrFormat("sqlite_vector extension version %s, built with %s",
+                                     SQLITE_VECTOR_VERSION, simd);
+  sqlite3_result_text(ctx, info.c_str(), -1, nullptr);
+}
 
 // L2distance takes two vector json and outputs their l2distance
 static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -109,6 +118,13 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
 
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_param function: %s",
+                                sqlite3_errstr(rc));
+    return rc;
+  }
+
+  rc = sqlite3_create_function(db, "sqlite_vector_info", 0, SQLITE_UTF8, nullptr, ShowInfo, nullptr, nullptr);
+  if (rc != SQLITE_OK) {
+    *pzErrMsg = sqlite3_mprintf("Failed to create sqlite_vector_info function: %s",
                                 sqlite3_errstr(rc));
     return rc;
   }

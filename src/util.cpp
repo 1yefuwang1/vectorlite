@@ -1,8 +1,11 @@
 #include "util.h"
-#include <absl/status/status.h>
 
+#include <optional>
 #include <regex>
+#include <string>
 
+#include "absl/status/status.h"
+#include "hnswlib/hnswlib.h"
 #include "sqlite3.h"
 #include "vector.h"
 
@@ -18,4 +21,16 @@ bool IsValidColumnName(const std::string& name) {
   return std::regex_match(name, kColumnNameRegex);
 }
 
-} // end namespace sqlite_vector
+std::optional<std::string_view> DetectSIMD() {
+#ifdef USE_SSE
+  return "SSE";
+#elif defined(USE_AVX)
+  return "AVX";
+#elif defined(USE_AVX512)
+  return "AVX512";
+#else
+  return std::nullopt;
+#endif
+}
+
+}  // end namespace sqlite_vector

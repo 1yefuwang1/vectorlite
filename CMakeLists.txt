@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.22 FATAL_ERROR)
 
 project(sqlite-vector VERSION 0.1.0 LANGUAGES CXX)
 
+configure_file(src/version.h.in version.h)
+message(STATUS "version.h generated to: ${PROJECT_BINARY_DIR}")
+
 SET(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -17,13 +20,14 @@ find_path(HNSWLIB_INCLUDE_DIRS hnswlib/hnswlib.h)
 message(STATUS "HNSWLIB include dir: ${HNSWLIB_INCLUDE_DIRS}")
 
 add_library(sqlite-vector SHARED src/sqlite_vector.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp)
-target_include_directories(sqlite-vector PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS})
+target_include_directories(sqlite-vector PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
 target_link_libraries(sqlite-vector PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log)
 
 include(GoogleTest)
 enable_testing()
 file(GLOB TEST_SOURCES src/*.cpp)
 add_executable(unit-test ${TEST_SOURCES})
+target_include_directories(unit-test PUBLIC ${PROJECT_BINARY_DIR})
 target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log)
 target_compile_options(unit-test PRIVATE -Wall -fno-omit-frame-pointer -g -O0)
 # target_link_options(unit-test PRIVATE -fsanitize=address)

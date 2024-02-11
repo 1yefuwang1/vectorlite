@@ -1,10 +1,8 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
-
-#include "absl/status/statusor.h"
-#include "vector.h"
 
 namespace sqlite_vector {
 
@@ -17,5 +15,9 @@ namespace sqlite_vector {
 // The input is of string type because built-in regex doesn't work with
 // string_view
 bool IsValidColumnName(const std::string& name);
+
+// Returns which SIMD instruction set is used at build time.
+// e.g. SSE, AVX, AVX512
+std::optional<std::string_view> DetectSIMD();
 
 }  // end namespace sqlite_vector

@@ -1,5 +1,4 @@
 #include "vector.h"
-#include <msgpack/v3/unpack_decl.hpp>
 
 #include "hnswlib/hnswlib.h"
 #include "hnswlib/space_l2.h"
