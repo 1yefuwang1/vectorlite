@@ -20,7 +20,7 @@ class VirtualTable : public sqlite3_vtab {
   // No virtual function
   struct Cursor : public sqlite3_vtab_cursor {
     using Distance = float;
-    using Rowid = int64_t;
+    using Rowid = size_t;
     using ResultSet = std::vector<std::pair<Distance, Rowid>>;
     using ResultSetIter =
         std::vector<std::pair<Distance, Rowid>>::const_iterator;
@@ -31,8 +31,7 @@ class VirtualTable : public sqlite3_vtab {
       pVtab = vtab;
     }
 
-    std::vector<std::pair<float, int64_t>>
-        result;                 // result rowid set, pair is (distance, rowid)
+    ResultSet result;           // result rowid set, pair is (distance, rowid)
     ResultSetIter current_row;  // points to current row
     Vector query_vector;        // query vector
   };

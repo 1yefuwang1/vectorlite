@@ -311,9 +311,7 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
 
       SQLITE_VECTOR_ASSERT(cursor->result.empty());
 
-      std::transform(
-          knn.cbegin(), knn.cend(), std::back_inserter(cursor->result),
-          [](const auto& p) { return std::make_pair(p.first, p.second); });
+      cursor->result = std::move(knn);
       cursor->current_row = cursor->result.cbegin();
       return SQLITE_OK;
     }
