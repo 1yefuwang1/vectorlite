@@ -287,7 +287,8 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
 
   if (idxNum == IndexConstraintUsage::kVector) {
-    auto param = static_cast<KnnParam*>(sqlite3_value_pointer(argv[0], kKnnParamType.data()));
+    auto param = static_cast<KnnParam*>(
+        sqlite3_value_pointer(argv[0], kKnnParamType.data()));
     if (param == nullptr) {
       SetZErrMsg(&vtab->zErrMsg,
                  "knn_param() should be used for the 2nd param of knn_search");
@@ -326,13 +327,10 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
 // a marker function with empty implementation
 void KnnSearch(sqlite3_context* context, int argc, sqlite3_value** argv) {}
 
-
-
 void KnnParamDeleter(void* param) {
   KnnParam* p = static_cast<KnnParam*>(param);
   delete p;
 }
-
 
 void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   if (argc != 2) {
@@ -343,7 +341,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   if (sqlite3_value_type(argv[0]) != SQLITE_TEXT) {
     sqlite3_result_error(ctx, "Vector(1st param) should be of type TEXT", -1);
     return;
-  } 
+  }
 
   if (sqlite3_value_type(argv[1]) != SQLITE_INTEGER) {
     sqlite3_result_error(ctx, "k(2nd param) should be of type INTEGER", -1);
@@ -351,11 +349,12 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   }
 
   std::string_view json(
-      reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
+      reinterpret_cast<const char*>(sqlite3_value_text(argv[0])),
       sqlite3_value_bytes(argv[0]));
   auto vec = Vector::FromJSON(json);
   if (!vec.ok()) {
-    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vec.status().message());
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s",
+                                      vec.status().message());
     sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }

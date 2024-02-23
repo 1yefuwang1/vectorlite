@@ -1,21 +1,21 @@
-#include "absl/strings/str_format.h"
-#include "sqlite3.h"
-
 #include <string_view>
 
+#include "absl/strings/str_format.h"
 #include "macros.h"
+#include "sqlite3.h"
 #include "sqlite3ext.h"
-#include "vector.h"
-#include "virtual_table.h"
-#include "version.h"
 #include "util.h"
+#include "vector.h"
+#include "version.h"
+#include "virtual_table.h"
 
 SQLITE_EXTENSION_INIT1;
 
-static void ShowInfo(sqlite3_context *ctx, int, sqlite3_value**) {
+static void ShowInfo(sqlite3_context *ctx, int, sqlite3_value **) {
   auto simd = sqlite_vector::DetectSIMD().value_or("SIMD not enabled");
-  std::string info = absl::StrFormat("sqlite_vector extension version %s, built with %s",
-                                     SQLITE_VECTOR_VERSION, simd);
+  std::string info =
+      absl::StrFormat("sqlite_vector extension version %s, built with %s",
+                      SQLITE_VECTOR_VERSION, simd);
   sqlite3_result_text(ctx, info.c_str(), -1, nullptr);
 }
 
@@ -33,7 +33,8 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 
   auto v1 = sqlite_vector::Vector::FromJSON(json1);
   if (!v1.ok()) {
-    std::string err = absl::StrFormat("Failed to parse 1st vector due to: %s", v1.status().message());
+    std::string err = absl::StrFormat("Failed to parse 1st vector due to: %s",
+                                      v1.status().message());
     sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
@@ -43,13 +44,15 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
       sqlite3_value_bytes(argv[1]));
   auto v2 = sqlite_vector::Vector::FromJSON(json2);
   if (!v2.ok()) {
-    std::string err = absl::StrFormat("Failed to parse 2nd vector due to: %s", v2.status().message());
+    std::string err = absl::StrFormat("Failed to parse 2nd vector due to: %s",
+                                      v2.status().message());
     sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
   if (v1->dim() != v2->dim()) {
-    std::string err = absl::StrFormat("Dimension mismatch: %d != %d", v1->dim(), v2->dim());
+    std::string err =
+        absl::StrFormat("Dimension mismatch: %d != %d", v1->dim(), v2->dim());
     sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
@@ -105,8 +108,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "knn_search", 2, SQLITE_UTF8, nullptr,
-                               sqlite_vector::KnnSearch, nullptr,
-                               nullptr);
+                               sqlite_vector::KnnSearch, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_search function: %s",
                                 sqlite3_errstr(rc));
@@ -122,10 +124,11 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
     return rc;
   }
 
-  rc = sqlite3_create_function(db, "sqlite_vector_info", 0, SQLITE_UTF8, nullptr, ShowInfo, nullptr, nullptr);
+  rc = sqlite3_create_function(db, "sqlite_vector_info", 0, SQLITE_UTF8,
+                               nullptr, ShowInfo, nullptr, nullptr);
   if (rc != SQLITE_OK) {
-    *pzErrMsg = sqlite3_mprintf("Failed to create sqlite_vector_info function: %s",
-                                sqlite3_errstr(rc));
+    *pzErrMsg = sqlite3_mprintf(
+        "Failed to create sqlite_vector_info function: %s", sqlite3_errstr(rc));
     return rc;
   }
 

@@ -52,7 +52,7 @@ TEST(VectorTest, Reversible_ToJSON_FromJSON) {
 TEST(VectorTest, MsgPack) {
   sqlite_vector::Vector v({1.01, 2.03, 3.01111});
   std::string msgpack = v.ToMsgPack();
-  
+
   auto parse_result = sqlite_vector::Vector::FromMsgPack(msgpack);
   EXPECT_TRUE(parse_result.ok());
   const auto& parsed = *parse_result;

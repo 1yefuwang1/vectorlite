@@ -3,11 +3,11 @@
 #include "hnswlib/hnswlib.h"
 #include "hnswlib/space_l2.h"
 #include "macros.h"
+#include "msgpack.hpp"
 #include "rapidjson/document.h"
+#include "rapidjson/error/en.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
-#include "rapidjson/error/en.h"
-#include "msgpack.hpp"
 
 namespace sqlite_vector {
 
@@ -43,7 +43,8 @@ absl::StatusOr<Vector> Vector::FromJSON(std::string_view json) {
       if (v.IsNumber()) {
         result.data_.push_back(v.GetFloat());
       } else {
-        return absl::InvalidArgumentError("JSON array contains non-numeric value.");
+        return absl::InvalidArgumentError(
+            "JSON array contains non-numeric value.");
       }
     }
     return result;

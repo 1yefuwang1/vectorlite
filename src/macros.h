@@ -10,5 +10,4 @@
 #ifndef SQLITE_VECTOR_ASSERT
 #include <cassert>
 #define SQLITE_VECTOR_ASSERT(x) assert(x)
-#endif 
-
+#endif
