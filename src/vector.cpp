@@ -1,4 +1,5 @@
 #include "vector.h"
+#include <string_view>
 
 #include "hnswlib/hnswlib.h"
 #include "hnswlib/space_l2.h"
@@ -53,6 +54,16 @@ absl::StatusOr<Vector> Vector::FromJSON(std::string_view json) {
   return absl::InvalidArgumentError("Input JSON is not an array.");
 }
 
+absl::StatusOr<Vector> Vector::FromBinary(std::string_view binary) {
+  std::vector<float> result;
+  if (binary.size() % sizeof(float) != 0) {
+    return absl::InvalidArgumentError("Binary size is not a multiple of 4.");
+  }
+  result.resize(binary.size() / sizeof(float));
+  std::memcpy(result.data(), binary.data(), binary.size());
+  return Vector(std::move(result));
+}
+
 std::string Vector::ToJSON() const {
   rapidjson::Document doc;
   doc.SetArray();
@@ -74,6 +85,11 @@ float L2Distance(const Vector& v1, const Vector& v2) {
   hnswlib::L2Space space(v1.dim());
   return space.get_dist_func()(v1.data().data(), v2.data().data(),
                                space.get_dist_func_param());
+}
+
+std::string_view Vector::ToBinary() const {
+  return std::string_view(reinterpret_cast<const char*>(data_.data()),
+                          data_.size() * sizeof(float));
 }
 
 }  // namespace sqlite_vector

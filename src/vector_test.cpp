@@ -49,6 +49,21 @@ TEST(VectorTest, Reversible_ToJSON_FromJSON) {
   EXPECT_FLOAT_EQ(parsed.data()[2], v1.data()[2]);
 }
 
+TEST(VectorTest, Reversible_ToBinary_FromBinary) {
+  std::vector<float> data = {1.1, 2.23, 3.0};
+
+  sqlite_vector::Vector v1(data);
+  
+  auto v2 = sqlite_vector::Vector::FromBinary(v1.ToBinary());
+  EXPECT_TRUE(v2.ok());
+  EXPECT_EQ(v1.data(), v2->data());
+}
+
+TEST(VectorTest, FromBinaryShouldFailWithInvalidInput) {
+  auto v1 = sqlite_vector::Vector::FromBinary(std::string_view("aaa"));
+  EXPECT_FALSE(v1.ok());
+}
+
 TEST(VectorTest, MsgPack) {
   sqlite_vector::Vector v({1.01, 2.03, 3.01111});
   std::string msgpack = v.ToMsgPack();
