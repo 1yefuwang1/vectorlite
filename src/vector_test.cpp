@@ -90,3 +90,11 @@ TEST(VectorDistance, L2) {
   distance = L2Distance(v3, v4);
   EXPECT_FLOAT_EQ(distance, 0);
 }
+
+TEST(VectorTest, Normalize) {
+  sqlite_vector::Vector v({1.0, 2.0, 3.0});
+  auto normalized = v.Normalize();
+  EXPECT_FLOAT_EQ(normalized.data()[0], 0.26726124);
+  EXPECT_FLOAT_EQ(normalized.data()[1], 0.53452247);
+  EXPECT_FLOAT_EQ(normalized.data()[2], 0.8017837);
+}

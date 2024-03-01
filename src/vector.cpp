@@ -1,4 +1,5 @@
 #include "vector.h"
+#include <cstddef>
 #include <string_view>
 
 #include "hnswlib/hnswlib.h"
@@ -90,6 +91,21 @@ float L2Distance(const Vector& v1, const Vector& v2) {
 std::string_view Vector::ToBinary() const {
   return std::string_view(reinterpret_cast<const char*>(data_.data()),
                           data_.size() * sizeof(float));
+}
+
+
+// Implementation follows https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
+Vector Vector::Normalize() const {
+  std::vector<float> normalized(data_.size());
+  float norm = 0.0f;
+  for (float data : data_) {
+    norm += data * data;
+  }
+  norm = 1.0f / (sqrtf(norm) + 1e-30f);
+  for (int i = 0; i < data_.size(); i++) {
+    normalized[i] = data_[i] * norm;
+  }
+  return Vector(std::move(normalized));
 }
 
 }  // namespace sqlite_vector

@@ -38,6 +38,8 @@ class Vector {
 
   std::size_t dim() const { return data_.size(); }
 
+  Vector Normalize() const;
+
  private:
   std::vector<float> data_;
 };
