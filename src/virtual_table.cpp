@@ -1,7 +1,5 @@
 #include "virtual_table.h"
 
-#include <sqlite3.h>
-
 #include <algorithm>
 #include <charconv>
 #include <cstdarg>
@@ -9,6 +7,7 @@
 #include <exception>
 #include <iterator>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -19,9 +18,12 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "hnswlib/hnswlib.h"
+#include "index_options.h"
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "util.h"
+#include "vector_space.h"
+#include "index_options.h"
 
 extern const sqlite3_api_routines* sqlite3_api;
 
@@ -101,38 +103,32 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
     return SQLITE_ERROR;
   }
 
-  std::string col_name = argv[0 + kModuleParamOffset];
-  if (!IsValidColumnName(col_name)) {
-    *pzErr = sqlite3_mprintf("Invalid column name: %s",
-                             argv[0 + kModuleParamOffset]);
+  std::string vector_space_str = argv[0 + kModuleParamOffset];
+  auto vector_space = VectorSpace::FromString(vector_space_str);
+  if (!vector_space.ok()) {
+    *pzErr = sqlite3_mprintf("Invalid vector space: %s. Reason: %s",
+                             argv[0 + kModuleParamOffset], absl::StatusMessageAsCStr(vector_space.status()));
     return SQLITE_ERROR;
   }
 
-  auto dim = ParseNumber(argv[1 + kModuleParamOffset]);
-  if (!dim.ok()) {
-    *pzErr = sqlite3_mprintf("Invalid dimension %s. Reason: %s",
+  std::string index_options_str = argv[1 + kModuleParamOffset];
+  auto index_options = IndexOptions::FromString(index_options_str);
+  if (!index_options.ok()) {
+    *pzErr = sqlite3_mprintf("Invalid index_options %s. Reason: %s",
                              argv[1 + kModuleParamOffset],
-                             absl::StatusMessageAsCStr(dim.status()));
-    return SQLITE_ERROR;
-  }
-
-  auto max_elements = ParseNumber(argv[2 + kModuleParamOffset]);
-  if (!max_elements.ok()) {
-    *pzErr = sqlite3_mprintf("Invalid max_elements: %s. Reason: %s",
-                             argv[2 + kModuleParamOffset],
-                             absl::StatusMessageAsCStr(max_elements.status()));
+                             absl::StatusMessageAsCStr(index_options.status()));
     return SQLITE_ERROR;
   }
 
   std::string sql =
-      absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)", col_name);
+      absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)", vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
   if (rc != SQLITE_OK) {
     return rc;
   }
 
   try {
-    *ppVTab = new VirtualTable(col_name, *dim, *max_elements);
+    *ppVTab = new VirtualTable(std::move(*vector_space), *index_options);
   } catch (const std::exception& ex) {
     *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
     return SQLITE_ERROR;

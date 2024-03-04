@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <set>
 #include <utility>  // std::pair
@@ -9,6 +10,8 @@
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "vector.h"
+#include "vector_space.h"
+#include "index_options.h"
 
 namespace sqlite_vector {
 
@@ -40,20 +43,22 @@ class VirtualTable : public sqlite3_vtab {
     Vector query_vector;        // query vector
   };
 
+  
+
   ~VirtualTable();
 
-  VirtualTable(std::string_view col_name, size_t dim, size_t max_elements)
-      : col_name_(col_name),
-        space_(std::make_unique<hnswlib::L2Space>(dim)),
+  VirtualTable(VectorSpace space,
+               const IndexOptions& options)
+      : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
-            space_.get(), max_elements)) {
-    SQLITE_VECTOR_ASSERT(space_ != nullptr);
+            space.space.get(), options.max_elements, options.M,
+            options.ef_construction, options.random_seed,
+            options.allow_replace_deleted)) {
+    SQLITE_VECTOR_ASSERT(space_.space != nullptr);
     SQLITE_VECTOR_ASSERT(index_ != nullptr);
   }
 
-  size_t dimension() const {
-    return *reinterpret_cast<size_t*>(space_->get_dist_func_param());
-  }
+  size_t dimension() const { return space_.dimension(); }
 
   // Implementation of the virtual table goes below.
   // For more info on what each function does, please check
@@ -90,8 +95,7 @@ class VirtualTable : public sqlite3_vtab {
  private:
   absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
 
-  std::string col_name_;  // vector column name
-  std::unique_ptr<hnswlib::SpaceInterface<float>> space_;
+  VectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
   std::set<int64_t> rowids_;
 };
