@@ -1,24 +1,24 @@
 #include "util.h"
 
 #include <optional>
-#include <regex>
-#include <string>
+#include <string_view>
 
 #include "absl/status/status.h"
 #include "hnswlib/hnswlib.h"
+#include "re2/re2.h"
 #include "sqlite3.h"
 #include "vector.h"
 
 namespace sqlite_vector {
 
-bool IsValidColumnName(const std::string& name) {
-  if (name.empty() || sqlite3_keyword_check(name.c_str(), name.size()) != 0) {
+bool IsValidColumnName(std::string_view name) {
+  if (name.empty() || sqlite3_keyword_check(name.data(), name.size()) != 0) {
     return false;
   }
 
-  static const std::regex kColumnNameRegex("^[a-zA-Z_][a-zA-Z0-9_\\$]*$");
+  static const re2::RE2 kColumnNameRegex("^[a-zA-Z_][a-zA-Z0-9_\\$]*$");
 
-  return std::regex_match(name, kColumnNameRegex);
+  return re2::RE2::FullMatch(name, kColumnNameRegex);
 }
 
 std::optional<std::string_view> DetectSIMD() {

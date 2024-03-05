@@ -1,7 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <string>
 #include <string_view>
 
 namespace sqlite_vector {
@@ -14,7 +13,7 @@ namespace sqlite_vector {
 // - It must not be a reserved keyword.
 // The input is of string type because built-in regex doesn't work with
 // string_view
-bool IsValidColumnName(const std::string& name);
+bool IsValidColumnName(std::string_view name);
 
 // Returns which SIMD instruction set is used at build time.
 // e.g. SSE, AVX, AVX512
