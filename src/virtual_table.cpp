@@ -43,18 +43,6 @@ enum FunctionConstraint {
   kFunctionConstraintVectorSearchKnn = SQLITE_INDEX_CONSTRAINT_FUNCTION,
 };
 
-static absl::StatusOr<size_t> ParseNumber(std::string_view s) {
-  size_t value = 0;
-  auto result = std::from_chars(s.data(), s.data() + s.size(), value);
-  if (result.ec == std::errc::invalid_argument ||
-      result.ec == std::errc::result_out_of_range) {
-    return absl::ErrnoToStatus(static_cast<int>(result.ec),
-                               absl::StrCat("Failed to parse number: ", s));
-  }
-
-  return value;
-}
-
 // Used to identify pointer type for sqlite_result_pointer/sqlite_value_pointer
 static constexpr std::string_view kKnnParamType = "vector_search_knn_param";
 
