@@ -1,10 +1,10 @@
 #include "vector_space.h"
 
-#include <regex>
 #include <string_view>
 
 #include "absl/strings/str_format.h"
 #include "util.h"
+#include "re2/re2.h"
 
 namespace sqlite_vector {
 
@@ -27,6 +27,7 @@ absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
 
   VectorSpace result;
   result.type = space_type;
+  result.normalize = space_type == SpaceType::Cosine;
   result.vector_name = std::string(vector_name);
   switch (space_type) {
     case SpaceType::L2:
@@ -37,7 +38,6 @@ absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
       break;
     case SpaceType::Cosine:
       result.space = std::make_unique<hnswlib::InnerProductSpace>(dim);
-      result.normalize = true;
       break;
     default:
       std::string err_msg =
@@ -48,30 +48,25 @@ absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
   return result;
 }
 
-absl::StatusOr<VectorSpace> VectorSpace::FromString(const std::string& space_str) {
-  static const std::regex reg("([\\w\\d]+)\\((d+),\\s*\"([\\w\\d]+)\"\\)");
-  std::smatch match;
+absl::StatusOr<VectorSpace> VectorSpace::FromString(std::string_view space_str) {
+  static const re2::RE2 reg("([\\w]+)\\((\\d+),\\s*\"([\\w]+)\"\\)");
 
-  if (std::regex_match(space_str, match, reg)) {
-    if (match.size() != 4) {
-      return absl::InvalidArgumentError("Invalid vector space string");
-    }
-
+  std::string vector_name;
+  std::string dim_str;
+  std::string space_type_str;
+  if (re2::RE2::FullMatch(space_str, reg, &vector_name, &dim_str, &space_type_str)) {
     size_t dim;
-    const std::string dim_str = match[2].str();
     if (!absl::SimpleAtoi(dim_str, &dim)) {
       std::string error = absl::StrFormat("Cannot parse dimension: %s", dim_str);
       return absl::InvalidArgumentError(error);
     }
 
-    const std::string space_type_str = match[3].str();
     auto space_type = ParseSpaceType(space_type_str);
     if (!space_type) {
       std::string error = absl::StrFormat("Invalid space type: %s", space_type_str);
       return absl::InvalidArgumentError(error);
     }
 
-    const std::string vector_name = match[1].str();
     if (!IsValidColumnName(vector_name)) {
       std::string error = absl::StrFormat("Invalid vector name: %s", vector_name);
       return absl::InvalidArgumentError(error);

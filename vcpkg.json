@@ -10,7 +10,8 @@
     { "name": "gtest", "version>=": "1.14.0" },
     { "name": "abseil", "features": ["cxx17"], "version>=": "20230802.1" },
     { "name": "hdf5", "features": ["cpp"], "version>=": "1.14.2" },
-    { "name": "msgpack", "version>=": "6.0.0" }
+    { "name": "msgpack", "version>=": "6.0.0" },
+    { "name": "re2", "version>=": "2023-07-01" }
   ],
   "builtin-baseline": "c3801cf53c614ffc54c94051d124eba097b057b1"
 }

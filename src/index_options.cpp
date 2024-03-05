@@ -1,69 +1,67 @@
 #include "index_options.h"
+#include <absl/status/status.h>
 
-#include <regex>
-#include <string>
+#include <string_view>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
+#include "re2/re2.h"
 
 namespace sqlite_vector {
 
 absl::StatusOr<IndexOptions> IndexOptions::FromString(
-    const std::string& index_options) {
+    std::string_view index_options) {
+  static const re2::RE2 hnsw_reg("^hnsw\\((.*)\\)$");
+  std::string key_value;
+  if (!re2::RE2::FullMatch(index_options, hnsw_reg, &key_value)) {
+    return absl::InvalidArgumentError("Invalid index option. Only hnsw is supported");
+  }
+
   IndexOptions options;
-  static const std::regex reg("(\\w+)=([\\w\\d]+)");
-  std::smatch match;
+  static const re2::RE2 kv_reg("([\\w]+)=([\\w]+)");
 
   bool has_max_elements = false;
+  std::string key;
+  std::string value;
 
-  while (std::regex_search(index_options, match, reg)) {
-    if (match.size() != 3) {
-      return absl::InvalidArgumentError("Invalid index options string");
-    }
-
-    if (match[1] == "max_elements") {
-      const std::string& max_elements_string = match[2].str();
-      if (!absl::SimpleAtoi<size_t>(max_elements_string,
-                                    &options.max_elements)) {
-        std::string error = absl::StrFormat("Cannot parse max_elements: %s",
-                                            max_elements_string);
+  std::string_view input(key_value);
+  while (re2::RE2::FindAndConsume(&input, kv_reg, &key, &value)) {
+    if (key == "max_elements") {
+      if (!absl::SimpleAtoi<size_t>(value, &options.max_elements)) {
+        std::string error =
+            absl::StrFormat("Cannot parse max_elements: %s", value);
         return absl::InvalidArgumentError(error);
       }
       has_max_elements = true;
-    } else if (match[1] == "M") {
-      const std::string& m_string = match[2].str();
-      if (!absl::SimpleAtoi<size_t>(m_string, &options.M)) {
-        std::string error = absl::StrFormat("Cannot parse M: %s", m_string);
+    } else if (key == "M") {
+      if (!absl::SimpleAtoi<size_t>(value, &options.M)) {
+        std::string error = absl::StrFormat("Cannot parse M: %s", value);
         return absl::InvalidArgumentError(error);
       }
-    } else if (match[1] == "ef_construction") {
-      const std::string& ef_construction_string = match[2].str();
-      if (!absl::SimpleAtoi<size_t>(ef_construction_string,
-                                    &options.ef_construction)) {
-        std::string error = absl::StrFormat("Cannot parse ef_construction: %s",
-                                            ef_construction_string);
-        return absl::InvalidArgumentError(error);
-      }
-    } else if (match[1] == "random_seed") {
-      const std::string& random_seed_string = match[2].str();
-      if (!absl::SimpleAtoi<size_t>(random_seed_string, &options.random_seed)) {
+    } else if (key == "ef_construction") {
+      if (!absl::SimpleAtoi<size_t>(value, &options.ef_construction)) {
         std::string error =
-            absl::StrFormat("Cannot parse random_seed: %s", random_seed_string);
+            absl::StrFormat("Cannot parse ef_construction: %s", value);
         return absl::InvalidArgumentError(error);
       }
-    } else if (match[1] == "allow_replace_deleted") {
-      const std::string& allow_replace_deleted_string = match[2].str();
-      if (!absl::SimpleAtob(allow_replace_deleted_string,
+    } else if (key == "random_seed") {
+      if (!absl::SimpleAtoi<size_t>(value, &options.random_seed)) {
+        std::string error =
+            absl::StrFormat("Cannot parse random_seed: %s", value);
+        return absl::InvalidArgumentError(error);
+      }
+    } else if (key == "allow_replace_deleted") {
+      if (!absl::SimpleAtob(value,
                             &options.allow_replace_deleted)) {
         std::string error =
             absl::StrFormat("Cannot parse allow_replace_deleted: %s",
-                            allow_replace_deleted_string);
+                            value);
         return absl::InvalidArgumentError(error);
       }
     } else {
       std::string error =
-          absl::StrFormat("Invalid index option: %s", match[1].str());
+          absl::StrFormat("Invalid index option: %s", key);
       return absl::InvalidArgumentError(error);
     }
   }

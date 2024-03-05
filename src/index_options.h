@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string>
+#include <string_view>
 
 #include "absl/status/statusor.h"
 
@@ -20,7 +20,7 @@ struct IndexOptions {
   // The second parameter to sqlite_vector() is the index options string.
   // All parameters except max_elemnts are optional, default values are used
   // if not specified.
-  static absl::StatusOr<IndexOptions> FromString(const std::string& index_options);
+  static absl::StatusOr<IndexOptions> FromString(std::string_view index_options);
 };
 
 }  // namespace sqlite_vector
