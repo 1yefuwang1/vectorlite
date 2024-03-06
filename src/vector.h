@@ -26,7 +26,7 @@ class Vector {
 
   static absl::StatusOr<Vector> FromMsgPack(std::string_view json);
 
-  static absl::StatusOr<Vector> FromBlob(std::string_view binary);
+  static absl::StatusOr<Vector> FromBlob(std::string_view blob);
 
   std::string ToJSON() const;
 
