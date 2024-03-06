@@ -211,8 +211,8 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
     VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
     auto vector = vtab->GetVectorByRowid(rowid);
     if (vector.ok()) {
-      std::string json = vector->ToJSON();
-      sqlite3_result_text(pCtx, json.c_str(), json.size(), SQLITE_TRANSIENT);
+      std::string_view blob = vector->ToBlob();
+      sqlite3_result_blob(pCtx, blob.data(), blob.size(), SQLITE_TRANSIENT);
       return SQLITE_OK;
     } else {
       std::string err =
@@ -322,7 +322,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
     return;
   }
 
-  if (sqlite3_value_type(argv[0]) != SQLITE_TEXT) {
+  if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
     sqlite3_result_error(ctx, "Vector(1st param) should be of type TEXT", -1);
     return;
   }
@@ -332,10 +332,10 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
     return;
   }
 
-  std::string_view json(
-      reinterpret_cast<const char*>(sqlite3_value_text(argv[0])),
+  std::string_view vector_blob(
+      reinterpret_cast<const char*>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
-  auto vec = Vector::FromJSON(json);
+  auto vec = Vector::FromBlob(vector_blob);
   if (!vec.ok()) {
     std::string err = absl::StrFormat("Failed to parse vector due to: %s",
                                       vec.status().message());
@@ -384,13 +384,13 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     Cursor::Rowid rowid = sqlite3_value_int64(argv[1]);
     *pRowid = rowid;
 
-    if (sqlite3_value_type(argv[2]) != SQLITE_TEXT) {
-      SetZErrMsg(&vtab->zErrMsg, "vector must be of type TEXT");
+    if (sqlite3_value_type(argv[2]) != SQLITE_BLOB) {
+      SetZErrMsg(&vtab->zErrMsg, "vector must be of type Blob");
       return SQLITE_ERROR;
     }
 
-    auto vector = Vector::FromJSON(std::string_view(
-        reinterpret_cast<const char*>(sqlite3_value_text(argv[2])),
+    auto vector = Vector::FromBlob(std::string_view(
+        reinterpret_cast<const char*>(sqlite3_value_blob(argv[2])),
         sqlite3_value_bytes(argv[2])));
     if (vector.ok()) {
       if (vector->dim() != vtab->dimension()) {

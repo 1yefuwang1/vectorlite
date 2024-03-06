@@ -54,13 +54,13 @@ TEST(VectorTest, Reversible_ToBinary_FromBinary) {
 
   sqlite_vector::Vector v1(data);
   
-  auto v2 = sqlite_vector::Vector::FromBinary(v1.ToBinary());
+  auto v2 = sqlite_vector::Vector::FromBlob(v1.ToBlob());
   EXPECT_TRUE(v2.ok());
   EXPECT_EQ(v1.data(), v2->data());
 }
 
 TEST(VectorTest, FromBinaryShouldFailWithInvalidInput) {
-  auto v1 = sqlite_vector::Vector::FromBinary(std::string_view("aaa"));
+  auto v1 = sqlite_vector::Vector::FromBlob(std::string_view("aaa"));
   EXPECT_FALSE(v1.ok());
 }
 
