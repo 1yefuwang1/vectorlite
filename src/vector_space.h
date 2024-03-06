@@ -19,20 +19,26 @@ std::optional<SpaceType> ParseSpaceType(std::string_view space_type);
 
 struct VectorSpace {
   SpaceType type;
-  std::string vector_name;
   bool normalize;
   std::unique_ptr<hnswlib::SpaceInterface<float>> space;
 
   size_t dimension() const;
 
-  // Parses a string into VectorSpace.
+  static absl::StatusOr<VectorSpace> Create(size_t dim, SpaceType space_type);
+};
+
+struct NamedVectorSpace : public VectorSpace {
+  std::string vector_name;
+  
+  NamedVectorSpace(VectorSpace&& other) : VectorSpace(std::move(other)) {}
+
+  // Parses a string into NamedVectorSpace.
   // This input is usually from the CREATE VIRTUAL TABLE statement.
   // e.g. CREATE VIRTUAL TABLE my_vectors using sqlite_vector(my_vector(384, "l2"), "hnsw(max_elements=1000)")
   // The `vector(384, "l2")` is the vector space string. Supported space type are "l2", "cos", "ip"
-  // The second parameter is optional and defaults to "l2" if not specified.
-  static absl::StatusOr<VectorSpace> FromString(std::string_view space_str);
+  static absl::StatusOr<NamedVectorSpace> FromString(std::string_view space_str);
 };
 
-absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type, std::string_view vector_name);
+absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(size_t dim, SpaceType space_type, std::string_view vector_name);
 
 }  // namespace sqlite_vector

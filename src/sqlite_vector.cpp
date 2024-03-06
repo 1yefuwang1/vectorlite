@@ -1,3 +1,4 @@
+#include <absl/status/status.h>
 #include <string_view>
 
 #include "absl/strings/str_format.h"
@@ -8,6 +9,7 @@
 #include "vector.h"
 #include "version.h"
 #include "virtual_table.h"
+#include "vector_space.h"
 
 SQLITE_EXTENSION_INIT1;
 
@@ -50,15 +52,12 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  if (v1->dim() != v2->dim()) {
-    std::string err =
-        absl::StrFormat("Dimension mismatch: %d != %d", v1->dim(), v2->dim());
-    sqlite3_result_error(ctx, err.c_str(), -1);
+  auto distance = sqlite_vector::Distance(*v1, *v2, sqlite_vector::SpaceType::L2);
+  if (!distance.ok()) {
+    sqlite3_result_error(ctx, absl::StatusMessageAsCStr(distance.status()), -1);
     return;
   }
-
-  float distance = sqlite_vector::L2Distance(*v1, *v2);
-  sqlite3_result_double(ctx, static_cast<double>(distance));
+  sqlite3_result_double(ctx, static_cast<double>(*distance));
 }
 
 using sqlite_vector::VirtualTable;

@@ -48,7 +48,7 @@ class VirtualTable : public sqlite3_vtab {
 
   ~VirtualTable();
 
-  VirtualTable(VectorSpace space,
+  VirtualTable(NamedVectorSpace space,
                const IndexOptions& options)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
@@ -96,7 +96,7 @@ class VirtualTable : public sqlite3_vtab {
  private:
   absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
 
-  VectorSpace space_;
+  NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
   std::set<int64_t> rowids_;
 };

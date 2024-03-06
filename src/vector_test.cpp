@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "gtest/gtest.h"
+#include "vector_space.h"
 
 TEST(VectorTest, FromJSON) {
   // Test valid JSON input
@@ -77,18 +78,29 @@ TEST(VectorTest, MsgPack) {
   EXPECT_FLOAT_EQ(parsed.data()[2], v.data()[2]);
 }
 
-TEST(VectorDistance, L2) {
+TEST(VectorDistance, ShouldWork) {
   // Test valid input
   sqlite_vector::Vector v1({1.0, 2.0, 3.0});
   sqlite_vector::Vector v2({4.0, 5.0, 6.0});
-  float distance = L2Distance(v1, v2);
-  EXPECT_FLOAT_EQ(distance, 27);
+  auto distance = Distance(v1, v2, sqlite_vector::SpaceType::L2);
+  EXPECT_TRUE(distance.ok());
+  EXPECT_FLOAT_EQ(*distance, 27);
 
-  // Test empty input
+  distance = Distance(v2, v1, sqlite_vector::SpaceType::InnerProduct);
+  EXPECT_TRUE(distance.ok());
+  EXPECT_FLOAT_EQ(*distance, -31);
+
+  distance = Distance(v1, v2, sqlite_vector::SpaceType::Cosine);
+  EXPECT_TRUE(distance.ok());
+  EXPECT_FLOAT_EQ(*distance, 0.025368214);
+
+  // Test 0 dimension
   sqlite_vector::Vector v3;
   sqlite_vector::Vector v4;
-  distance = L2Distance(v3, v4);
-  EXPECT_FLOAT_EQ(distance, 0);
+  for (auto space : {sqlite_vector::SpaceType::L2, sqlite_vector::SpaceType::InnerProduct}) {
+    distance = Distance(v3, v4, space);
+    EXPECT_FALSE(distance.ok());
+  }
 }
 
 TEST(VectorTest, Normalize) {

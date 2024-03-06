@@ -19,8 +19,7 @@ std::optional<SpaceType> ParseSpaceType(std::string_view space_type) {
   return std::nullopt;
 }
 
-absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
-                                              std::string_view vector_name) {
+absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim, SpaceType space_type) {
   if (dim == 0) {
     return absl::InvalidArgumentError("Dimension must be greater than 0");
   }
@@ -28,7 +27,6 @@ absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
   VectorSpace result;
   result.type = space_type;
   result.normalize = space_type == SpaceType::Cosine;
-  result.vector_name = std::string(vector_name);
   switch (space_type) {
     case SpaceType::L2:
       result.space = std::make_unique<hnswlib::L2Space>(dim);
@@ -46,9 +44,23 @@ absl::StatusOr<VectorSpace> CreateVectorSpace(size_t dim, SpaceType space_type,
   }
 
   return result;
+
 }
 
-absl::StatusOr<VectorSpace> VectorSpace::FromString(std::string_view space_str) {
+absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(size_t dim, SpaceType space_type,
+                                              std::string_view vector_name) {
+  auto result = VectorSpace::Create(dim, space_type);
+
+  if (!result.ok()) {
+    return result.status();
+  }
+
+  NamedVectorSpace named_vector_space(std::move(*result));
+  named_vector_space.vector_name = vector_name;
+  return named_vector_space;
+}
+
+absl::StatusOr<NamedVectorSpace> NamedVectorSpace::FromString(std::string_view space_str) {
   static const re2::RE2 reg("([\\w]+)\\((\\d+),\\s*\"([\\w]+)\"\\)");
 
   std::string vector_name;
@@ -71,7 +83,7 @@ absl::StatusOr<VectorSpace> VectorSpace::FromString(std::string_view space_str) 
       std::string error = absl::StrFormat("Invalid vector name: %s", vector_name);
       return absl::InvalidArgumentError(error);
     }
-    return CreateVectorSpace(dim, *space_type, vector_name);
+    return CreateNamedVectorSpace(dim, *space_type, vector_name);
   }
   return absl::InvalidArgumentError("Unable to parse vector space");
 }

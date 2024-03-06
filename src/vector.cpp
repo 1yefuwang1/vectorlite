@@ -1,5 +1,10 @@
 #include "vector.h"
+
+#include <absl/status/status.h>
+#include <absl/status/statusor.h>
+
 #include <cstddef>
+#include <memory>
 #include <string_view>
 
 #include "hnswlib/hnswlib.h"
@@ -10,6 +15,7 @@
 #include "rapidjson/error/en.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
+#include "vector_space.h"
 
 namespace sqlite_vector {
 
@@ -81,11 +87,23 @@ std::string Vector::ToJSON() const {
   return buf.GetString();
 }
 
-float L2Distance(const Vector& v1, const Vector& v2) {
-  SQLITE_VECTOR_ASSERT(v1.dim() == v2.dim());
-  hnswlib::L2Space space(v1.dim());
-  return space.get_dist_func()(v1.data().data(), v2.data().data(),
-                               space.get_dist_func_param());
+absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2,
+                               SpaceType space_type) {
+  if (v1.dim() != v2.dim()) {
+    std::string err =
+        absl::StrFormat("Dimension mismatch: %d != %d", v1.dim(), v2.dim());
+    return absl::InvalidArgumentError(err);
+  }
+  auto vector_space = VectorSpace::Create(v1.dim(), space_type);
+  if (!vector_space.ok()) {
+    return vector_space.status();
+  }
+
+  const Vector& lhs = vector_space->normalize ? v1.Normalize() : v1;
+  const Vector& rhs = vector_space->normalize ? v2.Normalize() : v2;
+  return vector_space->space->get_dist_func()(
+      lhs.data().data(), rhs.data().data(),
+      vector_space->space->get_dist_func_param());
 }
 
 std::string_view Vector::ToBlob() const {
@@ -93,8 +111,8 @@ std::string_view Vector::ToBlob() const {
                           data_.size() * sizeof(float));
 }
 
-
-// Implementation follows https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
+// Implementation follows
+// https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
 Vector Vector::Normalize() const {
   std::vector<float> normalized(data_.size());
   float norm = 0.0f;

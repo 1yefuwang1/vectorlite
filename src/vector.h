@@ -1,12 +1,12 @@
 #pragma once
 
-#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "absl/status/statusor.h"
 #include "macros.h"
+#include "vector_space.h"
 
 namespace sqlite_vector {
 
@@ -44,8 +44,7 @@ class Vector {
   std::vector<float> data_;
 };
 
-// Calculate the L2 distance between two vectors.
-// v1 and v2 must have the same dimension.
-float L2Distance(const Vector& v1, const Vector& v2);
+// Calculate the distance between two vectors.
+absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2, SpaceType space);
 
 }  // namespace sqlite_vector

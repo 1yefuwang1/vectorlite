@@ -84,7 +84,7 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   }
 
   std::string vector_space_str = argv[0 + kModuleParamOffset];
-  auto vector_space = VectorSpace::FromString(vector_space_str);
+  auto vector_space = NamedVectorSpace::FromString(vector_space_str);
   if (!vector_space.ok()) {
     *pzErr = sqlite3_mprintf("Invalid vector space: %s. Reason: %s",
                              argv[0 + kModuleParamOffset],
