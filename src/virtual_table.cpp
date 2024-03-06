@@ -1,14 +1,7 @@
 #include "virtual_table.h"
 
-#include <algorithm>
-#include <charconv>
-#include <cstdarg>
-#include <cstdint>
 #include <exception>
-#include <iterator>
-#include <optional>
-#include <regex>
-#include <stdexcept>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -23,7 +16,6 @@
 #include "sqlite3ext.h"
 #include "util.h"
 #include "vector_space.h"
-#include "index_options.h"
 
 extern const sqlite3_api_routines* sqlite3_api;
 
@@ -95,7 +87,8 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   auto vector_space = VectorSpace::FromString(vector_space_str);
   if (!vector_space.ok()) {
     *pzErr = sqlite3_mprintf("Invalid vector space: %s. Reason: %s",
-                             argv[0 + kModuleParamOffset], absl::StatusMessageAsCStr(vector_space.status()));
+                             argv[0 + kModuleParamOffset],
+                             absl::StatusMessageAsCStr(vector_space.status()));
     return SQLITE_ERROR;
   }
 
@@ -108,8 +101,8 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
     return SQLITE_ERROR;
   }
 
-  std::string sql =
-      absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)", vector_space->vector_name);
+  std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
+                                    vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
   if (rc != SQLITE_OK) {
     return rc;
@@ -381,7 +374,17 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       SetZErrMsg(&vtab->zErrMsg, "rowid must be specified during insertion");
       return SQLITE_ERROR;
     }
-    Cursor::Rowid rowid = sqlite3_value_int64(argv[1]);
+    sqlite3_int64 raw_rowid = sqlite3_value_int64(argv[1]);
+    // This limitation comes from the fact that rowid is used as the label in
+    // hnswlib(hnswlib::labeltype), whose type is size_t. But rowid in sqlite3 has
+    // type int64.
+    if (raw_rowid > std::numeric_limits<Cursor::Rowid>::max() ||
+        raw_rowid < 0) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid %lld out of range", raw_rowid);
+      return SQLITE_ERROR;
+    }
+
+    Cursor::Rowid rowid = static_cast<Cursor::Rowid>(raw_rowid);
     *pRowid = rowid;
 
     if (sqlite3_value_type(argv[2]) != SQLITE_BLOB) {

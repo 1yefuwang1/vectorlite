@@ -27,6 +27,7 @@ class VirtualTable : public sqlite3_vtab {
     // rowid in sqlite is of type int64_t, size_t is used here to align with
     // hnswlib's labeltype, so that a query result can be directed moved instead
     // of copied.
+    static_assert(sizeof(size_t) == sizeof(hnswlib::labeltype));
     using Rowid = size_t;
     using ResultSet = std::vector<std::pair<Distance, Rowid>>;
     using ResultSetIter =
