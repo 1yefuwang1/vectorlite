@@ -379,8 +379,8 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     }
     sqlite3_int64 raw_rowid = sqlite3_value_int64(argv[1]);
     // This limitation comes from the fact that rowid is used as the label in
-    // hnswlib(hnswlib::labeltype), whose type is size_t. But rowid in sqlite3 has
-    // type int64.
+    // hnswlib(hnswlib::labeltype), whose type is size_t. But rowid in sqlite3
+    // has type int64.
     if (raw_rowid > std::numeric_limits<Cursor::Rowid>::max() ||
         raw_rowid < 0) {
       SetZErrMsg(&vtab->zErrMsg, "rowid %lld out of range", raw_rowid);
@@ -407,7 +407,10 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                    vector->dim(), vtab->dimension());
         return SQLITE_ERROR;
       }
-      vtab->index_->addPoint(vector->data().data(),
+
+      vtab->index_->addPoint(vtab->space_.normalize
+                                 ? vector->Normalize().data().data()
+                                 : vector->data().data(),
                              static_cast<hnswlib::labeltype>(rowid));
       vtab->rowids_.insert(rowid);
       return SQLITE_OK;
