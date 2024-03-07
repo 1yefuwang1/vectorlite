@@ -52,7 +52,7 @@ class VirtualTable : public sqlite3_vtab {
                const IndexOptions& options)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
-            space.space.get(), options.max_elements, options.M,
+            space_.space.get(), options.max_elements, options.M,
             options.ef_construction, options.random_seed,
             options.allow_replace_deleted)) {
     SQLITE_VECTOR_ASSERT(space_.space != nullptr);

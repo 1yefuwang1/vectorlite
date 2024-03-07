@@ -77,13 +77,14 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   // VIRTUAL TABLE statement.
   constexpr int kModuleParamOffset = 3;
 
-  if (argc != 3 + kModuleParamOffset) {
+  if (argc != 2 + kModuleParamOffset) {
     *pzErr = sqlite3_mprintf("Expected 3 argument, got %d",
                              argc - kModuleParamOffset);
     return SQLITE_ERROR;
   }
 
-  std::string vector_space_str = argv[0 + kModuleParamOffset];
+  std::string_view vector_space_str = argv[0 + kModuleParamOffset];
+  DLOG(INFO) << "vector_space_str: " << vector_space_str;
   auto vector_space = NamedVectorSpace::FromString(vector_space_str);
   if (!vector_space.ok()) {
     *pzErr = sqlite3_mprintf("Invalid vector space: %s. Reason: %s",
@@ -92,7 +93,8 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
     return SQLITE_ERROR;
   }
 
-  std::string index_options_str = argv[1 + kModuleParamOffset];
+  std::string_view index_options_str = argv[1 + kModuleParamOffset];
+  DLOG(INFO) << "index_options_str: " << index_options_str;
   auto index_options = IndexOptions::FromString(index_options_str);
   if (!index_options.ok()) {
     *pzErr = sqlite3_mprintf("Invalid index_options %s. Reason: %s",
@@ -104,6 +106,7 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
                                     vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
+  DLOG(INFO) << "vtab declared: " << sql.c_str() << ", rc=" << rc;
   if (rc != SQLITE_OK) {
     return rc;
   }
