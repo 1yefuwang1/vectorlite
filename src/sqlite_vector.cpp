@@ -1,4 +1,5 @@
 #include <absl/status/status.h>
+
 #include <string_view>
 
 #include "absl/strings/str_format.h"
@@ -7,9 +8,9 @@
 #include "sqlite3ext.h"
 #include "util.h"
 #include "vector.h"
+#include "vector_space.h"
 #include "version.h"
 #include "virtual_table.h"
-#include "vector_space.h"
 
 SQLITE_EXTENSION_INIT1;
 
@@ -21,19 +22,45 @@ static void ShowInfo(sqlite3_context *ctx, int, sqlite3_value **) {
   sqlite3_result_text(ctx, info.c_str(), -1, nullptr);
 }
 
-// L2distance takes two vector json and outputs their l2distance
-static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-  if (argc != 2 || (sqlite3_value_type(argv[0]) != SQLITE_TEXT) ||
-      (sqlite3_value_type(argv[1]) != SQLITE_TEXT)) {
-    sqlite3_result_error(ctx, "Invalid argument", -1);
+// VectorDistance takes two vectors and and space type, then outputs their distance
+static void VectorDistance(sqlite3_context *ctx, int argc,
+                           sqlite3_value **argv) {
+  if (argc != 3) {
+    std::string err = absl::StrFormat(
+        "vector_distance expects 3 arguments but %d provided", argc);
+    sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
-  std::string_view json1(
+  if (sqlite3_value_type(argv[0]) != SQLITE_BLOB ||
+      sqlite3_value_type(argv[1]) != SQLITE_BLOB) {
+    sqlite3_result_error(ctx, "vectors_distance expects vectors of type blob",
+                         -1);
+    return;
+  }
+
+  if (sqlite3_value_type(argv[2]) != SQLITE_TEXT) {
+    sqlite3_result_error(
+        ctx, "vectors_distance expects space type of type text", -1);
+    return;
+  }
+
+  std::string_view space_type_str(
+      reinterpret_cast<const char *>(sqlite3_value_text(argv[2])),
+      sqlite3_value_bytes(argv[2]));
+  auto space_type = sqlite_vector::ParseSpaceType(space_type_str);
+  if (!space_type.has_value()) {
+    std::string err =
+        absl::StrFormat("Failed to parse space type: %s", space_type_str);
+    sqlite3_result_error(ctx, err.c_str(), -1);
+    return;
+  }
+
+  std::string_view v1_str(
       reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  auto v1 = sqlite_vector::Vector::FromJSON(json1);
+  auto v1 = sqlite_vector::Vector::FromBlob(v1_str);
   if (!v1.ok()) {
     std::string err = absl::StrFormat("Failed to parse 1st vector due to: %s",
                                       v1.status().message());
@@ -41,10 +68,10 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  std::string_view json2(
+  std::string_view v2_str(
       reinterpret_cast<const char *>(sqlite3_value_text(argv[1])),
       sqlite3_value_bytes(argv[1]));
-  auto v2 = sqlite_vector::Vector::FromJSON(json2);
+  auto v2 = sqlite_vector::Vector::FromBlob(v2_str);
   if (!v2.ok()) {
     std::string err = absl::StrFormat("Failed to parse 2nd vector due to: %s",
                                       v2.status().message());
@@ -52,7 +79,7 @@ static void L2distance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  auto distance = sqlite_vector::Distance(*v1, *v2, sqlite_vector::SpaceType::L2);
+  auto distance = sqlite_vector::Distance(*v1, *v2, *space_type);
   if (!distance.ok()) {
     sqlite3_result_error(ctx, absl::StatusMessageAsCStr(distance.status()), -1);
     return;
@@ -97,11 +124,11 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   int rc = SQLITE_OK;
   SQLITE_EXTENSION_INIT2(pApi);
 
-  rc = sqlite3_create_function(db, "l2distance", 2, SQLITE_UTF8, nullptr,
-                               L2distance, nullptr, nullptr);
+  rc = sqlite3_create_function(db, "vector_distance", 3, SQLITE_UTF8, nullptr,
+                               VectorDistance, nullptr, nullptr);
 
   if (rc != SQLITE_OK) {
-    *pzErrMsg = sqlite3_mprintf("Failed to create l2distance function: %s",
+    *pzErrMsg = sqlite3_mprintf("Failed to create vector_distance function: %s",
                                 sqlite3_errstr(rc));
     return rc;
   }
