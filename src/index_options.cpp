@@ -1,4 +1,5 @@
 #include "index_options.h"
+
 #include <absl/status/status.h>
 
 #include <string_view>
@@ -15,7 +16,8 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
   static const re2::RE2 hnsw_reg("^hnsw\\((.*)\\)$");
   std::string key_value;
   if (!re2::RE2::FullMatch(index_options, hnsw_reg, &key_value)) {
-    return absl::InvalidArgumentError("Invalid index option. Only hnsw is supported");
+    return absl::InvalidArgumentError(
+        "Invalid index option. Only hnsw is supported");
   }
 
   IndexOptions options;
@@ -52,16 +54,13 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
         return absl::InvalidArgumentError(error);
       }
     } else if (key == "allow_replace_deleted") {
-      if (!absl::SimpleAtob(value,
-                            &options.allow_replace_deleted)) {
+      if (!absl::SimpleAtob(value, &options.allow_replace_deleted)) {
         std::string error =
-            absl::StrFormat("Cannot parse allow_replace_deleted: %s",
-                            value);
+            absl::StrFormat("Cannot parse allow_replace_deleted: %s", value);
         return absl::InvalidArgumentError(error);
       }
     } else {
-      std::string error =
-          absl::StrFormat("Invalid index option: %s", key);
+      std::string error = absl::StrFormat("Invalid index option: %s", key);
       return absl::InvalidArgumentError(error);
     }
   }

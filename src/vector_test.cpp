@@ -54,7 +54,7 @@ TEST(VectorTest, Reversible_ToBinary_FromBinary) {
   std::vector<float> data = {1.1, 2.23, 3.0};
 
   sqlite_vector::Vector v1(data);
-  
+
   auto v2 = sqlite_vector::Vector::FromBlob(v1.ToBlob());
   EXPECT_TRUE(v2.ok());
   EXPECT_EQ(v1.data(), v2->data());
@@ -97,7 +97,8 @@ TEST(VectorDistance, ShouldWork) {
   // Test 0 dimension
   sqlite_vector::Vector v3;
   sqlite_vector::Vector v4;
-  for (auto space : {sqlite_vector::SpaceType::L2, sqlite_vector::SpaceType::InnerProduct}) {
+  for (auto space :
+       {sqlite_vector::SpaceType::L2, sqlite_vector::SpaceType::InnerProduct}) {
     distance = Distance(v3, v4, space);
     EXPECT_FALSE(distance.ok());
   }

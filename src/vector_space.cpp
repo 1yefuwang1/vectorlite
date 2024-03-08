@@ -3,8 +3,8 @@
 #include <string_view>
 
 #include "absl/strings/str_format.h"
-#include "util.h"
 #include "re2/re2.h"
+#include "util.h"
 
 namespace sqlite_vector {
 
@@ -19,7 +19,8 @@ std::optional<SpaceType> ParseSpaceType(std::string_view space_type) {
   return std::nullopt;
 }
 
-absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim, SpaceType space_type) {
+absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim,
+                                                SpaceType space_type) {
   if (dim == 0) {
     return absl::InvalidArgumentError("Dimension must be greater than 0");
   }
@@ -44,11 +45,10 @@ absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim, SpaceType space_type
   }
 
   return result;
-
 }
 
-absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(size_t dim, SpaceType space_type,
-                                              std::string_view vector_name) {
+absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(
+    size_t dim, SpaceType space_type, std::string_view vector_name) {
   auto result = VectorSpace::Create(dim, space_type);
 
   if (!result.ok()) {
@@ -60,27 +60,32 @@ absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(size_t dim, SpaceType sp
   return named_vector_space;
 }
 
-absl::StatusOr<NamedVectorSpace> NamedVectorSpace::FromString(std::string_view space_str) {
+absl::StatusOr<NamedVectorSpace> NamedVectorSpace::FromString(
+    std::string_view space_str) {
   static const re2::RE2 reg("([\\w]+)\\((\\d+),\\s*\"([\\w]+)\"\\)");
 
   std::string vector_name;
   std::string dim_str;
   std::string space_type_str;
-  if (re2::RE2::FullMatch(space_str, reg, &vector_name, &dim_str, &space_type_str)) {
+  if (re2::RE2::FullMatch(space_str, reg, &vector_name, &dim_str,
+                          &space_type_str)) {
     size_t dim;
     if (!absl::SimpleAtoi(dim_str, &dim)) {
-      std::string error = absl::StrFormat("Cannot parse dimension: %s", dim_str);
+      std::string error =
+          absl::StrFormat("Cannot parse dimension: %s", dim_str);
       return absl::InvalidArgumentError(error);
     }
 
     auto space_type = ParseSpaceType(space_type_str);
     if (!space_type) {
-      std::string error = absl::StrFormat("Invalid space type: %s", space_type_str);
+      std::string error =
+          absl::StrFormat("Invalid space type: %s", space_type_str);
       return absl::InvalidArgumentError(error);
     }
 
     if (!IsValidColumnName(vector_name)) {
-      std::string error = absl::StrFormat("Invalid vector name: %s", vector_name);
+      std::string error =
+          absl::StrFormat("Invalid vector name: %s", vector_name);
       return absl::InvalidArgumentError(error);
     }
     return CreateNamedVectorSpace(dim, *space_type, vector_name);

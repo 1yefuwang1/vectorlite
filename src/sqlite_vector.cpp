@@ -202,16 +202,17 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
                                VectorFromJson, nullptr, nullptr);
 
   if (rc != SQLITE_OK) {
-    *pzErrMsg = sqlite3_mprintf("Failed to create function vector_from_json: %s",
-                                sqlite3_errstr(rc));
+    *pzErrMsg = sqlite3_mprintf(
+        "Failed to create function vector_from_json: %s", sqlite3_errstr(rc));
     return rc;
   }
 
   rc = sqlite3_create_function(db, "vector_from_msgpack", 1, SQLITE_UTF8,
                                nullptr, VectorFromMsgPack, nullptr, nullptr);
   if (rc != SQLITE_OK) {
-    *pzErrMsg = sqlite3_mprintf(
-        "Failed to create function vector_from_msgpack: %s", sqlite3_errstr(rc));
+    *pzErrMsg =
+        sqlite3_mprintf("Failed to create function vector_from_msgpack: %s",
+                        sqlite3_errstr(rc));
     return rc;
   }
 

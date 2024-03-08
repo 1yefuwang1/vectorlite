@@ -4,8 +4,8 @@
 #include <optional>
 #include <string_view>
 
-#include "hnswlib/hnswlib.h"
 #include "absl/status/statusor.h"
+#include "hnswlib/hnswlib.h"
 
 namespace sqlite_vector {
 
@@ -15,7 +15,7 @@ enum class SpaceType {
   Cosine,
 };
 
-std::optional<SpaceType> ParseSpaceType(std::string_view space_type); 
+std::optional<SpaceType> ParseSpaceType(std::string_view space_type);
 
 struct VectorSpace {
   SpaceType type;
@@ -29,16 +29,19 @@ struct VectorSpace {
 
 struct NamedVectorSpace : public VectorSpace {
   std::string vector_name;
-  
+
   NamedVectorSpace(VectorSpace&& other) : VectorSpace(std::move(other)) {}
 
   // Parses a string into NamedVectorSpace.
   // This input is usually from the CREATE VIRTUAL TABLE statement.
-  // e.g. CREATE VIRTUAL TABLE my_vectors using sqlite_vector(my_vector(384, "l2"), "hnsw(max_elements=1000)")
-  // The `vector(384, "l2")` is the vector space string. Supported space type are "l2", "cos", "ip"
-  static absl::StatusOr<NamedVectorSpace> FromString(std::string_view space_str);
+  // e.g. CREATE VIRTUAL TABLE my_vectors using sqlite_vector(my_vector(384,
+  // "l2"), "hnsw(max_elements=1000)") The `vector(384, "l2")` is the vector
+  // space string. Supported space type are "l2", "cos", "ip"
+  static absl::StatusOr<NamedVectorSpace> FromString(
+      std::string_view space_str);
 };
 
-absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(size_t dim, SpaceType space_type, std::string_view vector_name);
+absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(
+    size_t dim, SpaceType space_type, std::string_view vector_name);
 
 }  // namespace sqlite_vector

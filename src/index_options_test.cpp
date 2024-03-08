@@ -32,7 +32,8 @@ TEST(ParseIndexOptions, ShouldFailWithoutMaxElements) {
       "hnsw(M=16,ef_construction=200,random_seed=100,allow_replace_deleted="
       "false)");
   EXPECT_FALSE(options.ok());
-  EXPECT_TRUE(absl::StrContains(options.status().message(), "max_elements is required"));
+  EXPECT_TRUE(absl::StrContains(options.status().message(),
+                                "max_elements is required"));
 }
 
 TEST(ParseIndexOptions, ShouldWorkWithAnyOrder) {
@@ -54,11 +55,13 @@ TEST(ParseIndexOptions, ShouldFailWithInvalidNumber) {
   EXPECT_FALSE(options.ok());
 
   options = sqlite_vector::IndexOptions::FromString(
-      "hnsw(M=16,max_elements=1111111111111111111111111111,ef_construction=200,random_"
+      "hnsw(M=16,max_elements=1111111111111111111111111111,ef_construction=200,"
+      "random_"
       "seed=100,allow_"
       "replace_deleted=false)");
   EXPECT_FALSE(options.ok());
-  EXPECT_TRUE(absl::StrContains(options.status().message(), "Cannot parse max_elements"));
+  EXPECT_TRUE(absl::StrContains(options.status().message(),
+                                "Cannot parse max_elements"));
 }
 
 TEST(ParseIndexOptions, ShouldFailWithNonHNSWString) {

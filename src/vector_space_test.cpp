@@ -22,21 +22,24 @@ TEST(ParseVectorSpace, ShouldRetturnNullOptForInvalidSpaceType) {
 }
 
 TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
-  auto l2 = sqlite_vector::CreateNamedVectorSpace(3, sqlite_vector::SpaceType::L2, "my_vector");
+  auto l2 = sqlite_vector::CreateNamedVectorSpace(
+      3, sqlite_vector::SpaceType::L2, "my_vector");
   EXPECT_TRUE(l2.ok());
   EXPECT_TRUE(l2->type == sqlite_vector::SpaceType::L2);
   EXPECT_TRUE(l2->normalize == false);
   EXPECT_TRUE(l2->space != nullptr);
   EXPECT_EQ(3, l2->dimension());
 
-  auto ip = sqlite_vector::CreateNamedVectorSpace(4, sqlite_vector::SpaceType::InnerProduct, "my_vector");
+  auto ip = sqlite_vector::CreateNamedVectorSpace(
+      4, sqlite_vector::SpaceType::InnerProduct, "my_vector");
   EXPECT_TRUE(ip.ok());
   EXPECT_TRUE(ip->type == sqlite_vector::SpaceType::InnerProduct);
   EXPECT_TRUE(ip->normalize == false);
   EXPECT_TRUE(ip->space != nullptr);
   EXPECT_EQ(4, ip->dimension());
 
-  auto cosine = sqlite_vector::CreateNamedVectorSpace(5, sqlite_vector::SpaceType::Cosine, "my_vector");
+  auto cosine = sqlite_vector::CreateNamedVectorSpace(
+      5, sqlite_vector::SpaceType::Cosine, "my_vector");
   EXPECT_TRUE(cosine->type == sqlite_vector::SpaceType::Cosine);
   EXPECT_TRUE(cosine.ok());
   EXPECT_TRUE(cosine->normalize == true);
@@ -45,13 +48,16 @@ TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
 }
 
 TEST(CreateVectorSpace, ShouldReturnErrorForDimOfZero) {
-  auto l2 = sqlite_vector::CreateNamedVectorSpace(0, sqlite_vector::SpaceType::L2, "my_vector");
+  auto l2 = sqlite_vector::CreateNamedVectorSpace(
+      0, sqlite_vector::SpaceType::L2, "my_vector");
   EXPECT_FALSE(l2.ok());
 
-  auto ip = sqlite_vector::CreateNamedVectorSpace(0, sqlite_vector::SpaceType::InnerProduct, "my_vector");
+  auto ip = sqlite_vector::CreateNamedVectorSpace(
+      0, sqlite_vector::SpaceType::InnerProduct, "my_vector");
   EXPECT_FALSE(ip.ok());
 
-  auto cosine = sqlite_vector::CreateNamedVectorSpace(0, sqlite_vector::SpaceType::Cosine, "my_vector");
+  auto cosine = sqlite_vector::CreateNamedVectorSpace(
+      0, sqlite_vector::SpaceType::Cosine, "my_vector");
   EXPECT_FALSE(cosine.ok());
 }
 
@@ -64,7 +70,8 @@ TEST(VectorSpace_FromString, ShouldWorkWithValidInput) {
   EXPECT_EQ(3, space->dimension());
   EXPECT_EQ("my_vec", space->vector_name);
 
-  space = sqlite_vector::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
+  space =
+      sqlite_vector::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
   EXPECT_TRUE(space.ok());
   EXPECT_TRUE(space->normalize == true);
   EXPECT_TRUE(space->space != nullptr);

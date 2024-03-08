@@ -7,11 +7,11 @@
 
 #include "absl/status/statusor.h"
 #include "hnswlib/hnswlib.h"
+#include "index_options.h"
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "vector.h"
 #include "vector_space.h"
-#include "index_options.h"
 
 namespace sqlite_vector {
 
@@ -44,12 +44,9 @@ class VirtualTable : public sqlite3_vtab {
     Vector query_vector;        // query vector
   };
 
-  
-
   ~VirtualTable();
 
-  VirtualTable(NamedVectorSpace space,
-               const IndexOptions& options)
+  VirtualTable(NamedVectorSpace space, const IndexOptions& options)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.space.get(), options.max_elements, options.M,
