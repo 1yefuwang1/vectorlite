@@ -319,7 +319,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   }
 
   if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "Vector(1st param) should be of type TEXT", -1);
+    sqlite3_result_error(ctx, "Vector(1st param) should be of type Blob", -1);
     return;
   }
 
