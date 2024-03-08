@@ -1,1 +1,1 @@
-cmake --preset release && cmake --build build/release 
+cmake --preset release && cmake --build build/release -j8

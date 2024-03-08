@@ -1,1 +1,1 @@
-cmake --preset dev && cmake --build build/dev
+cmake --preset dev && cmake --build build/dev -j8
