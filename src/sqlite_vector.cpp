@@ -1,3 +1,4 @@
+#include <absl/log/log.h>
 #include <absl/status/status.h>
 
 #include <string>
@@ -20,7 +21,8 @@ static void ShowInfo(sqlite3_context *ctx, int, sqlite3_value **) {
   std::string info =
       absl::StrFormat("sqlite_vector extension version %s, built with %s",
                       SQLITE_VECTOR_VERSION, simd);
-  sqlite3_result_text(ctx, info.c_str(), -1, nullptr);
+  DLOG(INFO) << "ShowInfo called: " << info;
+  sqlite3_result_text(ctx, info.c_str(), -1, SQLITE_TRANSIENT);
 }
 
 // VectorDistance takes two vectors and and space type, then outputs their
