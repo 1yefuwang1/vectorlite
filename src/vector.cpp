@@ -27,7 +27,7 @@ std::string Vector::ToMsgPack() const {
 
 absl::StatusOr<Vector> Vector::FromMsgPack(std::string_view json) {
   auto handle = msgpack::unpack(json.data(), json.size());
-  auto obj = handle.get();
+  auto& obj = handle.get();
   try {
     std::vector<float> result = obj.as<std::vector<float>>();
     return Vector(std::move(result));

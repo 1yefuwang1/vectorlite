@@ -53,7 +53,6 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
 
   rc = sqlite3_create_function(db, "vector_distance", 3, SQLITE_UTF8, nullptr,
                                sqlite_vector::VectorDistance, nullptr, nullptr);
-
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create function vector_distance: %s",
                                 sqlite3_errstr(rc));
@@ -62,10 +61,17 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
 
   rc = sqlite3_create_function(db, "vector_from_json", 1, SQLITE_UTF8, nullptr,
                                sqlite_vector::VectorFromJson, nullptr, nullptr);
-
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf(
         "Failed to create function vector_from_json: %s", sqlite3_errstr(rc));
+    return rc;
+  }
+
+  rc = sqlite3_create_function(db, "vector_to_json", 1, SQLITE_UTF8, nullptr,
+                               sqlite_vector::VectorToJson, nullptr, nullptr);
+  if (rc != SQLITE_OK) {
+    *pzErrMsg = sqlite3_mprintf("Failed to create function vector_to_json: %s",
+                                sqlite3_errstr(rc));
     return rc;
   }
 
@@ -79,6 +85,15 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
     return rc;
   }
 
+  rc =
+      sqlite3_create_function(db, "vector_to_msgpack", 1, SQLITE_UTF8, nullptr,
+                              sqlite_vector::VectorToMsgPack, nullptr, nullptr);
+  if (rc != SQLITE_OK) {
+    *pzErrMsg = sqlite3_mprintf(
+        "Failed to create function vector_to_msgpack: %s", sqlite3_errstr(rc));
+    return rc;
+  }
+
   rc = sqlite3_create_function(db, "knn_search", 2, SQLITE_UTF8, nullptr,
                                sqlite_vector::KnnSearch, nullptr, nullptr);
   if (rc != SQLITE_OK) {
@@ -89,7 +104,6 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
 
   rc = sqlite3_create_function(db, "knn_param", 2, SQLITE_UTF8, nullptr,
                                sqlite_vector::KnnParamFunc, nullptr, nullptr);
-
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_param function: %s",
                                 sqlite3_errstr(rc));

@@ -1,4 +1,5 @@
 #include "sqlite_functions.h"
+#include <sqlite3ext.h>
 
 #include <string>
 
@@ -124,7 +125,7 @@ void VectorFromMsgPack(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   if (argc != 1) {
     std::string err = absl::StrFormat(
         "vector_from_msgpack expects 1 argument but %d provided", argc);
-    sqlite3_result_error(ctx, err.c_str(), -1);
+    sqlite3_result_error(ctx, err.c_str(), err.length());
     return;
   }
 
@@ -141,12 +142,72 @@ void VectorFromMsgPack(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   if (!vector.ok()) {
     std::string err = absl::StrFormat("Failed to parse vector due to: %s",
                                       vector.status().message());
-    sqlite3_result_error(ctx, err.c_str(), -1);
+    sqlite3_result_error(ctx, err.c_str(), err.length());
     return;
   }
 
   sqlite3_result_blob(ctx, vector->ToBlob().data(), vector->ToBlob().size(),
                       SQLITE_TRANSIENT);
+  return;
+}
+
+void VectorToMsgPack(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+  if (argc != 1) {
+    std::string err = absl::StrFormat(
+        "vector_to_msgpack expects 1 argument but %d provided", argc);
+    sqlite3_result_error(ctx, err.c_str(), err.length());
+    return;
+  }
+
+  if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
+    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob", -1);
+    return;
+  }
+
+  std::string_view vector_blob(
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
+      sqlite3_value_bytes(argv[0]));
+
+  // todo: avoid copying by not constructing a new vector. Because we only need read-only access here.
+  auto vector = sqlite_vector::Vector::FromBlob(vector_blob);
+  if (!vector.ok()) {
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vector.status().message());
+    sqlite3_result_error(ctx, err.c_str(), err.length());
+    return;
+  }
+
+  auto msgpack = vector->ToMsgPack();
+  sqlite3_result_blob(ctx, msgpack.data(), msgpack.size(), SQLITE_TRANSIENT);
+  return;
+}
+
+void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+  if (argc != 1) {
+    std::string err = absl::StrFormat(
+        "vector_to_msgpack expects 1 argument but %d provided", argc);
+    sqlite3_result_error(ctx, err.c_str(), err.length());
+    return;
+  }
+
+  if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
+    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob", -1);
+    return;
+  }
+
+  std::string_view vector_blob(
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
+      sqlite3_value_bytes(argv[0]));
+
+  // todo: avoid copying by not constructing a new vector. Because we only need read-only access here.
+  auto vector = sqlite_vector::Vector::FromBlob(vector_blob);
+  if (!vector.ok()) {
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vector.status().message());
+    sqlite3_result_error(ctx, err.c_str(), err.length());
+    return;
+  }
+
+  auto json = vector->ToJSON();
+  sqlite3_result_blob(ctx, json.data(), json.size(), SQLITE_TRANSIENT);
   return;
 }
 
