@@ -285,7 +285,8 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
           query_vector.dim(), vtab->dimension());
       return SQLITE_ERROR;
     } else {
-      cursor->query_vector = std::move(vtab->space_.normalize ? query_vector.Normalize() : query_vector);
+      cursor->query_vector = std::move(
+          vtab->space_.normalize ? query_vector.Normalize() : query_vector);
       auto knn = vtab->index_->searchKnnCloserFirst(
           cursor->query_vector.data().data(), k);
 

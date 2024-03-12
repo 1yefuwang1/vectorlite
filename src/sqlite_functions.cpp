@@ -1,4 +1,5 @@
 #include "sqlite_functions.h"
+
 #include <sqlite3ext.h>
 
 #include <string>
@@ -160,7 +161,8 @@ void VectorToMsgPack(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob", -1);
+    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob",
+                         -1);
     return;
   }
 
@@ -168,10 +170,12 @@ void VectorToMsgPack(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
       reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  // todo: avoid copying by not constructing a new vector. Because we only need read-only access here.
+  // todo: avoid copying by not constructing a new vector. Because we only need
+  // read-only access here.
   auto vector = sqlite_vector::Vector::FromBlob(vector_blob);
   if (!vector.ok()) {
-    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vector.status().message());
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s",
+                                      vector.status().message());
     sqlite3_result_error(ctx, err.c_str(), err.length());
     return;
   }
@@ -190,7 +194,8 @@ void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob", -1);
+    sqlite3_result_error(ctx, "vector_to_msgpack expects vector of type blob",
+                         -1);
     return;
   }
 
@@ -198,10 +203,12 @@ void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
       reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  // todo: avoid copying by not constructing a new vector. Because we only need read-only access here.
+  // todo: avoid copying by not constructing a new vector. Because we only need
+  // read-only access here.
   auto vector = sqlite_vector::Vector::FromBlob(vector_blob);
   if (!vector.ok()) {
-    std::string err = absl::StrFormat("Failed to parse vector due to: %s", vector.status().message());
+    std::string err = absl::StrFormat("Failed to parse vector due to: %s",
+                                      vector.status().message());
     sqlite3_result_error(ctx, err.c_str(), err.length());
     return;
   }
