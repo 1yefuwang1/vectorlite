@@ -33,4 +33,13 @@ std::optional<std::string_view> DetectSIMD() {
 #endif
 }
 
+std::pair<bool, std::string_view> IsMinimumSqlite3VersionMet() {
+  int version = sqlite3_libversion_number();
+  // Checks whether sqlite3_vtab_in() is available.
+  if (version < 3038000) {
+    return {false, "sqlite version 3.38.0 or higher is required."};
+  }
+  return {true, ""};
+}
+
 }  // end namespace sqlite_vector
