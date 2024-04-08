@@ -265,7 +265,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
       }
     } else {
       DLOG(INFO) << "Unknown constraint iColumn=" << column
-                 << ", op=" << constraint.op;
+                 << ", op=" << static_cast<int>(constraint.op);
     }
   }
   char* index_str =
@@ -365,6 +365,7 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   }
 
   bool need_rowid_filter = !rowid_in.empty();
+  DLOG(INFO) << "need_rowid_filter: " << need_rowid_filter;
   RowidFilter filter(std::move(rowid_in));
   
   auto knn =
