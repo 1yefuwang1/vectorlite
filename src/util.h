@@ -1,8 +1,8 @@
 #pragma once
 
-#include <utility>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace sqlite_vector {
 
@@ -19,10 +19,5 @@ bool IsValidColumnName(std::string_view name);
 // Returns which SIMD instruction set is used at build time.
 // e.g. SSE, AVX, AVX512
 std::optional<std::string_view> DetectSIMD();
-
-// Checks whether the minimum required version of SQLite3 is met.
-// If met, returns (true, "")
-// If not met, returns false and a human readable explanation.
-std::pair<bool, std::string_view> IsMinimumSqlite3VersionMet();
 
 }  // end namespace sqlite_vector

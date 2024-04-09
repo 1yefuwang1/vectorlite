@@ -1,4 +1,5 @@
 #include "virtual_table.h"
+#include <sqlite3.h>
 
 #include <exception>
 #include <limits>
@@ -224,6 +225,18 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
   }
 }
 
+// Checks whether the minimum required version of SQLite3 is met.
+// If met, returns (version, "")
+// If not met, returns version and a human readable explanation.
+static std::pair<int, std::string_view> IsMinimumSqlite3VersionMet() {
+  int version = sqlite3_libversion_number();
+  // Checks whether sqlite3_vtab_in() is available.
+  if (version < 3038000) {
+    return {version, "sqlite version 3.38.0 or higher is required."};
+  }
+  return {version, ""};
+}
+
 int VirtualTable::BestIndex(sqlite3_vtab* vtab,
                             sqlite3_index_info* index_info) {
   SQLITE_VECTOR_ASSERT(vtab != nullptr);
@@ -245,14 +258,15 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
       selected_constraints.push_back(IndexConstraintUsage::kVector);
     } else if (column == -1) {
       // in this case the constraint is on rowid
-      DLOG(INFO) << "Found rowid constraint";
+      DLOG(INFO) << "rowid constraint found";
       if (constraint.op == SQLITE_INDEX_CONSTRAINT_EQ) {
-        auto [met, reason] = IsMinimumSqlite3VersionMet();
-        if (!met) {
+        auto [version, notMetReason] = IsMinimumSqlite3VersionMet();
+        if (!notMetReason.empty()) {
           SetZErrMsg(&vtab->zErrMsg, "SQLite version is too old: %s",
-                     reason.data());
+                     notMetReason.data());
           return SQLITE_ERROR;
         }
+        DLOG(INFO) << "sqlite3 version check passed: " << version;
         // For more details, check https://sqlite.org/c3ref/vtab_in.html
         if (!sqlite3_vtab_in(index_info, i, 1)) {
           SetZErrMsg(&vtab->zErrMsg,
