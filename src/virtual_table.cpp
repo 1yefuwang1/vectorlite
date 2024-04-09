@@ -244,6 +244,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
 
   int argvIndex = 0;
   std::vector<int> selected_constraints;
+  bool required_constraint_found = false;
   for (int i = 0; i < index_info->nConstraint; i++) {
     const auto& constraint = index_info->aConstraint[i];
     if (!constraint.usable) {
@@ -256,6 +257,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
       index_info->aConstraintUsage[i].argvIndex = ++argvIndex;
       index_info->aConstraintUsage[i].omit = 1;
       selected_constraints.push_back(IndexConstraintUsage::kVector);
+      required_constraint_found = true;
     } else if (column == -1) {
       // in this case the constraint is on rowid
       DLOG(INFO) << "rowid constraint found";
@@ -282,6 +284,12 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
                  << ", op=" << static_cast<int>(constraint.op);
     }
   }
+
+  if (!required_constraint_found) {
+    SetZErrMsg(&vtab->zErrMsg, "knn_search() constraint is required");
+    return SQLITE_ERROR;
+  }
+
   char* index_str =
       static_cast<char*>(sqlite3_malloc(selected_constraints.size() + 1));
   if (!index_str) {
