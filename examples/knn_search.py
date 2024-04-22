@@ -1,7 +1,7 @@
 import sqlite3
 import numpy as np
 """
-Example of using sqlite-vector extension to perform kNN search on a table of vectors.
+Example of using vectorlite extension to perform kNN search on a table of vectors.
 """
 
 dim = 16
@@ -14,14 +14,14 @@ data = np.float32(np.random.random((num_elements, dim)))
 conn = sqlite3.connect(':memory:')
 conn.enable_load_extension(True)
 
-conn.load_extension('../build/dev/libsqlite-vector.so')
+conn.load_extension('../build/dev/libvectorlite.so')
 
 cur = conn.cursor()
 
 print('Trying to create virtual table for vector search.')
 # Below statement creates a virtual table named 'x' with one column called 'my_embedding' which has a dimension of 16, a an implict rowid column.
 # my_embedding holds vectors that can be searched based on L2 distance using HNSW index.
-cur.execute(f'create virtual table x using vector_search(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=100,M=16))')
+cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=100,M=16))')
 print("Adding %d elements" % (len(data)))
 for i in range(num_elements):
     cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, data[i].tobytes()))

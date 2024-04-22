@@ -4,7 +4,7 @@
 #include "gtest/gtest.h"
 
 TEST(ParseIndexOptions, ShouldWorkWithValidInput) {
-  auto options = sqlite_vector::IndexOptions::FromString(
+  auto options = vectorlite::IndexOptions::FromString(
       "hnsw(max_elements=1000,M=32,ef_construction=400,random_seed=10000,allow_"
       "replace_deleted=true)");
   EXPECT_TRUE(options.ok());
@@ -17,7 +17,7 @@ TEST(ParseIndexOptions, ShouldWorkWithValidInput) {
 
 TEST(ParseIndexOptions, ShouldWorkWithOnlyMaxElements) {
   auto options =
-      sqlite_vector::IndexOptions::FromString("hnsw(max_elements=1000)");
+      vectorlite::IndexOptions::FromString("hnsw(max_elements=1000)");
   EXPECT_TRUE(options.ok());
   EXPECT_EQ(1000, options->max_elements);
   // Below are default values.
@@ -28,7 +28,7 @@ TEST(ParseIndexOptions, ShouldWorkWithOnlyMaxElements) {
 }
 
 TEST(ParseIndexOptions, ShouldFailWithoutMaxElements) {
-  auto options = sqlite_vector::IndexOptions::FromString(
+  auto options = vectorlite::IndexOptions::FromString(
       "hnsw(M=16,ef_construction=200,random_seed=100,allow_replace_deleted="
       "false)");
   EXPECT_FALSE(options.ok());
@@ -37,7 +37,7 @@ TEST(ParseIndexOptions, ShouldFailWithoutMaxElements) {
 }
 
 TEST(ParseIndexOptions, ShouldWorkWithAnyOrder) {
-  auto options = sqlite_vector::IndexOptions::FromString(
+  auto options = vectorlite::IndexOptions::FromString(
       "hnsw(M=16,max_elements=1000,ef_construction=200,random_seed=100,allow_"
       "replace_deleted=false)");
   EXPECT_TRUE(options.ok());
@@ -49,12 +49,12 @@ TEST(ParseIndexOptions, ShouldWorkWithAnyOrder) {
 }
 
 TEST(ParseIndexOptions, ShouldFailWithInvalidNumber) {
-  auto options = sqlite_vector::IndexOptions::FromString(
+  auto options = vectorlite::IndexOptions::FromString(
       "hnsw(M=16,max_elements=aaa,ef_construction=200,random_seed=100,allow_"
       "replace_deleted=false)");
   EXPECT_FALSE(options.ok());
 
-  options = sqlite_vector::IndexOptions::FromString(
+  options = vectorlite::IndexOptions::FromString(
       "hnsw(M=16,max_elements=1111111111111111111111111111,ef_construction=200,"
       "random_"
       "seed=100,allow_"
@@ -65,7 +65,7 @@ TEST(ParseIndexOptions, ShouldFailWithInvalidNumber) {
 }
 
 TEST(ParseIndexOptions, ShouldFailWithNonHNSWString) {
-  auto options = sqlite_vector::IndexOptions::FromString(
+  auto options = vectorlite::IndexOptions::FromString(
       "xxxx(M=16,max_elements=1000,ef_construction=200,random_seed=100,allow_"
       "replace_deleted=false)");
   EXPECT_FALSE(options.ok());

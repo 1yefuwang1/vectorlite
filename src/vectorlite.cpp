@@ -14,7 +14,7 @@
 
 SQLITE_EXTENSION_INIT1;
 
-using sqlite_vector::VirtualTable;
+using vectorlite::VirtualTable;
 
 static sqlite3_module vector_search_module = {
     /* iVersion    */ 3,
@@ -46,13 +46,13 @@ static sqlite3_module vector_search_module = {
 extern "C" {
 #endif
 
-SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
+VECTORLITE_EXPORT int sqlite3_extension_init(
     sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi) {
   int rc = SQLITE_OK;
   SQLITE_EXTENSION_INIT2(pApi);
 
   rc = sqlite3_create_function(db, "vector_distance", 3, SQLITE_UTF8, nullptr,
-                               sqlite_vector::VectorDistance, nullptr, nullptr);
+                               vectorlite::VectorDistance, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create function vector_distance: %s",
                                 sqlite3_errstr(rc));
@@ -60,7 +60,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "vector_from_json", 1, SQLITE_UTF8, nullptr,
-                               sqlite_vector::VectorFromJson, nullptr, nullptr);
+                               vectorlite::VectorFromJson, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf(
         "Failed to create function vector_from_json: %s", sqlite3_errstr(rc));
@@ -68,7 +68,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "vector_to_json", 1, SQLITE_UTF8, nullptr,
-                               sqlite_vector::VectorToJson, nullptr, nullptr);
+                               vectorlite::VectorToJson, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create function vector_to_json: %s",
                                 sqlite3_errstr(rc));
@@ -76,7 +76,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "vector_from_msgpack", 1, SQLITE_UTF8,
-                               nullptr, sqlite_vector::VectorFromMsgPack,
+                               nullptr, vectorlite::VectorFromMsgPack,
                                nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg =
@@ -87,7 +87,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
 
   rc =
       sqlite3_create_function(db, "vector_to_msgpack", 1, SQLITE_UTF8, nullptr,
-                              sqlite_vector::VectorToMsgPack, nullptr, nullptr);
+                              vectorlite::VectorToMsgPack, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf(
         "Failed to create function vector_to_msgpack: %s", sqlite3_errstr(rc));
@@ -95,7 +95,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "knn_search", 2, SQLITE_UTF8, nullptr,
-                               sqlite_vector::KnnSearch, nullptr, nullptr);
+                               vectorlite::KnnSearch, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_search function: %s",
                                 sqlite3_errstr(rc));
@@ -103,7 +103,7 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc = sqlite3_create_function(db, "knn_param", 2, SQLITE_UTF8, nullptr,
-                               sqlite_vector::KnnParamFunc, nullptr, nullptr);
+                               vectorlite::KnnParamFunc, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_param function: %s",
                                 sqlite3_errstr(rc));
@@ -111,15 +111,15 @@ SQLITE_VECTOR_EXPORT int sqlite3_extension_init(
   }
 
   rc =
-      sqlite3_create_function(db, "sqlite_vector_info", 0, SQLITE_UTF8, nullptr,
-                              sqlite_vector::ShowInfo, nullptr, nullptr);
+      sqlite3_create_function(db, "vectorlite_info", 0, SQLITE_UTF8, nullptr,
+                              vectorlite::ShowInfo, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf(
-        "Failed to create sqlite_vector_info function: %s", sqlite3_errstr(rc));
+        "Failed to create vectorlite_info function: %s", sqlite3_errstr(rc));
     return rc;
   }
 
-  rc = sqlite3_create_module(db, "vector_search", &vector_search_module,
+  rc = sqlite3_create_module(db, "vectorlite", &vector_search_module,
                              nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create module vector_search: %s",

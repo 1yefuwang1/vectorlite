@@ -9,7 +9,7 @@
 #include "absl/strings/str_format.h"
 #include "re2/re2.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 absl::StatusOr<IndexOptions> IndexOptions::FromString(
     std::string_view index_options) {
@@ -72,4 +72,4 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
   return options;
 }
 
-}  // namespace sqlite_vector
+}  // namespace vectorlite

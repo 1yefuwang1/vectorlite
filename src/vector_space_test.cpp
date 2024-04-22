@@ -3,44 +3,44 @@
 #include "gtest/gtest.h"
 
 TEST(ParseVectorSpace, ShouldSupport_L2_InnerProduct_Cosine) {
-  auto l2 = sqlite_vector::ParseSpaceType("l2");
+  auto l2 = vectorlite::ParseSpaceType("l2");
   EXPECT_TRUE(l2);
-  EXPECT_TRUE(*l2 == sqlite_vector::SpaceType::L2);
+  EXPECT_TRUE(*l2 == vectorlite::SpaceType::L2);
 
-  auto ip = sqlite_vector::ParseSpaceType("ip");
+  auto ip = vectorlite::ParseSpaceType("ip");
   EXPECT_TRUE(ip);
-  EXPECT_TRUE(*ip == sqlite_vector::SpaceType::InnerProduct);
+  EXPECT_TRUE(*ip == vectorlite::SpaceType::InnerProduct);
 
-  auto cosine = sqlite_vector::ParseSpaceType("cosine");
+  auto cosine = vectorlite::ParseSpaceType("cosine");
   EXPECT_TRUE(cosine);
-  EXPECT_TRUE(*cosine == sqlite_vector::SpaceType::Cosine);
+  EXPECT_TRUE(*cosine == vectorlite::SpaceType::Cosine);
 }
 
 TEST(ParseVectorSpace, ShouldRetturnNullOptForInvalidSpaceType) {
-  auto l2 = sqlite_vector::ParseSpaceType("aaa");
+  auto l2 = vectorlite::ParseSpaceType("aaa");
   EXPECT_FALSE(l2);
 }
 
 TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
-  auto l2 = sqlite_vector::CreateNamedVectorSpace(
-      3, sqlite_vector::SpaceType::L2, "my_vector");
+  auto l2 = vectorlite::CreateNamedVectorSpace(
+      3, vectorlite::SpaceType::L2, "my_vector");
   EXPECT_TRUE(l2.ok());
-  EXPECT_TRUE(l2->type == sqlite_vector::SpaceType::L2);
+  EXPECT_TRUE(l2->type == vectorlite::SpaceType::L2);
   EXPECT_TRUE(l2->normalize == false);
   EXPECT_TRUE(l2->space != nullptr);
   EXPECT_EQ(3, l2->dimension());
 
-  auto ip = sqlite_vector::CreateNamedVectorSpace(
-      4, sqlite_vector::SpaceType::InnerProduct, "my_vector");
+  auto ip = vectorlite::CreateNamedVectorSpace(
+      4, vectorlite::SpaceType::InnerProduct, "my_vector");
   EXPECT_TRUE(ip.ok());
-  EXPECT_TRUE(ip->type == sqlite_vector::SpaceType::InnerProduct);
+  EXPECT_TRUE(ip->type == vectorlite::SpaceType::InnerProduct);
   EXPECT_TRUE(ip->normalize == false);
   EXPECT_TRUE(ip->space != nullptr);
   EXPECT_EQ(4, ip->dimension());
 
-  auto cosine = sqlite_vector::CreateNamedVectorSpace(
-      5, sqlite_vector::SpaceType::Cosine, "my_vector");
-  EXPECT_TRUE(cosine->type == sqlite_vector::SpaceType::Cosine);
+  auto cosine = vectorlite::CreateNamedVectorSpace(
+      5, vectorlite::SpaceType::Cosine, "my_vector");
+  EXPECT_TRUE(cosine->type == vectorlite::SpaceType::Cosine);
   EXPECT_TRUE(cosine.ok());
   EXPECT_TRUE(cosine->normalize == true);
   EXPECT_TRUE(cosine->space != nullptr);
@@ -48,42 +48,42 @@ TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
 }
 
 TEST(CreateVectorSpace, ShouldReturnErrorForDimOfZero) {
-  auto l2 = sqlite_vector::CreateNamedVectorSpace(
-      0, sqlite_vector::SpaceType::L2, "my_vector");
+  auto l2 = vectorlite::CreateNamedVectorSpace(
+      0, vectorlite::SpaceType::L2, "my_vector");
   EXPECT_FALSE(l2.ok());
 
-  auto ip = sqlite_vector::CreateNamedVectorSpace(
-      0, sqlite_vector::SpaceType::InnerProduct, "my_vector");
+  auto ip = vectorlite::CreateNamedVectorSpace(
+      0, vectorlite::SpaceType::InnerProduct, "my_vector");
   EXPECT_FALSE(ip.ok());
 
-  auto cosine = sqlite_vector::CreateNamedVectorSpace(
-      0, sqlite_vector::SpaceType::Cosine, "my_vector");
+  auto cosine = vectorlite::CreateNamedVectorSpace(
+      0, vectorlite::SpaceType::Cosine, "my_vector");
   EXPECT_FALSE(cosine.ok());
 }
 
 TEST(VectorSpace_FromString, ShouldWorkWithValidInput) {
-  auto space = sqlite_vector::NamedVectorSpace::FromString("my_vec(3, \"l2\")");
+  auto space = vectorlite::NamedVectorSpace::FromString("my_vec(3, \"l2\")");
   EXPECT_TRUE(space.ok());
   EXPECT_TRUE(space->normalize == false);
   EXPECT_TRUE(space->space != nullptr);
-  EXPECT_TRUE(space->type == sqlite_vector::SpaceType::L2);
+  EXPECT_TRUE(space->type == vectorlite::SpaceType::L2);
   EXPECT_EQ(3, space->dimension());
   EXPECT_EQ("my_vec", space->vector_name);
 
   space =
-      sqlite_vector::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
+      vectorlite::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
   EXPECT_TRUE(space.ok());
   EXPECT_TRUE(space->normalize == true);
   EXPECT_TRUE(space->space != nullptr);
-  EXPECT_TRUE(space->type == sqlite_vector::SpaceType::Cosine);
+  EXPECT_TRUE(space->type == vectorlite::SpaceType::Cosine);
   EXPECT_EQ(10086, space->dimension());
   EXPECT_EQ("my_vec", space->vector_name);
 
-  space = sqlite_vector::NamedVectorSpace::FromString("my_vec(42, \"ip\")");
+  space = vectorlite::NamedVectorSpace::FromString("my_vec(42, \"ip\")");
   EXPECT_TRUE(space.ok());
   EXPECT_TRUE(space->normalize == false);
   EXPECT_TRUE(space->space != nullptr);
-  EXPECT_TRUE(space->type == sqlite_vector::SpaceType::InnerProduct);
+  EXPECT_TRUE(space->type == vectorlite::SpaceType::InnerProduct);
   EXPECT_EQ(42, space->dimension());
   EXPECT_EQ("my_vec", space->vector_name);
 }

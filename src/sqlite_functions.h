@@ -2,7 +2,7 @@
 
 #include "sqlite3ext.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 // Shows a human-readable string about version, what SIMD instruction is used at
 // build time.
@@ -20,4 +20,4 @@ void VectorToJson(sqlite3_context* ctx, int argc, sqlite3_value** argv);
 
 void VectorToMsgPack(sqlite3_context* ctx, int argc, sqlite3_value** argv);
 
-}  // namespace sqlite_vector
+}  // namespace vectorlite

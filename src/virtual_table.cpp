@@ -21,7 +21,7 @@
 
 extern const sqlite3_api_routines* sqlite3_api;
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 enum ColumnIndexInTable {
   kColumnIndexVector,
@@ -129,27 +129,27 @@ VirtualTable::~VirtualTable() {
 }
 
 int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
-  SQLITE_VECTOR_ASSERT(pVTab != nullptr);
+  VECTORLITE_ASSERT(pVTab != nullptr);
   delete static_cast<VirtualTable*>(pVTab);
   return SQLITE_OK;
 }
 
 int VirtualTable::Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor) {
-  SQLITE_VECTOR_ASSERT(pVtab != nullptr);
-  SQLITE_VECTOR_ASSERT(ppCursor != nullptr);
+  VECTORLITE_ASSERT(pVtab != nullptr);
+  VECTORLITE_ASSERT(ppCursor != nullptr);
   *ppCursor = new Cursor(static_cast<VirtualTable*>(pVtab));
   return SQLITE_OK;
 }
 
 int VirtualTable::Close(sqlite3_vtab_cursor* pCursor) {
-  SQLITE_VECTOR_ASSERT(pCursor != nullptr);
+  VECTORLITE_ASSERT(pCursor != nullptr);
   delete static_cast<Cursor*>(pCursor);
   return SQLITE_OK;
 }
 
 int VirtualTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
-  SQLITE_VECTOR_ASSERT(pCur != nullptr);
-  SQLITE_VECTOR_ASSERT(pRowid != nullptr);
+  VECTORLITE_ASSERT(pCur != nullptr);
+  VECTORLITE_ASSERT(pRowid != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   if (cursor->current_row != cursor->result.cend()) {
@@ -161,14 +161,14 @@ int VirtualTable::Rowid(sqlite3_vtab_cursor* pCur, sqlite_int64* pRowid) {
 }
 
 int VirtualTable::Eof(sqlite3_vtab_cursor* pCur) {
-  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  VECTORLITE_ASSERT(pCur != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   return cursor->current_row == cursor->result.cend();
 }
 
 int VirtualTable::Next(sqlite3_vtab_cursor* pCur) {
-  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  VECTORLITE_ASSERT(pCur != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   if (cursor->current_row != cursor->result.cend()) {
@@ -183,7 +183,7 @@ absl::StatusOr<Vector> VirtualTable::GetVectorByRowid(int64_t rowid) const {
     // TODO: handle cases where sizeof(rowid) != sizeof(hnswlib::labeltype)
     std::vector<float> vec =
         index_->getDataByLabel<float>(static_cast<hnswlib::labeltype>(rowid));
-    SQLITE_VECTOR_ASSERT(vec.size() == dimension());
+    VECTORLITE_ASSERT(vec.size() == dimension());
     return Vector(std::move(vec));
   } catch (const std::runtime_error& ex) {
     return absl::Status(absl::StatusCode::kNotFound, ex.what());
@@ -192,8 +192,8 @@ absl::StatusOr<Vector> VirtualTable::GetVectorByRowid(int64_t rowid) const {
 
 int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
                          int N) {
-  SQLITE_VECTOR_ASSERT(pCur != nullptr);
-  SQLITE_VECTOR_ASSERT(pCtx != nullptr);
+  VECTORLITE_ASSERT(pCur != nullptr);
+  VECTORLITE_ASSERT(pCtx != nullptr);
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   if (cursor->current_row == cursor->result.cend()) {
@@ -239,8 +239,8 @@ static std::pair<int, std::string_view> IsMinimumSqlite3VersionMet() {
 
 int VirtualTable::BestIndex(sqlite3_vtab* vtab,
                             sqlite3_index_info* index_info) {
-  SQLITE_VECTOR_ASSERT(vtab != nullptr);
-  SQLITE_VECTOR_ASSERT(index_info != nullptr);
+  VECTORLITE_ASSERT(vtab != nullptr);
+  VECTORLITE_ASSERT(index_info != nullptr);
 
   int argvIndex = 0;
   std::vector<int> selected_constraints;
@@ -302,7 +302,7 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
     } else if (selected_constraints[i] == IndexConstraintUsage::kRowid) {
       index_str[i] = 'i';
     } else {
-      SQLITE_VECTOR_ASSERT(false);
+      VECTORLITE_ASSERT(false);
     }
   }
   index_str[selected_constraints.size()] = '\0';
@@ -327,9 +327,9 @@ class RowidFilter : public hnswlib::BaseFilterFunctor {
 
 int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
                          const char* idxStr, int argc, sqlite3_value** argv) {
-  SQLITE_VECTOR_ASSERT(pCur != nullptr);
+  VECTORLITE_ASSERT(pCur != nullptr);
   Cursor* cursor = static_cast<Cursor*>(pCur);
-  SQLITE_VECTOR_ASSERT(pCur->pVtab != nullptr);
+  VECTORLITE_ASSERT(pCur->pVtab != nullptr);
 
   DLOG(INFO) << "Filter called with idxNum=" << idxNum << ", idxStr=" << idxStr
              << ", argc=" << argc;
@@ -393,7 +393,7 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   auto knn =
       vtab->index_->searchKnnCloserFirst(cursor->query_vector.data().data(), k, need_rowid_filter ? &filter : nullptr);
 
-  SQLITE_VECTOR_ASSERT(cursor->result.empty());
+  VECTORLITE_ASSERT(cursor->result.empty());
 
   cursor->result = std::move(knn);
   cursor->current_row = cursor->result.cbegin();
@@ -454,7 +454,7 @@ int VirtualTable::FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
                                void (**pxFunc)(sqlite3_context*, int,
                                                sqlite3_value**),
                                void** ppArg) {
-  SQLITE_VECTOR_ASSERT(pVtab != nullptr);
+  VECTORLITE_ASSERT(pVtab != nullptr);
   if (std::string_view(zName) == "knn_search") {
     *pxFunc = KnnSearch;
     *ppArg = nullptr;
@@ -522,4 +522,4 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
   }
 }
 
-}  // end namespace sqlite_vector
+}  // end namespace vectorlite

@@ -1,1 +1,1 @@
-#define SQLITE_VECTOR_VERSION "@sqlite-vector_VERSION@"
+#define VECTORLITE_VERSION "@vectorlite_VERSION@"

@@ -17,7 +17,7 @@
 #include "rapidjson/writer.h"
 #include "vector_space.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 std::string Vector::ToMsgPack() const {
   msgpack::sbuffer sbuf;
@@ -126,4 +126,4 @@ Vector Vector::Normalize() const {
   return Vector(std::move(normalized));
 }
 
-}  // namespace sqlite_vector
+}  // namespace vectorlite

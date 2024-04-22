@@ -9,7 +9,7 @@
 #include "sqlite3.h"
 #include "vector.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 bool IsValidColumnName(std::string_view name) {
   if (name.empty() || sqlite3_keyword_check(name.data(), name.size()) != 0) {
@@ -33,4 +33,4 @@ std::optional<std::string_view> DetectSIMD() {
 #endif
 }
 
-}  // end namespace sqlite_vector
+}  // end namespace vectorlite

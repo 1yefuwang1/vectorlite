@@ -4,7 +4,7 @@
 #include <string_view>
 #include <utility>
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 // Tests whether the given string is a valid column name in SQLite.
 // Requirements are:
@@ -20,4 +20,4 @@ bool IsValidColumnName(std::string_view name);
 // e.g. SSE, AVX, AVX512
 std::optional<std::string_view> DetectSIMD();
 
-}  // end namespace sqlite_vector
+}  // end namespace vectorlite

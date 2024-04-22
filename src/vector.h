@@ -8,7 +8,7 @@
 #include "macros.h"
 #include "vector_space.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 class Vector {
  public:
@@ -48,4 +48,4 @@ class Vector {
 absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2,
                                SpaceType space);
 
-}  // namespace sqlite_vector
+}  // namespace vectorlite

@@ -6,7 +6,7 @@
 #include "re2/re2.h"
 #include "util.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 std::optional<SpaceType> ParseSpaceType(std::string_view space_type) {
   if (space_type == "l2") {
@@ -97,4 +97,4 @@ size_t VectorSpace::dimension() const {
   return *reinterpret_cast<size_t*>(space->get_dist_func_param());
 }
 
-}  // end namespace sqlite_vector
+}  // end namespace vectorlite

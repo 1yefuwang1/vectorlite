@@ -13,7 +13,7 @@
 #include "vector.h"
 #include "vector_space.h"
 
-namespace sqlite_vector {
+namespace vectorlite {
 
 // Note there shouldn't be any virtual functions in this class.
 // Because VirtualTable* is expected to be static_cast-ed to sqlite3_vtab*.
@@ -35,7 +35,7 @@ class VirtualTable : public sqlite3_vtab {
 
     Cursor(VirtualTable* vtab)
         : result(), current_row(result.cend()), query_vector() {
-      SQLITE_VECTOR_ASSERT(vtab != nullptr);
+      VECTORLITE_ASSERT(vtab != nullptr);
       pVtab = vtab;
     }
 
@@ -52,8 +52,8 @@ class VirtualTable : public sqlite3_vtab {
             space_.space.get(), options.max_elements, options.M,
             options.ef_construction, options.random_seed,
             options.allow_replace_deleted)) {
-    SQLITE_VECTOR_ASSERT(space_.space != nullptr);
-    SQLITE_VECTOR_ASSERT(index_ != nullptr);
+    VECTORLITE_ASSERT(space_.space != nullptr);
+    VECTORLITE_ASSERT(index_ != nullptr);
   }
 
   size_t dimension() const { return space_.dimension(); }
@@ -105,4 +105,4 @@ void KnnSearch(sqlite3_context* context, int argc, sqlite3_value** argv);
 // including inpupt vector, k
 void KnnParamFunc(sqlite3_context* context, int argc, sqlite3_value** argv);
 
-}  // end namespace sqlite_vector
+}  // end namespace vectorlite
