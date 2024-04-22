@@ -1,8 +1,12 @@
 import sqlite3
+import apsw 
 import numpy as np
+import os
 """
 Example of using vectorlite extension to perform kNN search on a table of vectors.
 """
+
+use_apsw = os.environ.get('USE_APSW', '0') == '1'
 
 dim = 16
 num_elements = 10000
@@ -10,8 +14,8 @@ num_elements = 10000
 # Generating sample data
 data = np.float32(np.random.random((num_elements, dim)))
 
-# Declaring index
-conn = sqlite3.connect(':memory:')
+# create connection to in-memory database
+conn = apsw.Connection(':memory:') if use_apsw else sqlite3.connect(':memory:')
 conn.enable_load_extension(True)
 
 conn.load_extension('../build/dev/libvectorlite.so')
@@ -27,11 +31,13 @@ for i in range(num_elements):
     cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, data[i].tobytes()))
 
 # Search for 10 nearest neighbors of data[0]
+# distance here is a hidden column.
 cur.execute('select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?))', (data[0].tobytes(), 10))
 print(cur.fetchall())
 
 # Optionally, rowid can be filtered using 'rowid in (...)'. The rowid filter is pushed down to HNSW index and is efficient.
-# Please note: 'rowid in (...)' is only supported for sqlite3 version >= 3.38.0
+# Please note: 'rowid in (...)' is only supported for sqlite3 version >= 3.38.0. The built-in sqlite3 module usually doesn't support it. 
+# Please use apsw module if you want to use rowid filtering.
 cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)', (data[0].tobytes(), 10))
 print(cur.fetchall())
 
