@@ -1,4 +1,5 @@
 #include "virtual_table.h"
+
 #include <sqlite3.h>
 
 #include <exception>
@@ -261,14 +262,16 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
     } else if (column == -1) {
       // in this case the constraint is on rowid
       DLOG(INFO) << "rowid constraint found";
+      auto [version, notMetReason] = IsMinimumSqlite3VersionMet();
+      if (!notMetReason.empty()) {
+        SetZErrMsg(&vtab->zErrMsg, "SQLite version is too old: %s",
+                   notMetReason.data());
+        return SQLITE_ERROR;
+      }
+
+      DLOG(INFO) << "sqlite3 version check passed: " << version;
+
       if (constraint.op == SQLITE_INDEX_CONSTRAINT_EQ) {
-        auto [version, notMetReason] = IsMinimumSqlite3VersionMet();
-        if (!notMetReason.empty()) {
-          SetZErrMsg(&vtab->zErrMsg, "SQLite version is too old: %s",
-                     notMetReason.data());
-          return SQLITE_ERROR;
-        }
-        DLOG(INFO) << "sqlite3 version check passed: " << version;
         // For more details, check https://sqlite.org/c3ref/vtab_in.html
         if (!sqlite3_vtab_in(index_info, i, 1)) {
           SetZErrMsg(&vtab->zErrMsg,
@@ -317,8 +320,8 @@ class RowidFilter : public hnswlib::BaseFilterFunctor {
  public:
   RowidFilter(absl::flat_hash_set<VirtualTable::Cursor::Rowid>&& rowid_in)
       : rowid_in_(std::move(rowid_in)) {}
-  virtual bool operator()(hnswlib::labeltype id) override { 
-    return rowid_in_.contains(id); 
+  virtual bool operator()(hnswlib::labeltype id) override {
+    return rowid_in_.contains(id);
   }
 
  private:
@@ -389,9 +392,10 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   bool need_rowid_filter = !rowid_in.empty();
   DLOG(INFO) << "need_rowid_filter: " << need_rowid_filter;
   RowidFilter filter(std::move(rowid_in));
-  
+
   auto knn =
-      vtab->index_->searchKnnCloserFirst(cursor->query_vector.data().data(), k, need_rowid_filter ? &filter : nullptr);
+      vtab->index_->searchKnnCloserFirst(cursor->query_vector.data().data(), k,
+                                         need_rowid_filter ? &filter : nullptr);
 
   VECTORLITE_ASSERT(cursor->result.empty());
 
