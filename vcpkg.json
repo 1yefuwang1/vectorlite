@@ -1,15 +1,14 @@
 {
-  "name": "sqlite-hnsw",
+  "name": "vectorlite",
   "version-string": "0.1.0",
   "license": "MIT",
-  "description": "SQLite extension for HNSW index",
+  "description": "SQLite extension for fast vector search",
   "dependencies": [
     { "name": "sqlite3", "version>=": "3.43.1" },
     { "name": "rapidjson", "version>=": "2023-07-17" },
     { "name": "hnswlib", "version>=": "0.7.0" },
     { "name": "gtest", "version>=": "1.14.0" },
     { "name": "abseil", "features": ["cxx17"], "version>=": "20230802.1" },
-    { "name": "hdf5", "features": ["cpp"], "version>=": "1.14.2" },
     { "name": "msgpack", "version>=": "6.0.0" },
     { "name": "re2", "version>=": "2023-07-01" }
   ],
