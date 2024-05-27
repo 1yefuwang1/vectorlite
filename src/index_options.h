@@ -11,7 +11,7 @@ struct IndexOptions {
   size_t M = 16;
   size_t ef_construction = 200;
   size_t random_seed = 100;
-  bool allow_replace_deleted = false;
+  bool allow_replace_deleted = true;
 
   // Parses a string into IndexOptions.
   // This input is usually from the CREATE VIRTUAL TABLE statement.

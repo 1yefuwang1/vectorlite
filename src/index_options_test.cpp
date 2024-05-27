@@ -24,7 +24,7 @@ TEST(ParseIndexOptions, ShouldWorkWithOnlyMaxElements) {
   EXPECT_EQ(16, options->M);
   EXPECT_EQ(200, options->ef_construction);
   EXPECT_EQ(100, options->random_seed);
-  EXPECT_EQ(false, options->allow_replace_deleted);
+  EXPECT_EQ(true, options->allow_replace_deleted);
 }
 
 TEST(ParseIndexOptions, ShouldFailWithoutMaxElements) {

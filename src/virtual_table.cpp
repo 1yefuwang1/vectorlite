@@ -4,15 +4,18 @@
 
 #include <exception>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "constraint.h"
 #include "hnswlib/hnswlib.h"
 #include "index_options.h"
 #include "macros.h"
@@ -36,14 +39,7 @@ enum IndexConstraintUsage {
 
 enum FunctionConstraint {
   kFunctionConstraintVectorSearchKnn = SQLITE_INDEX_CONSTRAINT_FUNCTION,
-};
-
-// Used to identify pointer type for sqlite_result_pointer/sqlite_value_pointer
-static constexpr std::string_view kKnnParamType = "vector_search_knn_param";
-
-struct KnnParam {
-  Vector query_vector;
-  uint32_t k;
+  kFunctionConstraintVectorMatch = SQLITE_INDEX_CONSTRAINT_FUNCTION + 1,
 };
 
 // A helper function to reduce boilerplate code when setting zErrMsg.
@@ -238,30 +234,47 @@ static std::pair<int, std::string_view> IsMinimumSqlite3VersionMet() {
   return {version, ""};
 }
 
+using Constraints = std::vector<std::unique_ptr<Constraint>>;
+
 int VirtualTable::BestIndex(sqlite3_vtab* vtab,
                             sqlite3_index_info* index_info) {
   VECTORLITE_ASSERT(vtab != nullptr);
+  VirtualTable* virtual_table = static_cast<VirtualTable*>(vtab);
   VECTORLITE_ASSERT(index_info != nullptr);
 
   int argvIndex = 0;
-  std::vector<int> selected_constraints;
-  bool required_constraint_found = false;
+  // FIXME: sqlite can run xBestIndex multiple times for the same
+  // query(especially when the where clause contains 'or') but only run xFilter
+  // once. In this case constraints will be leaked because it is expected to be
+  // freed in xFilter.
+  auto* constraints = new Constraints();
+  constraints->reserve(index_info->nConstraint);
+
+  absl::Cleanup constrains_cleaner = [constraints] { delete constraints; };
+  DLOG(INFO) << "BestIndex called with " << index_info->nConstraint
+             << " constraints";
+
   for (int i = 0; i < index_info->nConstraint; i++) {
     const auto& constraint = index_info->aConstraint[i];
     if (!constraint.usable) {
+      DLOG(INFO) << i << "-th constraint is not usable. iColumn: "
+                 << constraint.iColumn
+                 << ", op: " << static_cast<int>(constraint.op);
       continue;
     }
     int column = constraint.iColumn;
     if (constraint.op == kFunctionConstraintVectorSearchKnn &&
         column == kColumnIndexVector) {
-      DLOG(INFO) << "Found vector search constraint";
+      DLOG(INFO) << "Found knn_search constraint";
       index_info->aConstraintUsage[i].argvIndex = ++argvIndex;
       index_info->aConstraintUsage[i].omit = 1;
-      selected_constraints.push_back(IndexConstraintUsage::kVector);
-      required_constraint_found = true;
+      constraints->push_back(
+          std::move(std::make_unique<KnnSearchConstraint>()));
+      index_info->estimatedCost = 100;
     } else if (column == -1) {
       // in this case the constraint is on rowid
-      DLOG(INFO) << "rowid constraint found";
+      DLOG(INFO) << "rowid constraint found: "
+                 << static_cast<int>(constraint.op);
       auto [version, notMetReason] = IsMinimumSqlite3VersionMet();
       if (!notMetReason.empty()) {
         SetZErrMsg(&vtab->zErrMsg, "SQLite version is too old: %s",
@@ -273,14 +286,33 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
 
       if (constraint.op == SQLITE_INDEX_CONSTRAINT_EQ) {
         // For more details, check https://sqlite.org/c3ref/vtab_in.html
-        if (!sqlite3_vtab_in(index_info, i, 1)) {
-          SetZErrMsg(&vtab->zErrMsg,
-                     "rowid constraint can't be processed all at once");
-          return SQLITE_CONSTRAINT;
+        bool can_be_processed_vtab_in = sqlite3_vtab_in(index_info, i, 1);
+        if (can_be_processed_vtab_in) {
+          DLOG(INFO) << i << "-th constraint can be processed with vtab in";
+          index_info->aConstraintUsage[i].argvIndex = ++argvIndex;
+          index_info->aConstraintUsage[i].omit = 1;
+          constraints->push_back(std::move(std::make_unique<RowIdIn>()));
+          index_info->estimatedCost = 100;
+        } else {
+          DLOG(INFO) << i << "-th constraint cannot be processed with vtab in";
+          sqlite3_value* value = nullptr;
+          int rc = sqlite3_vtab_rhs_value(index_info, i, &value);
+          if (rc == SQLITE_OK) {
+            if (sqlite3_value_type(value) != SQLITE_INTEGER) {
+              SetZErrMsg(&vtab->zErrMsg, "rowid must be of type INTEGER");
+              return SQLITE_ERROR;
+            }
+            hnswlib::labeltype rowid =
+                static_cast<hnswlib::labeltype>(sqlite3_value_int64(value));
+            DLOG(INFO) << "rowid = " << rowid;
+            constraints->push_back(
+                std::move(std::make_unique<RowIdEquals>(rowid)));
+            index_info->estimatedCost = 100;
+          } else {
+            SetZErrMsg(&vtab->zErrMsg, "Failed to process rowid constraint");
+            return rc;
+          }
         }
-        index_info->aConstraintUsage[i].argvIndex = ++argvIndex;
-        index_info->aConstraintUsage[i].omit = 1;
-        selected_constraints.push_back(IndexConstraintUsage::kRowid);
       }
     } else {
       DLOG(INFO) << "Unknown constraint iColumn=" << column
@@ -288,30 +320,17 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
     }
   }
 
-  if (!required_constraint_found) {
-    SetZErrMsg(&vtab->zErrMsg, "knn_search() constraint is required");
-    return SQLITE_ERROR;
-  }
+  DLOG(INFO) << "Picked " << constraints->size() << " constraints";
 
-  char* index_str =
-      static_cast<char*>(sqlite3_malloc(selected_constraints.size() + 1));
-  if (!index_str) {
-    return SQLITE_NOMEM;
-  }
+  index_info->idxStr = reinterpret_cast<char*>(constraints);
+  index_info->needToFreeIdxStr = 0;
 
-  for (int i = 0; i < selected_constraints.size(); i++) {
-    if (selected_constraints[i] == IndexConstraintUsage::kVector) {
-      index_str[i] = 'v';
-    } else if (selected_constraints[i] == IndexConstraintUsage::kRowid) {
-      index_str[i] = 'i';
-    } else {
-      VECTORLITE_ASSERT(false);
-    }
-  }
-  index_str[selected_constraints.size()] = '\0';
+  std::move(constrains_cleaner).Cancel();
 
-  index_info->idxStr = index_str;
-  index_info->needToFreeIdxStr = 1;
+  if (constraints->empty()) {
+    index_info->estimatedCost = 1e8;
+    index_info->estimatedRows = virtual_table->index_->label_lookup_.size();
+  }
 
   return SQLITE_OK;
 }
@@ -332,77 +351,49 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
                          const char* idxStr, int argc, sqlite3_value** argv) {
   VECTORLITE_ASSERT(pCur != nullptr);
   Cursor* cursor = static_cast<Cursor*>(pCur);
+
   VECTORLITE_ASSERT(pCur->pVtab != nullptr);
-
-  DLOG(INFO) << "Filter called with idxNum=" << idxNum << ", idxStr=" << idxStr
-             << ", argc=" << argc;
-
   VirtualTable* vtab = static_cast<VirtualTable*>(pCur->pVtab);
 
-  std::string_view index_str(idxStr);
-  absl::flat_hash_set<VirtualTable::Cursor::Rowid> rowid_in;
-  uint32_t k = 0;
-  for (int i = 0; i < index_str.size(); i++) {
-    char ch = index_str[i];
-    if (ch == 'v') {
-      auto param = static_cast<KnnParam*>(
-          sqlite3_value_pointer(argv[i], kKnnParamType.data()));
-      if (param == nullptr) {
-        SetZErrMsg(
-            &vtab->zErrMsg,
-            "knn_param() should be used for the 2nd param of knn_search");
+  VECTORLITE_ASSERT(idxStr != nullptr);
+  Constraints* constraints =
+      reinterpret_cast<Constraints*>(const_cast<char*>(idxStr));
 
-        return SQLITE_ERROR;
-      }
-      auto& query_vector = param->query_vector;
-      k = param->k;
-      if (query_vector.dim() != vtab->dimension()) {
-        SetZErrMsg(
-            &vtab->zErrMsg,
-            "Dimension mismatch: query vector has dimension %d, but the table "
-            "has dimension %d",
-            query_vector.dim(), vtab->dimension());
-        return SQLITE_ERROR;
-      } else {
-        cursor->query_vector = std::move(
-            vtab->space_.normalize ? query_vector.Normalize() : query_vector);
-      }
-    } else if (ch == 'i') {
-      int rc = SQLITE_OK;
-      sqlite3_value* rowid_value = nullptr;
-      for (rc = sqlite3_vtab_in_first(argv[i], &rowid_value); rc == SQLITE_OK;
-           rc = sqlite3_vtab_in_next(argv[i], &rowid_value)) {
-        if (sqlite3_value_type(rowid_value) != SQLITE_INTEGER) {
-          SetZErrMsg(&vtab->zErrMsg, "rowid must be of type INTEGER");
-          return SQLITE_ERROR;
-        }
-        VirtualTable::Cursor::Rowid rowid =
-            static_cast<VirtualTable::Cursor::Rowid>(
-                sqlite3_value_int64(rowid_value));
-        rowid_in.insert(rowid);
-      }
+  absl::Cleanup constraints_cleaner = [constraints] { delete constraints; };
+
+  DLOG(INFO) << "Filter called with idxNum=" << idxNum
+             << ", idxStr=" << ConstraintsToDebugString(*constraints)
+             << ", argc=" << argc;
+
+  auto executor = QueryExecutor(*vtab->index_, vtab->space_);
+  int n = constraints->size();
+  for (int i = 0; i < n; i++) {
+    auto status = (*constraints)[i]->Materialize(sqlite3_api, argv[i]);
+    if (status.ok()) {
+      (*constraints)[i]->Accept(&executor);
+    } else {
+      SetZErrMsg(&vtab->zErrMsg,
+                 "Failed to materialize constraint %s due to %s",
+                 (*constraints)[i]->ToDebugString().c_str(),
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
     }
   }
 
-  if (cursor->query_vector.data().empty() || k == 0) {
-    SetZErrMsg(&vtab->zErrMsg, "Invalid knn param");
+  DLOG(INFO) << "Materialized constraints: "
+             << ConstraintsToDebugString(*constraints);
+
+  auto result = executor.Execute();
+
+  if (result.ok()) {
+    cursor->result = std::move(*result);
+    cursor->current_row = cursor->result.cbegin();
+    return SQLITE_OK;
+  } else {
+    SetZErrMsg(&vtab->zErrMsg, "Failed to execute query due to: %s",
+               absl::StatusMessageAsCStr(result.status()));
     return SQLITE_ERROR;
   }
-
-  bool need_rowid_filter = !rowid_in.empty();
-  DLOG(INFO) << "need_rowid_filter: " << need_rowid_filter;
-  RowidFilter filter(std::move(rowid_in));
-
-  auto knn =
-      vtab->index_->searchKnnCloserFirst(cursor->query_vector.data().data(), k,
-                                         need_rowid_filter ? &filter : nullptr);
-
-  VECTORLITE_ASSERT(cursor->result.empty());
-
-  cursor->result = std::move(knn);
-  cursor->current_row = cursor->result.cbegin();
-
-  return SQLITE_OK;
 }
 
 // a marker function with empty implementation
