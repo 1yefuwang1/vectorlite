@@ -33,4 +33,16 @@ std::optional<std::string_view> DetectSIMD() {
 #endif
 }
 
+
+bool IsRowidInIndex(const hnswlib::HierarchicalNSW<float>& index, hnswlib::labeltype rowid) {
+  std::unique_lock<std::mutex> lock_label(index.getLabelOpMutex(rowid));
+  std::unique_lock<std::mutex> lock_table(index.label_lookup_lock);
+  auto search = index.label_lookup_.find(rowid);
+  if (search == index.label_lookup_.end() ||
+      index.isMarkedDeleted(search->second)) {
+    return false;
+  }
+  return true;
+}
+
 }  // end namespace vectorlite

@@ -1,8 +1,11 @@
 #pragma once
 
+#include <hnswlib/hnswalg.h>
 #include <optional>
 #include <string_view>
 #include <utility>
+
+#include "hnswlib/hnswlib.h"
 
 namespace vectorlite {
 
@@ -19,5 +22,7 @@ bool IsValidColumnName(std::string_view name);
 // Returns which SIMD instruction set is used at build time.
 // e.g. SSE, AVX, AVX512
 std::optional<std::string_view> DetectSIMD();
+
+bool IsRowidInIndex(const hnswlib::HierarchicalNSW<float>& index, hnswlib::labeltype rowid);
 
 }  // end namespace vectorlite

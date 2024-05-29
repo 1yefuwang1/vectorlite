@@ -1,4 +1,5 @@
 #include "constraint.h"
+#include <hnswlib/hnswalg.h>
 
 #include <algorithm>
 #include <memory>
@@ -12,6 +13,7 @@
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3ext.h"
+#include "util.h"
 
 namespace vectorlite {
 
@@ -164,17 +166,6 @@ std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
 
 }  // namespace
 
-bool QueryExecutor::IsRowidInIndex(hnswlib::labeltype label) const {
-  std::unique_lock<std::mutex> lock_label(index_.getLabelOpMutex(label));
-  std::unique_lock<std::mutex> lock_table(index_.label_lookup_lock);
-  auto search = index_.label_lookup_.find(label);
-  if (search == index_.label_lookup_.end() ||
-      index_.isMarkedDeleted(search->second)) {
-    return false;
-  }
-  return true;
-}
-
 absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
   if (!status_.ok()) {
     return status_;
@@ -198,14 +189,14 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     QueryExecutor::QueryResult result;
     auto isIdAllowed = MakeRowidFilter(rowid_in_, rowid_equals_);
     if (rowid_equals_) {
-      if (IsRowidInIndex(*rowid_equals_) && (*isIdAllowed)(*rowid_equals_)) {
+      if (IsRowidInIndex(index_, *rowid_equals_) && (*isIdAllowed)(*rowid_equals_)) {
         result.push_back({0.0f, *rowid_equals_});
       }
     }
 
     for (const auto& s : rowid_in_) {
       for (auto rowid : *s) {
-        if (IsRowidInIndex(rowid) && (*isIdAllowed)(rowid)) {
+        if (IsRowidInIndex(index_, rowid) && (*isIdAllowed)(rowid)) {
           result.push_back({0.0f, rowid});
         }
       }

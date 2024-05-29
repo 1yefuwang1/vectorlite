@@ -63,7 +63,6 @@ class QueryExecutor : public ConstraintVisitor {
   }
 
  private:
-  bool IsRowidInIndex(hnswlib::labeltype rowid) const;
 
   const hnswlib::HierarchicalNSW<float>& index_;
   const NamedVectorSpace& space_;

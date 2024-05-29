@@ -50,6 +50,15 @@ print(cur.fetchall())
 cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1')
 print(cur.fetchall())
 
+cur.execute(f'delete from x where rowid = 1')
+print(cur.fetchall())
+
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1 or rowid = 2')
+print(cur.fetchall())
+
+cur.execute(f'update x set my_embedding = ? where rowid = 2', (data[0].tobytes(),))
+print(cur.fetchall())
+
 cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1 or rowid = 2')
 print(cur.fetchall())
 

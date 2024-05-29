@@ -95,7 +95,6 @@ class VirtualTable : public sqlite3_vtab {
 
   NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
-  std::set<int64_t> rowids_;
 };
 
 // Just a marker function that tells BestIndex that this is a vector search

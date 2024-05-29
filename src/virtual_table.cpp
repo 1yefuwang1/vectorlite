@@ -5,6 +5,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -453,11 +454,30 @@ int VirtualTable::FindFunction(sqlite3_vtab* pVtab, int nArg, const char* zName,
   return 0;
 }
 
+constexpr bool IsRowidOutOfRange(sqlite3_int64 rowid) {
+  // VirtualTable::Cursor::Rowid is hnswlib::labeltype which is size_t(4 bytes
+  // or 8 bytes) Check the invariant here for future proof in case one day it is
+  // changed in hnswlib.
+  static_assert(sizeof(VirtualTable::Cursor::Rowid) <= sizeof(rowid));
+
+  // VirtualTable::Cursor::Rowid is also 8 bytes
+  if constexpr (sizeof(VirtualTable::Cursor::Rowid) == sizeof(rowid)) {
+    return rowid < static_cast<sqlite3_int64>(
+                       std::numeric_limits<VirtualTable::Cursor::Rowid>::min());
+  }
+  // VirtualTable::Cursor::Rowid is 4 bytes
+  return rowid < static_cast<sqlite3_int64>(
+                     std::numeric_limits<VirtualTable::Cursor::Rowid>::min()) ||
+         rowid > static_cast<sqlite3_int64>(
+                     std::numeric_limits<VirtualTable::Cursor::Rowid>::max());
+}
+
 // Only insert is supported for now
 int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                          sqlite_int64* pRowid) {
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
-  if (argc > 1 && sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+  auto argv0_type = sqlite3_value_type(argv[0]);
+  if (argc > 1 && argv0_type == SQLITE_NULL) {
     // Insert with a new row
     if (sqlite3_value_type(argv[1]) == SQLITE_NULL) {
       SetZErrMsg(&vtab->zErrMsg, "rowid must be specified during insertion");
@@ -465,10 +485,10 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     }
     sqlite3_int64 raw_rowid = sqlite3_value_int64(argv[1]);
     // This limitation comes from the fact that rowid is used as the label in
-    // hnswlib(hnswlib::labeltype), whose type is size_t. But rowid in sqlite3
+    // hnswlib(hnswlib::labeltype), whose type is size_t which could be 4 or 8
+    // bytes depending on the platform and the compiler. But rowid in sqlite3
     // has type int64.
-    if (raw_rowid > std::numeric_limits<Cursor::Rowid>::max() ||
-        raw_rowid < 0) {
+    if (IsRowidOutOfRange(raw_rowid)) {
       SetZErrMsg(&vtab->zErrMsg, "rowid %lld out of range", raw_rowid);
       return SQLITE_ERROR;
     }
@@ -487,8 +507,8 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     if (vector.ok()) {
       if (vector->dim() != vtab->dimension()) {
         SetZErrMsg(&vtab->zErrMsg,
-                   "Dimension mismatch: vector has "
-                   "dimension %d, but the table has "
+                   "Dimension mismatch: vector's "
+                   "dimension %d, table's "
                    "dimension %d",
                    vector->dim(), vtab->dimension());
         return SQLITE_ERROR;
@@ -497,14 +517,85 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       vtab->index_->addPoint(vtab->space_.normalize
                                  ? vector->Normalize().data().data()
                                  : vector->data().data(),
-                             static_cast<hnswlib::labeltype>(rowid));
-      vtab->rowids_.insert(rowid);
+                             static_cast<hnswlib::labeltype>(rowid), true);
       return SQLITE_OK;
     } else {
       SetZErrMsg(&vtab->zErrMsg, "Failed to perform insertion due to: %s",
                  absl::StatusMessageAsCStr(vector.status()));
       return SQLITE_ERROR;
     }
+  } else if (argc == 1 && argv0_type != SQLITE_NULL) {
+    // Delete a single row
+    DLOG(INFO) << "Delete a single row";
+    sqlite3_int64 raw_rowid = sqlite3_value_int64(argv[0]);
+    Cursor::Rowid rowid = static_cast<Cursor::Rowid>(raw_rowid);
+    try {
+      vtab->index_->markDelete(rowid);
+    } catch (const std::runtime_error& ex) {
+      SetZErrMsg(&vtab->zErrMsg, "Delete failed with rowid %lld: %s", raw_rowid,
+                 ex.what());
+      return SQLITE_ERROR;
+    }
+    return SQLITE_OK;
+  } else if (argc > 1 && argv0_type != SQLITE_NULL) {
+    DLOG(INFO) << "Update a single row";
+    // Update a single row
+    if (argv0_type != SQLITE_INTEGER) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid must be of type INTEGER");
+      return SQLITE_ERROR;
+    }
+    if (sqlite3_value_type(argv[1]) != SQLITE_INTEGER) {
+      SetZErrMsg(&vtab->zErrMsg, "target rowid must be of type INTEGER");
+      return SQLITE_ERROR;
+    }
+    sqlite3_int64 source_rowid = sqlite3_value_int64(argv[0]);
+    sqlite3_int64 target_rowid = sqlite3_value_int64(argv[1]);
+    if (source_rowid != target_rowid) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid is not allowed to be changed");
+      return SQLITE_ERROR;
+    }
+
+    if (IsRowidOutOfRange(source_rowid)) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid %lld out of range", source_rowid);
+      return SQLITE_ERROR;
+    }
+
+    Cursor::Rowid rowid = static_cast<Cursor::Rowid>(source_rowid);
+    if (!IsRowidInIndex(*(vtab->index_), rowid)) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid %lld not found", source_rowid);
+      return SQLITE_ERROR;
+    }
+
+    if (sqlite3_value_type(argv[2]) != SQLITE_BLOB) {
+      SetZErrMsg(&vtab->zErrMsg, "vector must be of type Blob");
+      return SQLITE_ERROR;
+    }
+    auto vector = Vector::FromBlob(std::string_view(
+        reinterpret_cast<const char*>(sqlite3_value_blob(argv[2])),
+        sqlite3_value_bytes(argv[2])));
+
+    if (vector.ok()) {
+      if (vector->dim() != vtab->dimension()) {
+        SetZErrMsg(&vtab->zErrMsg,
+                   "Dimension mismatch: vector's "
+                   "dimension %d, table's "
+                   "dimension %d",
+                   vector->dim(), vtab->dimension());
+        return SQLITE_ERROR;
+      }
+
+      vtab->index_->addPoint(vtab->space_.normalize
+                                 ? vector->Normalize().data().data()
+                                 : vector->data().data(),
+                             static_cast<hnswlib::labeltype>(rowid), true);
+
+      return SQLITE_OK;
+    } else {
+      SetZErrMsg(&vtab->zErrMsg, "Failed to perform row %lld due to: %s", rowid,
+                 absl::StatusMessageAsCStr(vector.status()));
+      return SQLITE_ERROR;
+    }
+
   } else {
     SetZErrMsg(&vtab->zErrMsg, "Operation not supported for now");
     return SQLITE_ERROR;
