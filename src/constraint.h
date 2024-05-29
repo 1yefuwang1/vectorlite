@@ -53,12 +53,12 @@ class QueryExecutor : public ConstraintVisitor {
   void Visit(const RowIdIn& constraint) override;
   void Visit(const RowIdEquals& constraint) override;
 
-  bool IsOk() const { return status_.ok(); }
+  bool ok() const { return status_.ok(); }
 
-  // If IsOk() is false, get_status() returns the error message.
+  // If IsOk() is false, status() returns the error message.
   // The returned pointer is valid until the QueryExecutor object is destroyed.
-  const char* get_message() const {
-    VECTORLITE_ASSERT(!IsOk());
+  const char* message() const {
+    VECTORLITE_ASSERT(!ok());
     return absl::StatusMessageAsCStr(status_);
   }
 

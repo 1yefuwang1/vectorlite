@@ -371,6 +371,12 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   DLOG(INFO) << "Materialized constraints: "
              << ConstraintsToDebugString(*constraints);
 
+  if (!executor.ok()) {
+    SetZErrMsg(&vtab->zErrMsg, "Failed to execute query due to: %s",
+               executor.message());
+    return SQLITE_ERROR;
+  }
+
   auto result = executor.Execute();
 
   if (result.ok()) {
