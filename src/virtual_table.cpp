@@ -514,10 +514,17 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
         return SQLITE_ERROR;
       }
 
-      vtab->index_->addPoint(vtab->space_.normalize
-                                 ? vector->Normalize().data().data()
-                                 : vector->data().data(),
-                             static_cast<hnswlib::labeltype>(rowid), true);
+      try {
+        vtab->index_->addPoint(vtab->space_.normalize
+                                   ? vector->Normalize().data().data()
+                                   : vector->data().data(),
+                               rowid, true);
+
+      } catch (const std::runtime_error& e) {
+        SetZErrMsg(&vtab->zErrMsg, "Failed to insert row %lld due to: %s",
+                   rowid, e.what());
+        return SQLITE_ERROR;
+      }
       return SQLITE_OK;
     } else {
       SetZErrMsg(&vtab->zErrMsg, "Failed to perform insertion due to: %s",
@@ -551,7 +558,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     sqlite3_int64 source_rowid = sqlite3_value_int64(argv[0]);
     sqlite3_int64 target_rowid = sqlite3_value_int64(argv[1]);
     if (source_rowid != target_rowid) {
-      SetZErrMsg(&vtab->zErrMsg, "rowid is not allowed to be changed");
+      SetZErrMsg(&vtab->zErrMsg, "rowid cannot be changed");
       return SQLITE_ERROR;
     }
 
@@ -584,10 +591,17 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
         return SQLITE_ERROR;
       }
 
-      vtab->index_->addPoint(vtab->space_.normalize
-                                 ? vector->Normalize().data().data()
-                                 : vector->data().data(),
-                             static_cast<hnswlib::labeltype>(rowid), true);
+      try {
+        vtab->index_->addPoint(vtab->space_.normalize
+                                   ? vector->Normalize().data().data()
+                                   : vector->data().data(),
+                               rowid, true);
+
+      } catch (const std::runtime_error& e) {
+        SetZErrMsg(&vtab->zErrMsg, "Failed to update row %lld due to: %s",
+                   rowid, e.what());
+        return SQLITE_ERROR;
+      }
 
       return SQLITE_OK;
     } else {
