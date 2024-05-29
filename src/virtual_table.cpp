@@ -335,18 +335,6 @@ int VirtualTable::BestIndex(sqlite3_vtab* vtab,
   return SQLITE_OK;
 }
 
-class RowidFilter : public hnswlib::BaseFilterFunctor {
- public:
-  RowidFilter(absl::flat_hash_set<VirtualTable::Cursor::Rowid>&& rowid_in)
-      : rowid_in_(std::move(rowid_in)) {}
-  virtual bool operator()(hnswlib::labeltype id) override {
-    return rowid_in_.contains(id);
-  }
-
- private:
-  const absl::flat_hash_set<VirtualTable::Cursor::Rowid> rowid_in_;
-};
-
 int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
                          const char* idxStr, int argc, sqlite3_value** argv) {
   VECTORLITE_ASSERT(pCur != nullptr);
