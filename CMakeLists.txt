@@ -47,3 +47,5 @@ endif(OPTION_USE_AVX2)
 gtest_discover_tests(unit-test)
 
 add_test(NAME unit-test COMMAND unit-test)
+
+add_subdirectory(integration_test)
