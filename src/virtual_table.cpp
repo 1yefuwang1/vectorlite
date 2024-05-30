@@ -192,6 +192,7 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
                          int N) {
   VECTORLITE_ASSERT(pCur != nullptr);
   VECTORLITE_ASSERT(pCtx != nullptr);
+  DLOG(INFO) << "Column called with N=" << N;
 
   Cursor* cursor = static_cast<Cursor*>(pCur);
   if (cursor->current_row == cursor->result.cend()) {
@@ -214,7 +215,7 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
       std::string err =
           absl::StrFormat("Can't find vector with rowid %d", rowid);
       sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
-      return SQLITE_ERROR;
+      return SQLITE_NOTFOUND;
     }
   } else {
     std::string err = absl::StrFormat("Invalid column index: %d", N);
@@ -535,6 +536,10 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     // Delete a single row
     DLOG(INFO) << "Delete a single row";
     sqlite3_int64 raw_rowid = sqlite3_value_int64(argv[0]);
+    if (IsRowidOutOfRange(raw_rowid)) {
+      SetZErrMsg(&vtab->zErrMsg, "rowid %lld out of range", raw_rowid);
+      return SQLITE_ERROR;
+    }
     Cursor::Rowid rowid = static_cast<Cursor::Rowid>(raw_rowid);
     try {
       vtab->index_->markDelete(rowid);
