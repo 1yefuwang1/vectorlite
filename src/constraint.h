@@ -1,16 +1,17 @@
 #pragma once
 
-#include <absl/strings/str_format.h>
-#include <hnswlib/hnswalg.h>
-
+#include <memory>
 #include <optional>
+#include <string_view>
+#include <variant>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
-#include "sqlite3ext.h"
+#include "sqlite3.h"
 #include "vector.h"
 #include "vector_space.h"
 
@@ -43,7 +44,7 @@ class QueryExecutor : public ConstraintVisitor {
 
   QueryExecutor(const hnswlib::HierarchicalNSW<float>& index,
                 const NamedVectorSpace& space)
-      : index_(index), space_(space), status_() {}
+      : index_(index), space_(space) {}
   virtual ~QueryExecutor() = default;
 
   // Should only be called iff IsOk() returns true.
@@ -63,23 +64,23 @@ class QueryExecutor : public ConstraintVisitor {
   }
 
  private:
-
   const hnswlib::HierarchicalNSW<float>& index_;
   const NamedVectorSpace& space_;
   absl::Status status_;
 
-  // there can at most one KnnParam constraint, at most one "rowid = xx"  but 0
-  // or multiple rowid constraints.
-  const KnnParam* knn_param_ = nullptr;
-  std::vector<const absl::flat_hash_set<hnswlib::labeltype>*> rowid_in_;
-  std::optional<hnswlib::labeltype> rowid_equals_;
+  // there can at most one KnnParam constraint
+  const KnnSearchConstraint* vector_constraint_ = nullptr;
+
+  // there can be at most one vector constraint
+  std::optional<std::variant<const RowIdIn*, const RowIdEquals*>>
+      rowid_constraint_;
 };
 
 class Constraint {
  public:
   virtual ~Constraint() = default;
 
-  // Some constraints can only get its required data inside xFilter.
+  // Constraints can only get its required data inside xFilter.
   // Materialize should be only be called in xFliter and before calling
   // Accept(), otherwise the behavior is undefined.
   absl::Status Materialize(const sqlite3_api_routines* sqlite3_api,
@@ -109,11 +110,15 @@ class Constraint {
 
 class KnnSearchConstraint : public Constraint {
  public:
+  // Name used in idxStr that is created in xBestIndex and then passed to
+  // xFilter
+  constexpr static std::string_view kShortName = "ks";
+
   KnnSearchConstraint() : knn_param_(nullptr) {}
 
   void Accept(ConstraintVisitor* visitor) override { visitor->Visit(*this); }
 
-  const KnnParam* get_knn_param() const { return knn_param_; }
+  const KnnParam* knn_param() const { return knn_param_; }
 
   std::string ToDebugString() const override {
     if (materialized()) {
@@ -121,7 +126,7 @@ class KnnSearchConstraint : public Constraint {
                              knn_param_->query_vector.dim(), knn_param_->k);
     }
 
-    return absl::StrFormat("knn_param: unmaterialized");
+    return absl::StrFormat("knn_param(?)");
   }
 
  private:
@@ -132,12 +137,16 @@ class KnnSearchConstraint : public Constraint {
 
 class RowIdIn : public Constraint {
  public:
+  // Name used in idxStr that is created in xBestIndex and then passed to
+  // xFilter
+  constexpr static std::string_view kShortName = "in";
+
   RowIdIn() : rowids_() {}
 
   void Accept(ConstraintVisitor* visitor) override { visitor->Visit(*this); }
 
-  const absl::flat_hash_set<hnswlib::labeltype>* get_rowids() const {
-    return &rowids_;
+  const absl::flat_hash_set<hnswlib::labeltype>& get_rowids() const {
+    return rowids_;
   }
 
  private:
@@ -149,29 +158,33 @@ class RowIdIn : public Constraint {
       return absl::StrFormat("rowid in (%d rowids...)", rowids_.size());
     }
 
-    return absl::StrFormat("rowid in: unmaterialized");
+    return absl::StrFormat("rowid in (?)");
   }
   absl::flat_hash_set<hnswlib::labeltype> rowids_;
 };
 
 class RowIdEquals : public Constraint {
  public:
-  explicit RowIdEquals(hnswlib::labeltype rowid) : rowid_(rowid) {}
+  // Name used in idxStr that is created in xBestIndex and then passed to
+  // xFilter
+  constexpr static std::string_view kShortName = "eq";
+
+  explicit RowIdEquals() : rowid_() {}
 
   void Accept(ConstraintVisitor* visitor) override { visitor->Visit(*this); }
 
   hnswlib::labeltype rowid() const { return rowid_; }
 
  private:
-  // The right hand side of the equality constraint can be determined in
-  // xBestIndex. So we don't need to materialize it in xFilter.
   virtual absl::Status DoMaterialize(const sqlite3_api_routines* sqlite3_api,
-                                     sqlite3_value* arg) override {
-    return absl::OkStatus();
-  }
+                                     sqlite3_value* arg) override;
 
   std::string ToDebugString() const override {
-    return absl::StrFormat("rowid = %d", rowid_);
+    if (materialized()) {
+      return absl::StrFormat("rowid = %d", rowid_);
+    }
+
+    return "rowid = ?";
   }
 
   hnswlib::labeltype rowid_;
@@ -179,5 +192,8 @@ class RowIdEquals : public Constraint {
 
 std::string ConstraintsToDebugString(
     const std::vector<std::unique_ptr<Constraint>>& constraints);
+
+absl::StatusOr<std::vector<std::unique_ptr<Constraint>>>
+ParseConstraintsFromShortNames(std::string_view constraint_str);
 
 }  // namespace vectorlite

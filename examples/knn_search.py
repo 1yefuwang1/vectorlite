@@ -41,9 +41,9 @@ print(cur.fetchall())
 cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)', (data[0].tobytes(), 10))
 print(cur.fetchall())
 
-# Multiple 'rowid in (...)' is also supported.
-cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1) and rowid in (1, 2)', (data[0].tobytes(), 10))
-print(cur.fetchall())
+# Multiple 'rowid in (...)' is not supported.
+# cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1) and rowid in (1, 2)', (data[0].tobytes(), 10))
+# print(cur.fetchall())
 
 
 # 'rowid = (...)' is also supported
@@ -53,13 +53,16 @@ print(cur.fetchall())
 cur.execute(f'delete from x where rowid = 1')
 print(cur.fetchall())
 
-cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1 or rowid = 2')
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1')
+print(cur.fetchall())
+
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
 print(cur.fetchall())
 
 cur.execute(f'update x set my_embedding = ? where rowid = 2', (data[0].tobytes(),))
 print(cur.fetchall())
 
-cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1 or rowid = 2')
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
 print(cur.fetchall())
 
 cur.close()
