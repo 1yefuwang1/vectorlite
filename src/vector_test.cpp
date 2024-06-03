@@ -65,19 +65,6 @@ TEST(VectorTest, FromBinaryShouldFailWithInvalidInput) {
   EXPECT_FALSE(v1.ok());
 }
 
-TEST(VectorTest, MsgPack) {
-  vectorlite::Vector v({1.01, 2.03, 3.01111});
-  std::string msgpack = v.ToMsgPack();
-
-  auto parse_result = vectorlite::Vector::FromMsgPack(msgpack);
-  EXPECT_TRUE(parse_result.ok());
-  const auto& parsed = *parse_result;
-  EXPECT_EQ(parsed.data().size(), 3);
-  EXPECT_FLOAT_EQ(parsed.data()[0], v.data()[0]);
-  EXPECT_FLOAT_EQ(parsed.data()[1], v.data()[1]);
-  EXPECT_FLOAT_EQ(parsed.data()[2], v.data()[2]);
-}
-
 TEST(VectorDistance, ShouldWork) {
   // Test valid input
   vectorlite::Vector v1({1.0, 2.0, 3.0});

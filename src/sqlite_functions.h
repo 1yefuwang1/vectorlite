@@ -14,10 +14,6 @@ void VectorDistance(sqlite3_context* ctx, int argc, sqlite3_value** argv);
 
 void VectorFromJson(sqlite3_context* ctx, int argc, sqlite3_value** argv);
 
-void VectorFromMsgPack(sqlite3_context* ctx, int argc, sqlite3_value** argv);
-
 void VectorToJson(sqlite3_context* ctx, int argc, sqlite3_value** argv);
-
-void VectorToMsgPack(sqlite3_context* ctx, int argc, sqlite3_value** argv);
 
 }  // namespace vectorlite
