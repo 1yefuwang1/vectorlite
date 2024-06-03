@@ -7,6 +7,7 @@
 #include <variant>
 
 #include "absl/base/optimization.h"
+#include "absl/functional/overload.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
@@ -30,7 +31,7 @@ absl::Status RowIdEquals::DoMaterialize(const sqlite3_api_routines* sqlite3_api,
   hnswlib::labeltype rowid =
       static_cast<hnswlib::labeltype>(sqlite3_value_int64(arg));
   rowid_ = rowid;
-  
+
   return absl::OkStatus();
 }
 
@@ -148,14 +149,6 @@ class RowidEqualsFilter : public hnswlib::BaseFilterFunctor {
   hnswlib::labeltype rowid_;
 };
 
-// TODO: change it to absl::Overload
-template <class... Ts>
-struct overloaded : Ts... {
-  using Ts::operator()...;
-};
-template <class... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
-
 std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
     std::optional<std::variant<const RowIdIn*, const RowIdEquals*>>
         row_id_constraint) {
@@ -164,7 +157,7 @@ std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
   }
 
   return std::visit(
-      overloaded{
+      absl::Overload(
           [](const RowIdIn* rowid_in)
               -> std::unique_ptr<hnswlib::BaseFilterFunctor> {
             return std::make_unique<RowidInFilter>(rowid_in->get_rowids());
@@ -172,8 +165,7 @@ std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
           [](const RowIdEquals* rowid_equals)
               -> std::unique_ptr<hnswlib::BaseFilterFunctor> {
             return std::make_unique<RowidEqualsFilter>(rowid_equals->rowid());
-          },
-      },
+          }),
       *row_id_constraint);
 }
 
@@ -206,7 +198,7 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     QueryExecutor::QueryResult result;
     if (rowid_constraint_) {
       // we are doing a rowid search without using hnsw index
-      std::visit(overloaded{
+      std::visit(absl::Overload(
                      [&result, this](const RowIdIn* rowid_in) {
                        for (const auto& rowid : rowid_in->get_rowids()) {
                          // TODO: IsRowidInIndex takes a lock on
@@ -221,8 +213,7 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
                        if (IsRowidInIndex(index_, rowid_equals->rowid())) {
                          result.emplace_back(0.0f, rowid_equals->rowid());
                        }
-                     },
-                 },
+                     }),
                  *rowid_constraint_);
     }
 

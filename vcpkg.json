@@ -6,11 +6,11 @@
   "dependencies": [
     { "name": "sqlite3", "version>=": "3.43.1" },
     { "name": "rapidjson", "version>=": "2023-07-17" },
-    { "name": "hnswlib", "version>=": "0.7.0" },
+    { "name": "hnswlib", "version>=": "0.8.0" },
     { "name": "gtest", "version>=": "1.14.0" },
-    { "name": "abseil", "features": ["cxx17"], "version>=": "20230802.1" },
+    { "name": "abseil", "features": ["cxx17"], "version>=": "20240116.2" },
     { "name": "msgpack", "version>=": "6.0.0" },
     { "name": "re2", "version>=": "2023-07-01" }
   ],
-  "builtin-baseline": "c3801cf53c614ffc54c94051d124eba097b057b1"
+  "builtin-baseline": "67cc1677c3bf5c23ea14b9d2416c7422fdeac492"
 }

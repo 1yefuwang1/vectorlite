@@ -3,6 +3,7 @@
 #include <string_view>
 
 #include "absl/strings/str_format.h"
+#include "absl/strings/numbers.h"
 #include "re2/re2.h"
 #include "util.h"
 
