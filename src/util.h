@@ -1,6 +1,7 @@
 #pragma once
 
 #include <hnswlib/hnswalg.h>
+
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,7 @@ bool IsValidColumnName(std::string_view name);
 // e.g. SSE, AVX, AVX512
 std::optional<std::string_view> DetectSIMD();
 
-bool IsRowidInIndex(const hnswlib::HierarchicalNSW<float>& index, hnswlib::labeltype rowid);
+bool IsRowidInIndex(const hnswlib::HierarchicalNSW<float>& index,
+                    hnswlib::labeltype rowid);
 
 }  // end namespace vectorlite

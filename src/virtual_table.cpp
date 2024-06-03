@@ -343,10 +343,8 @@ int VirtualTable::Filter(sqlite3_vtab_cursor* pCur, int idxNum,
   VECTORLITE_ASSERT(idxStr != nullptr);
   std::string_view index_str(idxStr, idxNum);
 
-
   DLOG(INFO) << "Filter called with idxNum=" << idxNum
-             << ", idxStr=" << index_str
-             << ", argc=" << argc;
+             << ", idxStr=" << index_str << ", argc=" << argc;
 
   auto constraints = ParseConstraintsFromShortNames(index_str);
 

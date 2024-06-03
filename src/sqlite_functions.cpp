@@ -131,8 +131,7 @@ void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "vector_to_json expects vector of type blob",
-                         -1);
+    sqlite3_result_error(ctx, "vector_to_json expects vector of type blob", -1);
     return;
   }
 

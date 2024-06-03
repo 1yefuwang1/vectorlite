@@ -22,8 +22,8 @@ TEST(ParseVectorSpace, ShouldRetturnNullOptForInvalidSpaceType) {
 }
 
 TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
-  auto l2 = vectorlite::CreateNamedVectorSpace(
-      3, vectorlite::SpaceType::L2, "my_vector");
+  auto l2 = vectorlite::CreateNamedVectorSpace(3, vectorlite::SpaceType::L2,
+                                               "my_vector");
   EXPECT_TRUE(l2.ok());
   EXPECT_TRUE(l2->type == vectorlite::SpaceType::L2);
   EXPECT_TRUE(l2->normalize == false);
@@ -48,8 +48,8 @@ TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
 }
 
 TEST(CreateVectorSpace, ShouldReturnErrorForDimOfZero) {
-  auto l2 = vectorlite::CreateNamedVectorSpace(
-      0, vectorlite::SpaceType::L2, "my_vector");
+  auto l2 = vectorlite::CreateNamedVectorSpace(0, vectorlite::SpaceType::L2,
+                                               "my_vector");
   EXPECT_FALSE(l2.ok());
 
   auto ip = vectorlite::CreateNamedVectorSpace(
@@ -70,8 +70,7 @@ TEST(VectorSpace_FromString, ShouldWorkWithValidInput) {
   EXPECT_EQ(3, space->dimension());
   EXPECT_EQ("my_vec", space->vector_name);
 
-  space =
-      vectorlite::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
+  space = vectorlite::NamedVectorSpace::FromString("my_vec(10086, \"cosine\")");
   EXPECT_TRUE(space.ok());
   EXPECT_TRUE(space->normalize == true);
   EXPECT_TRUE(space->space != nullptr);
