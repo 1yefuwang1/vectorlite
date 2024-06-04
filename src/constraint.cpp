@@ -190,6 +190,9 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     }
 
     auto rowid_filter = MakeRowidFilter(rowid_constraint_);
+    if (knn_param->ef_search.has_value()) {
+      index_.setEf(*knn_param->ef_search);
+    }
     auto result =
         index_.searchKnnCloserFirst(knn_param->query_vector.data().data(),
                                     knn_param->k, rowid_filter.get());

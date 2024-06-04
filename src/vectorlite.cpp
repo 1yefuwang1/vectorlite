@@ -83,7 +83,7 @@ VECTORLITE_EXPORT int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg,
     return rc;
   }
 
-  rc = sqlite3_create_function(db, "knn_param", 2, SQLITE_UTF8, nullptr,
+  rc = sqlite3_create_function(db, "knn_param", -1, SQLITE_UTF8, nullptr,
                                vectorlite::KnnParamFunc, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create knn_param function: %s",

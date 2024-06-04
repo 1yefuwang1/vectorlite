@@ -402,18 +402,23 @@ void KnnParamDeleter(void* param) {
 }
 
 void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
-  if (argc != 2) {
-    sqlite3_result_error(ctx, "Number of parameter is not 2", -1);
+  if (argc != 2 && argc != 3) {
+    sqlite3_result_error(ctx, "invalid number of paramters to knn_param(). 2 or 3 is expected", -1);
     return;
   }
 
   if (sqlite3_value_type(argv[0]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "Vector(1st param) should be of type Blob", -1);
+    sqlite3_result_error(ctx, "vector(1st param of knn_param) should be of type Blob", -1);
     return;
   }
 
   if (sqlite3_value_type(argv[1]) != SQLITE_INTEGER) {
-    sqlite3_result_error(ctx, "k(2nd param) should be of type INTEGER", -1);
+    sqlite3_result_error(ctx, "k(2nd param of knn_param) should be of type INTEGER", -1);
+    return;
+  }
+
+  if (argc == 3 && sqlite3_value_type(argv[2]) != SQLITE_INTEGER) {
+    sqlite3_result_error(ctx, "ef(3rd param of knn_param) should be of type INTEGER", -1);
     return;
   }
 
@@ -434,9 +439,20 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
     return;
   }
 
+  std::optional<uint32_t> ef_search;
+  if (argc == 3) {
+    int32_t ef = sqlite3_value_int(argv[2]);
+    if (ef <= 0) {
+      sqlite3_result_error(ctx, "ef should be greater than 0", -1);
+      return;
+    }
+    ef_search = ef;
+  }
+
   KnnParam* param = new KnnParam();
   param->query_vector = std::move(*vec);
   param->k = static_cast<uint32_t>(k);
+  param->ef_search = std::move(ef_search);
 
   sqlite3_result_pointer(ctx, param, kKnnParamType.data(), KnnParamDeleter);
   return;

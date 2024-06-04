@@ -20,6 +20,7 @@ namespace vectorlite {
 struct KnnParam {
   Vector query_vector;
   uint32_t k;
+  std::optional<uint32_t> ef_search;
 };
 
 // Used to identify pointer type for sqlite_result_pointer/sqlite_value_pointer
@@ -42,7 +43,7 @@ class QueryExecutor : public ConstraintVisitor {
  public:
   using QueryResult = std::vector<std::pair<float, hnswlib::labeltype>>;
 
-  QueryExecutor(const hnswlib::HierarchicalNSW<float>& index,
+  QueryExecutor(hnswlib::HierarchicalNSW<float>& index,
                 const NamedVectorSpace& space)
       : index_(index), space_(space) {}
   virtual ~QueryExecutor() = default;
@@ -64,7 +65,8 @@ class QueryExecutor : public ConstraintVisitor {
   }
 
  private:
-  const hnswlib::HierarchicalNSW<float>& index_;
+  // setting ef when querying the index is allowed. So index_ cannot be marked as const.
+  hnswlib::HierarchicalNSW<float>& index_;
   const NamedVectorSpace& space_;
   absl::Status status_;
 

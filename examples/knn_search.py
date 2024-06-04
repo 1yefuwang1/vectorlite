@@ -8,7 +8,7 @@ Example of using vectorlite extension to perform KNN search on a table of vector
 
 use_apsw = os.environ.get('USE_APSW', '0') == '1'
 
-dim = 16
+dim = 1000
 num_elements = 10000
 
 # Generating sample data
@@ -23,9 +23,13 @@ conn.load_extension('../build/release/libvectorlite.so')
 cur = conn.cursor()
 
 print('Trying to create virtual table for vector search.')
-# Below statement creates a virtual table named 'x' with one column called 'my_embedding' which has a dimension of 16, a an implict rowid column.
+# Below statement creates a virtual table named 'x' with one column called 'my_embedding' which has a dimension of 1000.
 # my_embedding holds vectors that can be searched based on L2 distance using HNSW index.
-cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=100,M=16))')
+# Note: the virtual table has an implict rowid column, which is used as a "foreign key" to make connections to other tables.
+# The hnsw(max_elements=10000, ef_construction=50, M=32) part creates an HNSW index with 10000 elements, ef_construction=50, and M=32.
+# Please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md for more information about HNSW parameters.
+# Actually, only max_elements is required.
+cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=50,M=32))')
 print("Adding %d vectors" % (len(data)))
 for i in range(num_elements):
     cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, data[i].tobytes()))
@@ -45,6 +49,18 @@ for i in range(num_elements):
         matches += 1
 
 print(f'recall rate is {(matches / num_elements) * 100}%')
+
+# Optionally, we can set ef to a higher value to improve recall rate by passing it to the 3rd argument of knn_param.
+# The default value of ef is 10. In this example, we set ef to 32. 
+# Note: if ef is not set in later queries, it will always be 32.
+matches = 0
+for i in range(num_elements):
+    cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?, 32))', (data[i].tobytes(), 1))
+    if cur.fetchone()[0] == i:
+        matches += 1
+
+print(f'After setting ef to 32, recall rate is {(matches / num_elements) * 100}%')
+
 
 
 if use_apsw:
