@@ -89,7 +89,7 @@ if use_apsw:
 
     # update a row
     cur.execute(f'update x set my_embedding = ? where rowid = 2', (data[0].tobytes(),))
-    print('vector of row is updated')
+    print('vector of row 2 is updated')
 
     cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
     result = cur.fetchone()
