@@ -37,6 +37,16 @@ print("%d vectors inserted" % (len(data)))
 cur.execute('select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?))', (data[0].tobytes(), 10))
 print(f'10 nearest neighbors of row 1 is {cur.fetchall()}')
 
+# calculate recall rate
+matches = 0
+for i in range(num_elements):
+    cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?))', (data[i].tobytes(), 1))
+    if cur.fetchone()[0] == i:
+        matches += 1
+
+print(f'recall rate is {(matches / num_elements) * 100}%')
+
+
 if use_apsw:
     # Optionally, rowid can be filtered using 'rowid in (...)'. The rowid filter is pushed down to HNSW index and is efficient.
     # Please note: 'rowid in (...)' is only supported for sqlite3 version >= 3.38.0. The built-in sqlite3 module usually doesn't support it. 
