@@ -39,7 +39,7 @@ print("%d vectors inserted" % (len(data)))
 # distance here is a hidden column. The result is already sorted by distance in ascending order
 # vectorlite treat a vector as an array of float32. So, we need to convert it to bytes before passing it to the query.
 cur.execute('select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?))', (data[0].tobytes(), 10))
-print(f'10 nearest neighbors of row 1 is {cur.fetchall()}')
+print(f'10 nearest neighbors of row 0 is {cur.fetchall()}')
 
 # calculate recall rate
 matches = 0
