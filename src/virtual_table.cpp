@@ -519,6 +519,11 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
     Cursor::Rowid rowid = static_cast<Cursor::Rowid>(raw_rowid);
     *pRowid = rowid;
 
+    if (IsRowidInIndex(*vtab->index_, rowid)) {
+      SetZErrMsg(&vtab->zErrMsg, "row %u already exists", rowid);
+      return SQLITE_ERROR;
+    }
+
     if (sqlite3_value_type(argv[2]) != SQLITE_BLOB) {
       SetZErrMsg(&vtab->zErrMsg, "vector must be of type Blob");
       return SQLITE_ERROR;
