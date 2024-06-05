@@ -1,7 +1,9 @@
 import sqlite3
+from typing import Optional
 import apsw 
 import numpy as np
 import os
+import timeit
 """
 Example of using vectorlite extension to perform KNN search on a table of vectors.
 """
@@ -29,11 +31,13 @@ print('Trying to create virtual table for vector search.')
 # The hnsw(max_elements=10000, ef_construction=50, M=32) part creates an HNSW index with 10000 elements, ef_construction=50, and M=32.
 # Please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md for more information about HNSW parameters.
 # Actually, only max_elements is required.
-cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=50,M=32))')
+cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=32,M=32))')
 print("Adding %d vectors" % (len(data)))
-for i in range(num_elements):
-    cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, data[i].tobytes()))
-print("%d vectors inserted" % (len(data)))
+def insert_vectors():
+    for i in range(num_elements):
+        cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, data[i].tobytes()))
+time_taken = timeit.timeit(insert_vectors, number=1)
+print(f'time taken for inserting {num_elements} vectors: {time_taken} seconds')
 
 # Search for 10 nearest neighbors of data[0]
 # distance here is a hidden column. The result is already sorted by distance in ascending order
@@ -41,27 +45,30 @@ print("%d vectors inserted" % (len(data)))
 cur.execute('select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?))', (data[0].tobytes(), 10))
 print(f'10 nearest neighbors of row 0 is {cur.fetchall()}')
 
+# test recall rate by iterating over all vectors and checking whether the nearest neighbor is itself.
+def test_recall(ef: Optional[int] = None):
+    matches = 0
+    for i in range(num_elements):
+        if ef is None:
+            cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?))', (data[i].tobytes(), 1))
+        else:
+            cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?, ?))', (data[i].tobytes(), 1, ef))
+        if cur.fetchone()[0] == i:
+            matches += 1
+    recall_rate = matches / num_elements
+    print(f'recall rate with ef = {10 if ef is None else ef} is {recall_rate * 100}%')
+
 # calculate recall rate
-matches = 0
-for i in range(num_elements):
-    cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?))', (data[i].tobytes(), 1))
-    if cur.fetchone()[0] == i:
-        matches += 1
+time_taken = timeit.timeit(test_recall, number=1)
+print(f'time taken for calculating recall rate: {time_taken} seconds')
 
-print(f'recall rate is {(matches / num_elements) * 100}%')
-
-# Optionally, we can set ef to a higher value to improve recall rate by passing it to the 3rd argument of knn_param.
+# Optionally, we can set ef to a higher value to improve recall rate, at the cost of higher search time.
+# It can be achieved by passing ef to the 3rd argument of knn_param.
+# For more info on ef, please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md
 # The default value of ef is 10. In this example, we set ef to 32. 
 # Note: if ef is not set in later queries, it will always be 32.
-matches = 0
-for i in range(num_elements):
-    cur.execute('select rowid from x where knn_search(my_embedding, knn_param(?, ?, 32))', (data[i].tobytes(), 1))
-    if cur.fetchone()[0] == i:
-        matches += 1
-
-print(f'After setting ef to 32, recall rate is {(matches / num_elements) * 100}%')
-
-
+time_taken = timeit.timeit(lambda: test_recall(32), number=1)
+print(f'time taken for calculating recall rate with ef=32: {time_taken} seconds')
 
 if use_apsw:
     # Optionally, rowid can be filtered using 'rowid in (...)'. The rowid filter is pushed down to HNSW index and is efficient.
