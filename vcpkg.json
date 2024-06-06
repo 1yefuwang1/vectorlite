@@ -9,7 +9,6 @@
     { "name": "hnswlib", "version>=": "0.8.0" },
     { "name": "gtest", "version>=": "1.14.0" },
     { "name": "abseil", "features": ["cxx17"], "version>=": "20240116.2" },
-    { "name": "msgpack", "version>=": "6.0.0" },
     { "name": "re2", "version>=": "2023-07-01" }
   ],
   "builtin-baseline": "67cc1677c3bf5c23ea14b9d2416c7422fdeac492"
