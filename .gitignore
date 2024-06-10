@@ -37,3 +37,8 @@ vcpkg/*
 vcpkg_installed/*
 
 .cache/*
+
+*.pyc
+dist/*
+
+*egg-info
