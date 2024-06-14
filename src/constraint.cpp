@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
-#include <variant>
 
 #include "absl/base/optimization.h"
 #include "absl/functional/overload.h"
@@ -156,7 +155,7 @@ std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
     return nullptr;
   }
 
-  return std::visit(
+  return absl::visit(
       absl::Overload(
           [](const RowIdIn* rowid_in)
               -> std::unique_ptr<hnswlib::BaseFilterFunctor> {
@@ -201,23 +200,23 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     QueryExecutor::QueryResult result;
     if (rowid_constraint_) {
       // we are doing a rowid search without using hnsw index
-      std::visit(absl::Overload(
-                     [&result, this](const RowIdIn* rowid_in) {
-                       for (const auto& rowid : rowid_in->get_rowids()) {
-                         // TODO: IsRowidInIndex takes a lock on
-                         // index.label_lookup_ on each invoke, Lock once in the
-                         // future.
-                         if (IsRowidInIndex(index_, rowid)) {
-                           result.emplace_back(0.0f, rowid);
-                         }
-                       }
-                     },
-                     [&result, this](const RowIdEquals* rowid_equals) {
-                       if (IsRowidInIndex(index_, rowid_equals->rowid())) {
-                         result.emplace_back(0.0f, rowid_equals->rowid());
-                       }
-                     }),
-                 *rowid_constraint_);
+      absl::visit(absl::Overload(
+                      [&result, this](const RowIdIn* rowid_in) {
+                        for (const auto& rowid : rowid_in->get_rowids()) {
+                          // TODO: IsRowidInIndex takes a lock on
+                          // index.label_lookup_ on each invoke, Lock once in
+                          // the future.
+                          if (IsRowidInIndex(index_, rowid)) {
+                            result.emplace_back(0.0f, rowid);
+                          }
+                        }
+                      },
+                      [&result, this](const RowIdEquals* rowid_equals) {
+                        if (IsRowidInIndex(index_, rowid_equals->rowid())) {
+                          result.emplace_back(0.0f, rowid_equals->rowid());
+                        }
+                      }),
+                  *rowid_constraint_);
     }
 
     return result;

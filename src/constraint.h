@@ -3,12 +3,12 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <variant>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/variant.h"
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3.h"
@@ -65,7 +65,8 @@ class QueryExecutor : public ConstraintVisitor {
   }
 
  private:
-  // setting ef when querying the index is allowed. So index_ cannot be marked as const.
+  // setting ef when querying the index is allowed. So index_ cannot be marked
+  // as const.
   hnswlib::HierarchicalNSW<float>& index_;
   const NamedVectorSpace& space_;
   absl::Status status_;
@@ -74,7 +75,7 @@ class QueryExecutor : public ConstraintVisitor {
   const KnnSearchConstraint* vector_constraint_ = nullptr;
 
   // there can be at most one vector constraint
-  std::optional<std::variant<const RowIdIn*, const RowIdEquals*>>
+  std::optional<absl::variant<const RowIdIn*, const RowIdEquals*>>
       rowid_constraint_;
 };
 
