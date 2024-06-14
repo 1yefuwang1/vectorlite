@@ -1,1 +1,1 @@
-sh build.sh && cd build/dev && ctest --output-on-failure
+sh build.sh && ctest --test-dir build/dev --output-on-failure
