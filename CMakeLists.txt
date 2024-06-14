@@ -7,7 +7,7 @@ message(STATUS "version.h generated to: ${PROJECT_BINARY_DIR}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(OPTION_USE_AVX2 ON)
+set(OPTION_USE_AVX2 OFF)
 
 
 find_package(absl CONFIG REQUIRED)
