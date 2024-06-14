@@ -8,6 +8,7 @@ from pathlib import Path
 from setuptools import Extension, setup 
 import cmake
 import subprocess
+import ninja
 
 VERSION = '0.1.0'
 PACKAGE_NAME = 'vectorlite_py'
@@ -19,6 +20,7 @@ print(f'Current platfrom: {system}, {machine}')
 print(f'cmake bin dir: {cmake.CMAKE_BIN_DIR}. cwd: {os.getcwd()}')
 cmake_path = os.path.join(cmake.CMAKE_BIN_DIR, 'cmake')
 ctest_path = os.path.join(cmake.CMAKE_BIN_DIR, 'ctest')
+ninja_path = os.path.join(ninja.BIN_DIR, 'ninja')
 cmake_version = subprocess.run(['cmake', '--version'], check=True)
 cmake_version.check_returncode()
 
@@ -38,7 +40,7 @@ def get_lib_name():
 class CMakeBuild(build_ext):
     def build_extension(self, ext: CMakeExtension) -> None:
         print(f'Building extension for {self.plat_name} {self.compiler.compiler_type}')
-        configure = subprocess.run([cmake_path, '--preset', 'release'])
+        configure = subprocess.run([cmake_path, '--preset', 'release', f'-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_path}'])
         configure.check_returncode()
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)
