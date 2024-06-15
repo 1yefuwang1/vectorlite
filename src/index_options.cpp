@@ -1,12 +1,10 @@
 #include "index_options.h"
 
-#include <absl/status/status.h>
-
-#include <string_view>
-
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "re2/re2.h"
 
 namespace vectorlite {
@@ -27,7 +25,7 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
   std::string key;
   std::string value;
 
-  std::string_view input(key_value);
+  absl::string_view input(key_value);
   while (re2::RE2::FindAndConsume(&input, kv_reg, &key, &value)) {
     if (key == "max_elements") {
       if (!absl::SimpleAtoi<size_t>(value, &options.max_elements)) {
