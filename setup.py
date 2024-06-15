@@ -1,5 +1,7 @@
 from distutils.command.build_ext import build_ext
 from distutils.command.install_lib import install_lib
+from wheel.bdist_wheel import bdist_wheel
+
 import platform
 import os
 import shutil
@@ -34,13 +36,16 @@ def get_lib_name():
     if system.lower() == 'darwin':
         return 'libvectorlite.dylib'
     if system.lower() == 'windows':
-        return 'vectorlite.dll'
+        return 'libvectorlite.dll'
     raise ValueError(f'Unsupported platform: {system}')
 
 class CMakeBuild(build_ext):
     def build_extension(self, ext: CMakeExtension) -> None:
         print(f'Building extension for {self.plat_name} {self.compiler.compiler_type}')
-        configure = subprocess.run([cmake_path, '--preset', 'release', f'-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_path}'])
+        extra_args = []
+        if system.lower() == 'windows':
+            extra_args = ['-DCMAKE_CXX_COMPILER=cl', '-DCMAKE_C_COMPILER=cl']
+        configure = subprocess.run([cmake_path, '--preset', 'release', f'-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_path}', *extra_args])
         configure.check_returncode()
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)
@@ -58,6 +63,16 @@ class CMakeInstallLib(install_lib):
         shutil.copy(lib, install_to)
         super().run()
 
+# modifed from https://github.com/joerick/python-ctypes-package-sample/blob/86d6abd4b0e2950fdeb4f69aaea3f88665af4405/setup.py#L29
+class BuildAbiNoneWheel(bdist_wheel):
+    def finalize_options(self):
+        bdist_wheel.finalize_options(self)
+        self.root_is_pure = False
+
+    def get_tag(self):
+        python, abi, plat = bdist_wheel.get_tag(self)
+        return "py3", "none", plat
+
 setup(
     name=PACKAGE_NAME,
     description='Fast vector search for sqlite3',
@@ -73,6 +88,7 @@ setup(
     ext_modules=[CMakeExtension('vectorlite')],
     cmdclass={
         'build_ext': CMakeBuild,
-        'install_lib': CMakeInstallLib
+        'install_lib': CMakeInstallLib,
+        'bdist_wheel': BuildAbiNoneWheel
     }
 )

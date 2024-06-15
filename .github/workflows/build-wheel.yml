@@ -16,6 +16,10 @@ jobs:
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
 
+      - name: Add msbuild to PATH
+        if: ${{ matrix.os == 'windows-latest' }}
+        uses: microsoft/setup-msbuild@v2
+
       - name: Bootstrap vcpkg
         run: |
           git submodule update --init --recursive
@@ -26,9 +30,8 @@ jobs:
 
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
-        # to supply options, put them in 'env', like:
-        # env:
-        #   CIBW_SOME_OPTION: value
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13' # 10.13 is the minimum version that supports c++17(e.g. std::visit and std::variant)
 
       - uses: actions/upload-artifact@v4
         with:

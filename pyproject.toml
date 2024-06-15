@@ -7,3 +7,6 @@ requires = [
 ]
 
 build-backend = "setuptools.build_meta"
+
+[tool.cibuildwheel]
+skip = ["*-win32", "*-manylinux_i686", "*-musllinux_i686", "pp*"]
