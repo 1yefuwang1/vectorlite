@@ -79,7 +79,10 @@ TEST(VectorDistance, ShouldWork) {
 
   distance = Distance(v1, v2, vectorlite::SpaceType::Cosine);
   EXPECT_TRUE(distance.ok());
-  EXPECT_FLOAT_EQ(*distance, 0.025368214);
+  // On osx arm64, no vectoration is used and the following test fails.
+  // EXPECT_FLOAT_EQ(*distance, 0.025368214);
+  // Use EXPECT_NEAR instead
+  EXPECT_NEAR(*distance, 0.025368214, 1e-6);
 
   // Test 0 dimension
   vectorlite::Vector v3;
