@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         # os: [ubuntu-latest, windows-latest, macos-13, macos-14]
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-13, macos-14]
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
-          MACOSX_DEPLOYMENT_TARGET: '10.13' # 10.13 is the minimum version that partially supports c++17
+          MACOSX_DEPLOYMENT_TARGET: '10.14' # 10.14 is the minimum version that fully supports c++17
 
       - uses: actions/upload-artifact@v4
         with:
