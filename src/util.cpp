@@ -11,7 +11,7 @@
 
 namespace vectorlite {
 
-bool IsValidColumnName(absl::string_view name) {
+bool IsValidColumnName(std::string_view name) {
   if (name.empty() || sqlite3_keyword_check(name.data(), name.size()) != 0) {
     return false;
   }

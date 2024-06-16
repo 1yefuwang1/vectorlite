@@ -62,7 +62,7 @@ absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(
 }
 
 absl::StatusOr<NamedVectorSpace> NamedVectorSpace::FromString(
-    absl::string_view space_str) {
+    std::string_view space_str) {
   static const re2::RE2 reg("([\\w]+)\\((\\d+),\\s*\"([\\w]+)\"\\)");
 
   std::string vector_name;

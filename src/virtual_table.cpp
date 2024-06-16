@@ -92,7 +92,7 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
     return SQLITE_ERROR;
   }
 
-  absl::string_view index_options_str = argv[1 + kModuleParamOffset];
+  std::string_view index_options_str = argv[1 + kModuleParamOffset];
   DLOG(INFO) << "index_options_str: " << index_options_str;
   auto index_options = IndexOptions::FromString(index_options_str);
   if (!index_options.ok()) {

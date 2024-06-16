@@ -2,9 +2,9 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
 #include "hnswlib/hnswlib.h"
 
 namespace vectorlite {
@@ -38,7 +38,7 @@ struct NamedVectorSpace : public VectorSpace {
   // "l2"), "hnsw(max_elements=1000)") The `vector(384, "l2")` is the vector
   // space string. Supported space type are "l2", "cos", "ip"
   static absl::StatusOr<NamedVectorSpace> FromString(
-      absl::string_view space_str);
+      std::string_view space_str);
 };
 
 absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(

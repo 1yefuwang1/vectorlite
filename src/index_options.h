@@ -1,7 +1,8 @@
 #pragma once
 
+#include <string_view>
+
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
 
 namespace vectorlite {
 
@@ -21,7 +22,7 @@ struct IndexOptions {
   // All parameters except max_elemnts are optional, default values are used
   // if not specified.
   static absl::StatusOr<IndexOptions> FromString(
-      absl::string_view index_options);
+      std::string_view index_options);
 };
 
 }  // namespace vectorlite
