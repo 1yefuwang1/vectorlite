@@ -149,7 +149,7 @@ class RowidEqualsFilter : public hnswlib::BaseFilterFunctor {
 };
 
 std::unique_ptr<hnswlib::BaseFilterFunctor> MakeRowidFilter(
-    std::optional<std::variant<const RowIdIn*, const RowIdEquals*>>
+    std::optional<absl::variant<const RowIdIn*, const RowIdEquals*>>
         row_id_constraint) {
   if (!row_id_constraint) {
     return nullptr;

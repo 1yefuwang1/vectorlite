@@ -10,7 +10,7 @@
 namespace vectorlite {
 
 absl::StatusOr<IndexOptions> IndexOptions::FromString(
-    std::string_view index_options) {
+    absl::string_view index_options) {
   static const re2::RE2 hnsw_reg("^hnsw\\((.*)\\)$");
   std::string key_value;
   if (!re2::RE2::FullMatch(index_options, hnsw_reg, &key_value)) {
