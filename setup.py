@@ -50,7 +50,7 @@ class CMakeBuild(build_ext):
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)
         print(f'Running unit tests')
-        subprocess.run([ctest_path, '--test-dir', os.path.join('build', 'release')], check=True)
+        subprocess.run([ctest_path, '--test-dir', os.path.join('build', 'release'), '--rerun-failed', '--output-on-failure'], check=True)
         
 class CMakeInstallLib(install_lib):
     def run(self):
