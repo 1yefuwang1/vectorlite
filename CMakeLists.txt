@@ -26,6 +26,9 @@ message(STATUS "HNSWLIB include dir: ${HNSWLIB_INCLUDE_DIRS}")
 add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp src/vector_space.cpp src/index_options.cpp src/sqlite_functions.cpp src/constraint.cpp)
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
 target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log re2::re2)
+# copy the shared library to the python package to make running integration tests easier
+add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
+
 if(OPTION_USE_AVX2)
     target_compile_definitions(vectorlite PRIVATE USE_AVX)
     target_compile_options(vectorlite PRIVATE -mavx2)
