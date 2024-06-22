@@ -71,3 +71,22 @@ def test_json_happy_path(conn):
 
     vec = cur.execute('select vector_from_json(?)', (json.dumps(vector.tolist()),)).fetchone()[0]
     assert np.allclose(vector, np.frombuffer(vec, dtype=np.float32))
+
+def test_vector_distance(conn):
+    vec1 = np.float32(np.random.random(DIM))
+    vec2 = np.float32(np.random.random(DIM))
+
+    inner_product_distance = 1 - np.dot(vec1, vec2)
+    cur = conn.cursor()
+    result = cur.execute('select vector_distance(?, ?, "ip")', (vec1.tobytes(), vec2.tobytes())).fetchone()[0]
+    assert np.isclose(result, inner_product_distance)
+
+    cosine_distance = 1 - np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    result = cur.execute('select vector_distance(?, ?, "cosine")', (vec1.tobytes(), vec2.tobytes())).fetchone()[0]
+    assert np.isclose(result, cosine_distance)
+
+    l2_distance = np.linalg.norm(vec1 - vec2)
+    result = cur.execute('select vector_distance(?, ?, "l2")', (vec1.tobytes(), vec2.tobytes())).fetchone()[0]
+    import math
+    # hnswlib doesn't calculate sqaure root of l2 distance
+    assert np.isclose(math.sqrt(result), l2_distance)
