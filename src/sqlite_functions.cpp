@@ -150,7 +150,7 @@ void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   auto json = vector->ToJSON();
-  sqlite3_result_blob(ctx, json.data(), json.size(), SQLITE_TRANSIENT);
+  sqlite3_result_text(ctx, json.data(), json.size(), SQLITE_TRANSIENT);
   return;
 }
 

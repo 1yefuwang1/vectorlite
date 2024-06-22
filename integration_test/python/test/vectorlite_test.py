@@ -2,6 +2,7 @@ import vectorlite_py
 import apsw
 import pytest
 import numpy as np
+import json
 
 
 @pytest.fixture(scope='module')
@@ -54,11 +55,19 @@ def test_virtual_table_happy_path(conn, random_vectors):
 
         result = cur.execute('select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (1,2,3,4,5)', (random_vectors[1].tobytes(), 10)).fetchall()
         # although we are searching for 10 nearest neighbors, rowid filter only has 5 elements
-        assert len(result) == 5 and all([r[0] in (1, 2, 3, 4, 5) for r in result])
         # Note that inner product is not an actual metric. An element can be closer to some other element than to itself. 
         if space != 'ip':
-            assert result[0][0] == 1
+            assert len(result) == 5 and all([r[0] in (1, 2, 3, 4, 5) for r in result]) and result[0][0] == 1
         cur.execute('drop table x')
 
     for space in spaces:
         test_with_space(space)
+
+def test_json_happy_path(conn):
+    cur = conn.cursor()
+    vector = np.float32(np.random.random(DIM))
+    vec = cur.execute('select vector_from_json(vector_to_json(?))', (vector.tobytes(),)).fetchone()[0]
+    assert np.allclose(vector, np.frombuffer(vec, dtype=np.float32))
+
+    vec = cur.execute('select vector_from_json(?)', (json.dumps(vector.tolist()),)).fetchone()[0]
+    assert np.allclose(vector, np.frombuffer(vec, dtype=np.float32))
