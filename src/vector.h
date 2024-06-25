@@ -42,6 +42,6 @@ class Vector {
 
 // Calculate the distance between two vectors.
 absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2,
-                               SpaceType space);
+                               DistanceType space);
 
 }  // namespace vectorlite

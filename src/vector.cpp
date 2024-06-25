@@ -70,13 +70,14 @@ std::string Vector::ToJSON() const {
 }
 
 absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2,
-                               SpaceType space_type) {
+                               DistanceType distance_type) {
   if (v1.dim() != v2.dim()) {
     std::string err =
         absl::StrFormat("Dimension mismatch: %d != %d", v1.dim(), v2.dim());
     return absl::InvalidArgumentError(err);
   }
-  auto vector_space = VectorSpace::Create(v1.dim(), space_type);
+  auto vector_space =
+      VectorSpace::Create(v1.dim(), distance_type, VectorType::Float32);
   if (!vector_space.ok()) {
     return vector_space.status();
   }

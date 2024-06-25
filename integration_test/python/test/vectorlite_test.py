@@ -27,10 +27,11 @@ def test_vectorlite_info(conn):
     assert f'vectorlite extension version {vectorlite_py.__version__}' in output[0]
 
 def test_virtual_table_happy_path(conn, random_vectors):
-    spaces = ['l2', 'ip', 'cosine']
+    # Note: if space is '', it will be treated as 'l2'
+    spaces = ['l2', 'ip', 'cosine', '']
     def test_with_space(space):
         cur = conn.cursor()
-        cur.execute(f'create virtual table x using vectorlite(my_embedding({DIM}, "{space}"), hnsw(max_elements={NUM_ELEMENTS}))')
+        cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}] {space}, hnsw(max_elements={NUM_ELEMENTS}))')
 
         for i in range(NUM_ELEMENTS):
             cur.execute('insert into x (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))

@@ -26,12 +26,16 @@ cur = conn.cursor()
 
 print('Trying to create virtual table for vector search.')
 # Below statement creates a virtual table named 'x' with one column called 'my_embedding' which has a dimension of 1000.
-# my_embedding holds vectors that can be searched based on L2 distance using HNSW index.
+# my_embedding holds vectors that can be searched based on L2 distance(which is the default distance) using HNSW index.
 # Note: the virtual table has an implict rowid column, which is used as a "foreign key" to make connections to other tables.
 # The "hnsw(max_elements=10000, ef_construction=50, M=32)" part configures HNSW index parameters.
 # Please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md for more information about HNSW parameters.
 # Actually, only max_elements is required.
-cur.execute(f'create virtual table x using vectorlite(my_embedding({dim}, "l2"), hnsw(max_elements={num_elements},ef_construction=32,M=32))')
+cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}], hnsw(max_elements={num_elements},ef_construction=32,M=32))')
+# You can explicitly create a vectorlite table specifying the space. The default space is 'l2' if not specified.
+#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  l2, hnsw(max_elements={num_elements},ef_construction=32,M=32))')
+#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  cosine, hnsw(max_elements={num_elements},ef_construction=32,M=32))')
+#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  ip, hnsw(max_elements={num_elements},ef_construction=32,M=32))')
 print("Adding %d vectors" % (len(data)))
 def insert_vectors():
     for i in range(num_elements):

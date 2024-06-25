@@ -9,22 +9,31 @@
 
 namespace vectorlite {
 
-enum class SpaceType {
+enum class DistanceType {
   L2,
   InnerProduct,
   Cosine,
 };
 
-std::optional<SpaceType> ParseSpaceType(std::string_view space_type);
+std::optional<DistanceType> ParseDistanceType(std::string_view distance_type);
+
+enum class VectorType {
+  Float32,
+};
+
+std::optional<VectorType> ParseVectorType(std::string_view vector_type);
 
 struct VectorSpace {
-  SpaceType type;
+  DistanceType distance_type;
   bool normalize;
   std::unique_ptr<hnswlib::SpaceInterface<float>> space;
+  VectorType vector_type;
 
   size_t dimension() const;
 
-  static absl::StatusOr<VectorSpace> Create(size_t dim, SpaceType space_type);
+  static absl::StatusOr<VectorSpace> Create(size_t dim,
+                                            DistanceType distance_type,
+                                            VectorType vector_type);
 };
 
 struct NamedVectorSpace : public VectorSpace {
@@ -42,6 +51,7 @@ struct NamedVectorSpace : public VectorSpace {
 };
 
 absl::StatusOr<NamedVectorSpace> CreateNamedVectorSpace(
-    size_t dim, SpaceType space_type, std::string_view vector_name);
+    size_t dim, DistanceType distance_type, std::string_view vector_name,
+    VectorType vector_type);
 
 }  // namespace vectorlite

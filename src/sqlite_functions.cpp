@@ -52,8 +52,8 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   std::string_view space_type_str(
       reinterpret_cast<const char *>(sqlite3_value_text(argv[2])),
       sqlite3_value_bytes(argv[2]));
-  auto space_type = vectorlite::ParseSpaceType(space_type_str);
-  if (!space_type.has_value()) {
+  auto distance_type = vectorlite::ParseDistanceType(space_type_str);
+  if (!distance_type.has_value()) {
     std::string err =
         absl::StrFormat("Failed to parse space type: %s", space_type_str);
     sqlite3_result_error(ctx, err.c_str(), -1);
@@ -83,7 +83,7 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  auto distance = vectorlite::Distance(*v1, *v2, *space_type);
+  auto distance = vectorlite::Distance(*v1, *v2, *distance_type);
   if (!distance.ok()) {
     sqlite3_result_error(ctx, absl::StatusMessageAsCStr(distance.status()), -1);
     return;

@@ -69,15 +69,15 @@ TEST(VectorDistance, ShouldWork) {
   // Test valid input
   vectorlite::Vector v1({1.0, 2.0, 3.0});
   vectorlite::Vector v2({4.0, 5.0, 6.0});
-  auto distance = Distance(v1, v2, vectorlite::SpaceType::L2);
+  auto distance = Distance(v1, v2, vectorlite::DistanceType::L2);
   EXPECT_TRUE(distance.ok());
   EXPECT_FLOAT_EQ(*distance, 27);
 
-  distance = Distance(v2, v1, vectorlite::SpaceType::InnerProduct);
+  distance = Distance(v2, v1, vectorlite::DistanceType::InnerProduct);
   EXPECT_TRUE(distance.ok());
   EXPECT_FLOAT_EQ(*distance, -31);
 
-  distance = Distance(v1, v2, vectorlite::SpaceType::Cosine);
+  distance = Distance(v1, v2, vectorlite::DistanceType::Cosine);
   EXPECT_TRUE(distance.ok());
   // On osx arm64, no vectoration is used and the following test fails.
   // EXPECT_FLOAT_EQ(*distance, 0.025368214);
@@ -88,7 +88,7 @@ TEST(VectorDistance, ShouldWork) {
   vectorlite::Vector v3;
   vectorlite::Vector v4;
   for (auto space :
-       {vectorlite::SpaceType::L2, vectorlite::SpaceType::InnerProduct}) {
+       {vectorlite::DistanceType::L2, vectorlite::DistanceType::InnerProduct}) {
     distance = Distance(v3, v4, space);
     EXPECT_FALSE(distance.ok());
   }
