@@ -1,1 +1,0 @@
-sh build.sh && ctest --test-dir build/dev --output-on-failure && pytest vectorlite_py/test
