@@ -32,7 +32,7 @@ endif ()
 
 add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp src/vector_space.cpp src/index_options.cpp src/sqlite_functions.cpp src/constraint.cpp)
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
-target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log re2::re2)
+target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2)
 # copy the shared library to the python package to make running integration tests easier
 add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
 
@@ -42,7 +42,7 @@ enable_testing()
 file(GLOB TEST_SOURCES src/*.cpp)
 add_executable(unit-test ${TEST_SOURCES})
 target_include_directories(unit-test PUBLIC ${PROJECT_BINARY_DIR})
-target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings absl::log re2::re2)
+target_link_libraries(unit-test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2)
 # target_compile_options(unit-test PRIVATE -Wall -fno-omit-frame-pointer -g -O0)
 # target_link_options(unit-test PRIVATE -fsanitize=address)
 if(OPTION_USE_AVX)
@@ -56,6 +56,10 @@ if(OPTION_USE_AVX)
     endif()
 endif(OPTION_USE_AVX)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_libraries(vectorlite PRIVATE absl::log)
+    target_link_libraries(unit-test PRIVATE absl::log)
+endif()
 
 gtest_discover_tests(unit-test)
 
