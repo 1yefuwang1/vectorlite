@@ -13,7 +13,7 @@ namespace vectorlite {
 absl::StatusOr<IndexOptions> IndexOptions::FromString(
     std::string_view index_options) {
   static const re2::RE2 hnsw_reg("^hnsw\\((.*)\\)$");
-  std::string key_value;
+  std::string_view key_value;
   if (!re2::RE2::FullMatch(index_options, hnsw_reg, &key_value)) {
     return absl::InvalidArgumentError(
         "Invalid index option. Only hnsw is supported");
@@ -23,8 +23,8 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
   static const re2::RE2 kv_reg("([\\w]+)=([\\w]+)");
 
   bool has_max_elements = false;
-  std::string key;
-  std::string value;
+  std::string_view key;
+  std::string_view value;
 
   std::string_view input(key_value);
   while (re2::RE2::FindAndConsume(&input, kv_reg, &key, &value)) {
