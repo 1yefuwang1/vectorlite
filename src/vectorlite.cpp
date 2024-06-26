@@ -19,9 +19,9 @@ using vectorlite::VirtualTable;
 static sqlite3_module vector_search_module = {
     /* iVersion    */ 3,
     /* xCreate     */ VirtualTable::Create,
-    /* xConnect    */ VirtualTable::Create,
+    /* xConnect    */ VirtualTable::Connect,
     /* xBestIndex  */ VirtualTable::BestIndex,
-    /* xDisconnect */ VirtualTable::Destroy,
+    /* xDisconnect */ VirtualTable::Disconnect,
     /* xDestroy    */ VirtualTable::Destroy,
     /* xOpen       */ VirtualTable::Open,
     /* xClose      */ VirtualTable::Close,

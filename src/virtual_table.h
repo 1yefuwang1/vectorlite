@@ -4,6 +4,8 @@
 #include <memory>
 #include <set>
 #include <utility>  // std::pair
+#include <string_view>
+#include <filesystem>
 
 #include "absl/status/statusor.h"
 #include "hnswlib/hnswlib.h"
@@ -46,15 +48,27 @@ class VirtualTable : public sqlite3_vtab {
 
   ~VirtualTable();
 
-  VirtualTable(NamedVectorSpace space, const IndexOptions& options)
+  VirtualTable(NamedVectorSpace space, const IndexOptions& options, std::string_view file_path)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.space.get(), options.max_elements, options.M,
             options.ef_construction, options.random_seed,
-            options.allow_replace_deleted)) {
+            options.allow_replace_deleted)),
+        file_path_() {
     VECTORLITE_ASSERT(space_.space != nullptr);
     VECTORLITE_ASSERT(index_ != nullptr);
+    if (!file_path.empty()) {
+      // might throw
+      file_path_ = file_path;
+    }
   }
+
+  // Load index from file_path_.
+  absl::Status LoadIndexFromFile();
+
+  absl::Status DeleteIndexFile(); 
+
+  absl::Status SaveIndexToFile();
 
   size_t dimension() const { return space_.dimension(); }
 
@@ -65,14 +79,9 @@ class VirtualTable : public sqlite3_vtab {
   static int Create(sqlite3* db, void* pAux, int argc, const char* const* argv,
                     sqlite3_vtab** ppVTab, char** pzErr);
   static int Destroy(sqlite3_vtab* pVTab);
-  // Connect and Disconnect are not implemented because right now the vtab is
-  // memory-only. So xCreate and xConnect points to the same function. So are
-  // xDestroy and xDisconnect.
-  /*
-  static int Connect(sqlite3*, void* pAux, int argc, char* const* argv,
+  static int Connect(sqlite3* db, void* pAux, int argc, const char* const* argv,
                      sqlite3_vtab** ppVTab, char** pzErr);
   static int Disconnect(sqlite3_vtab* pVTab);
-  */
 
   static int BestIndex(sqlite3_vtab* pVTab, sqlite3_index_info*);
   static int Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor);
@@ -95,6 +104,7 @@ class VirtualTable : public sqlite3_vtab {
 
   NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
+  std::filesystem::path file_path_;
 };
 
 // Just a marker function that tells BestIndex that this is a vector search

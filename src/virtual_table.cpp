@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <exception>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -54,9 +55,10 @@ static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
   va_end(args);
 }
 
-int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
-                         const char* const* argv, sqlite3_vtab** ppVTab,
-                         char** pzErr) {
+// Shared by Create and Connect
+static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
+                            int argc, const char* const* argv,
+                            sqlite3_vtab** ppVTab, char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
   if (rc != SQLITE_OK) {
     return rc;
@@ -76,8 +78,8 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   // VIRTUAL TABLE statement.
   constexpr int kModuleParamOffset = 3;
 
-  if (argc != 2 + kModuleParamOffset) {
-    *pzErr = sqlite3_mprintf("Expected 3 argument, got %d",
+  if (argc != 2 + kModuleParamOffset && argc != 3 + kModuleParamOffset) {
+    *pzErr = sqlite3_mprintf("vectorlite expects 2 or 3 arguments, got %d",
                              argc - kModuleParamOffset);
     return SQLITE_ERROR;
   }
@@ -102,6 +104,11 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
     return SQLITE_ERROR;
   }
 
+  std::string_view index_file_path;
+  if (argc == 3 + kModuleParamOffset) {
+    index_file_path = argv[2 + kModuleParamOffset];
+  }
+
   std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
                                     vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
@@ -111,12 +118,70 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
   }
 
   try {
-    *ppVTab = new VirtualTable(std::move(*vector_space), *index_options);
+    auto vtab = new VirtualTable(std::move(*vector_space), *index_options,
+                                 index_file_path);
+    *ppVTab = vtab;
+
+    if (load_from_file) {
+      auto status = vtab->LoadIndexFromFile();
+      if (!status.ok()) {
+        *pzErr = sqlite3_mprintf("Failed to load index from file: %s",
+                                 absl::StatusMessageAsCStr(status));
+        return SQLITE_ERROR;
+      }
+    }
+
   } catch (const std::exception& ex) {
     *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
     return SQLITE_ERROR;
   }
   return SQLITE_OK;
+}
+
+absl::Status VirtualTable::LoadIndexFromFile() {
+  VECTORLITE_ASSERT(index_ != nullptr);
+  if (!file_path_.empty() && std::filesystem::exists(file_path_)) {
+    try {
+      index_->loadIndex(file_path_.string(), space_.space.get(),
+                        index_->max_elements_);
+    } catch (const std::runtime_error& ex) {
+      return absl::Status(absl::StatusCode::kInternal, ex.what());
+    } catch (const std::exception& ex) {
+      return absl::Status(absl::StatusCode::kUnknown, ex.what());
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::DeleteIndexFile() {
+  if (!file_path_.empty()) {
+    try {
+      std::filesystem::remove(file_path_);
+    } catch (const std::filesystem::filesystem_error& ex) {
+      return absl::Status(absl::StatusCode::kInternal, ex.what());
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::SaveIndexToFile() {
+  VECTORLITE_ASSERT(index_ != nullptr);
+  if (!file_path_.empty()) {
+    try {
+      index_->saveIndex(file_path_.string());
+    } catch (const std::runtime_error& ex) {
+      return absl::Status(absl::StatusCode::kInternal, ex.what());
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
+                         const char* const* argv, sqlite3_vtab** ppVTab,
+                         char** pzErr) {
+  return InitVirtualTable(true, db, pAux, argc, argv, ppVTab, pzErr);
 }
 
 VirtualTable::~VirtualTable() {
@@ -126,8 +191,36 @@ VirtualTable::~VirtualTable() {
 }
 
 int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
+  DLOG(INFO) << "Destroy called";
   VECTORLITE_ASSERT(pVTab != nullptr);
-  delete static_cast<VirtualTable*>(pVTab);
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  auto status = vtab->DeleteIndexFile();
+  if (!status.ok()) {
+    SetZErrMsg(&vtab->zErrMsg, "Failed to delete index file: %s",
+               absl::StatusMessageAsCStr(status));
+    return SQLITE_ERROR;
+  }
+  delete vtab;
+  return SQLITE_OK;
+}
+
+int VirtualTable::Connect(sqlite3* db, void* pAux, int argc,
+                          const char* const* argv, sqlite3_vtab** ppVTab,
+                          char** pzErr) {
+  return InitVirtualTable(true, db, pAux, argc, argv, ppVTab, pzErr);
+}
+
+int VirtualTable::Disconnect(sqlite3_vtab* pVTab) {
+  DLOG(INFO) << "Disconnect called";
+  VECTORLITE_ASSERT(pVTab != nullptr);
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  auto status = vtab->SaveIndexToFile();
+  if (!status.ok()) {
+    SetZErrMsg(&vtab->zErrMsg, "Failed to save index to file: %s",
+               absl::StatusMessageAsCStr(status));
+    return SQLITE_ERROR;
+  }
+  delete vtab;
   return SQLITE_OK;
 }
 
