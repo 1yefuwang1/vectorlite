@@ -136,5 +136,18 @@ def test_index_file(random_vectors):
         result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?, ?))', (random_vectors[0].tobytes(), 10, 30)).fetchall()
         assert len(result) == 10
         conn.close()
-        # The index file should be created
         assert os.path.exists(index_file_path) and os.path.getsize(index_file_path) == index_file_size
+
+
+        # test if `drop table` deletes the index file
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=64,M=32), {index_file_path})')
+        result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+
+        cur.execute(f'drop table my_table2')
+        assert not os.path.exists(index_file_path)
+        conn.close()
+
+        
