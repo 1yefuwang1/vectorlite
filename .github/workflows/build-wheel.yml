@@ -38,7 +38,7 @@ jobs:
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
-          MACOSX_DEPLOYMENT_TARGET: '10.14' # 10.14 is the minimum version that fully supports c++17
+          MACOSX_DEPLOYMENT_TARGET: '10.15' # 10.15 is the minimum version that fully supports c++17
 
       - uses: actions/upload-artifact@v4
         with:
