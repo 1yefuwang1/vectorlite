@@ -35,10 +35,10 @@ if os.path.exists(index_file_path):
 print('Trying to create virtual table for vector search.')
 # Below statement creates a virtual table named 'x' with one column called 'my_embedding' which has a dimension of 1000.
 # my_embedding holds vectors that can be searched based on L2 squared distance(which is the default distance) using HNSW index.
-# One can explicitly specify which distance type to use. The default space is 'l2' if not specified.
-#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  l2, hnsw(max_elements={num_elements}))')
-#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  cosine, hnsw(max_elements={num_elements}))')
-#cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  ip, hnsw(max_elements={num_elements}))')
+# One can explicitly specify which distance type to use. 
+# cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  l2, hnsw(max_elements={num_elements}))')
+# cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  cosine, hnsw(max_elements={num_elements}))')
+# cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  ip, hnsw(max_elements={num_elements}))')
 # Note: the virtual table has an implict rowid column, which is used to uniquely identify a vector and as a "foreign key" to relate to the vector's metadata.
 # For example, you could have another table with metadata columns and rowid column with the same value as the corresponding rowid in a vectorlite virutal table.
 # The "hnsw(max_elements=10000)" part configures HNSW index parameters, which can be used to tune the performance of the index.
@@ -47,7 +47,7 @@ print('Trying to create virtual table for vector search.')
 # the 3rd argument is an optional index file path. Vectorlite will try to load the index from the file if it exists and save the index to the file when database connetion closes.
 # If the index file path is not provided, the index will be stored in memory and will be lost when the database connection closes.
 # The index file will be deleted if the table is dropped.
-cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}, ef_construction=32), {index_file_path})')
+cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
 
 print("Adding %d vectors" % (len(data)))
 def insert_vectors():
@@ -128,12 +128,21 @@ conn = create_connection()
 cur = conn.cursor()
 # We could load the index from the index file by providing the index file path when creating the virtual table.
 # When loading the index from the file, vector dimension MUST stay the same. But table name, vector name can be changed. 
-# HNSW parameters and distance type can also be changed, which is useful for tuning recall rate.
-cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS}, ef_construction=200, M=32), {index_file_path})')
-print(f'index is loaded from {index_file_path} with different distance type and HNSW parameters.')
+# HNSW parameters should NOT change, except that max_elements can be increased.
+# Distance type can be changed. In this example, we change the distance type from l2 to cosine.
+cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS * 2}), {index_file_path})')
+print(f'index is loaded from {index_file_path} with higher max_elements.')
 # Because the index is loaded from the file, we can query the table_reloaded table without inserting any data.
 result = cur.execute('select rowid, distance from table_reloaded where knn_search(vec_reloaded, knn_param(?, ?))', (data[0].tobytes(), 10)).fetchall()
 print(f'10 nearest neighbors of row 0 is {result}')
+
+# test recall again
+# calculate recall rate. Note: ef defaults to 10 after reloading.
+time_taken = timeit.timeit(lambda: test_recall('table_reloaded', 'vec_reloaded'), number=1)
+print(f'time taken for calculating recall rate after reloading from file: {time_taken} seconds')
+
+time_taken = timeit.timeit(lambda: test_recall('table_reloaded', 'vec_reloaded', 32), number=1)
+print(f'time taken for calculating recall rate after reloading from file with ef=32: {time_taken} seconds')
 
 # index file will be deleted when the table is dropped.
 cur.execute('drop table table_reloaded')
