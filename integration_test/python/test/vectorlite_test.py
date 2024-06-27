@@ -126,6 +126,8 @@ def test_index_file(random_vectors):
         assert os.path.exists(index_file_path) and os.path.getsize(index_file_path) == index_file_size
 
         # test if the index file could be loaded with different hnsw parameters and distance type without inserting data again
+        # But hnsw parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file
+        # todo: test whether hnsw parameters are overwritten after more functions are introduced to provide runtime stats.
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=32,M=32), {index_file_path})')

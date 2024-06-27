@@ -128,11 +128,12 @@ conn = create_connection()
 cur = conn.cursor()
 # We could load the index from the index file by providing the index file path when creating the virtual table.
 # When loading the index from the file, vector dimension MUST stay the same. But table name, vector name can be changed. 
-# HNSW parameters should NOT change, except that max_elements can be increased.
-# Distance type can be changed. In this example, we change the distance type from l2 to cosine.
+# HNSW parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file, 
+# except that max_elements can be increased.
+# Distance type can be changed too.
 cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS * 2}), {index_file_path})')
 print(f'index is loaded from {index_file_path} with higher max_elements.')
-# Because the index is loaded from the file, we can query the table_reloaded table without inserting any data.
+# Because the index is loaded from the file, we can query the table without inserting any data.
 result = cur.execute('select rowid, distance from table_reloaded where knn_search(vec_reloaded, knn_param(?, ?))', (data[0].tobytes(), 10)).fetchall()
 print(f'10 nearest neighbors of row 0 is {result}')
 
