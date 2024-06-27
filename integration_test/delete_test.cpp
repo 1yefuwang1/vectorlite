@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
   const auto& vectors = GenerateRandomVectors();
   rc = sqlite3_enable_load_extension(db, 1);
   assert(rc == SQLITE_OK);
-  rc = sqlite3_load_extension(db, "build/dev/libvectorlite.so", "sqlite3_extension_init", &zErrMsg);
+  rc = sqlite3_load_extension(db, "build/dev/vectorlite.so", "sqlite3_extension_init", &zErrMsg);
   if (rc != SQLITE_OK) {
     std::cerr << "load extension failed: " << zErrMsg << std::endl;
     sqlite3_free(zErrMsg);

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.22 FATAL_ERROR)
 
+if (WIN32)
+    set(VCPKG_TARGET_TRIPLET "x64-windows-static-md-release")
+    message(STATUS "VCPKG_TARGET_TRIPLET on windows: ${VCPKG_TARGET_TRIPLET}")
+endif(WIN32)
+
 project(vectorlite VERSION 0.1.0 LANGUAGES CXX)
 
 configure_file(src/version.h.in version.h)
@@ -31,11 +36,12 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
 endif ()
 
 add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp src/vector_space.cpp src/index_options.cpp src/sqlite_functions.cpp src/constraint.cpp)
+# remove the lib prefix to make the shared library name consistent on all platforms.
+set_target_properties(vectorlite PROPERTIES PREFIX "")
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
 target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2)
 # copy the shared library to the python package to make running integration tests easier
 add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
-
 
 include(GoogleTest)
 enable_testing()
@@ -57,6 +63,12 @@ if(OPTION_USE_AVX)
 endif(OPTION_USE_AVX)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_libraries(vectorlite PRIVATE absl::log)
+    target_link_libraries(unit-test PRIVATE absl::log)
+endif()
+
+# TODO: For mysterious reason, absl::log symbols are required for even release build on MSVC. Only DLOG are used which should be guarded by NDEBUG and not included in Release build.
+if(MSVC)
     target_link_libraries(vectorlite PRIVATE absl::log)
     target_link_libraries(unit-test PRIVATE absl::log)
 endif()
