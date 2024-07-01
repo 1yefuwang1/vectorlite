@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_wheel:
+        description: 'whether/where to upload the wheel'
+        required: false
+        default: 'no'
+        type: 'choice'
+        options: ['no', 'pypi', 'testpypi']
+
+
+jobs:
+  build_wheels:
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        # os: [ubuntu-latest, macos-13, macos-14]
+        # os: [windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: benjlevesque/short-sha@v3.0
+        id: short_sha
+    
+      # Used to host cibuildwheel
+      - uses: actions/setup-python@v5
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.19.1 pytest apsw numpy
+
+      - uses: ilammy/msvc-dev-cmd@v1 
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Bootstrap vcpkg
+        run: |
+          git submodule update --init --recursive
+          python bootstrap_vcpkg.py
+
+      - name: Build wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+
+      - name: Short SHA
+        shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
+          path: ./wheelhouse/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorlite-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
+          path: ./build/release/vectorlite.*
+
+  upload_wheels:
+    name: Upload wheels
+    if: ${{ github.event.inputs.upload_wheel != 'no' }}
+    needs: build_wheels
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: benjlevesque/short-sha@v3.0
+        id: short_sha
+    
+      # Download artifact
+      - uses: actions/download-artifact@v4
+        with:
+          name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
+          path: ./wheelhouse
+
+      - name: Upload to test.pypi.org
+        if: ${{ github.event.inputs.upload_wheel == 'testpypi' }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
+        run: pipx run twine upload --repository testpypi wheelhouse/*.whl
+      
+      - name: Upload to pypi.org
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: pipx run twine upload wheelhouse/*.whl
+
+      - name: Fail if uploading to pypi.org without a tag
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && !startsWith(github.ref, 'refs/tags/v') }}
+        run: | 
+          echo "Error: Uploading to pypi.org requires a tag"
+          exit 1
