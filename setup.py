@@ -8,9 +8,9 @@ import shutil
 from pathlib import Path
 
 from setuptools import Extension, setup 
-import cmake
+# import cmake
 import subprocess
-import ninja
+# import ninja
 
 VERSION = '0.1.0'
 PACKAGE_NAME = 'vectorlite_py'
@@ -19,12 +19,12 @@ system = platform.system()
 machine = platform.machine()
 
 print(f'Current platfrom: {system}, {machine}')
-print(f'cmake bin dir: {cmake.CMAKE_BIN_DIR}. cwd: {os.getcwd()}')
-cmake_path = os.path.join(cmake.CMAKE_BIN_DIR, 'cmake')
-ctest_path = os.path.join(cmake.CMAKE_BIN_DIR, 'ctest')
-ninja_path = os.path.join(ninja.BIN_DIR, 'ninja')
-cmake_version = subprocess.run(['cmake', '--version'], check=True)
-cmake_version.check_returncode()
+# print(f'cmake bin dir: {cmake.CMAKE_BIN_DIR}. cwd: {os.getcwd()}')
+# cmake_path = os.path.join(cmake.CMAKE_BIN_DIR, 'cmake')
+# ctest_path = os.path.join(cmake.CMAKE_BIN_DIR, 'ctest')
+# ninja_path = os.path.join(ninja.BIN_DIR, 'ninja')
+# cmake_version = subprocess.run([cmake_path, '--version'], check=True)
+# cmake_version.check_returncode()
 
 class CMakeExtension(Extension):
     def __init__(self, name: str) -> None:
@@ -32,20 +32,22 @@ class CMakeExtension(Extension):
 
 def get_lib_name():
     if system.lower() == 'linux':
-        return 'libvectorlite.so'
+        return 'vectorlite.so'
     if system.lower() == 'darwin':
-        return 'libvectorlite.dylib'
+        return 'vectorlite.dylib'
     if system.lower() == 'windows':
-        return 'libvectorlite.dll'
+        return 'vectorlite.dll'
     raise ValueError(f'Unsupported platform: {system}')
 
 class CMakeBuild(build_ext):
     def build_extension(self, ext: CMakeExtension) -> None:
+        cmake_path = 'cmake'
+        ctest_path = 'ctest'
         print(f'Building extension for {self.plat_name} {self.compiler.compiler_type}')
         extra_args = []
-        if system.lower() == 'windows':
-            extra_args = ['-DCMAKE_CXX_COMPILER=cl', '-DCMAKE_C_COMPILER=cl']
-        configure = subprocess.run([cmake_path, '--preset', 'release', f'-DCMAKE_MAKE_PROGRAM:FILEPATH={ninja_path}', *extra_args])
+        # if system.lower() == 'windows':
+            # extra_args = ['-DCMAKE_CXX_COMPILER=cl', '-DCMAKE_C_COMPILER=cl']
+        configure = subprocess.run([cmake_path, '--preset', 'release', *extra_args])
         configure.check_returncode()
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)

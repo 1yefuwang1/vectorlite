@@ -1,9 +1,16 @@
 [build-system]
-requires = ["setuptools>=59", "wheel", "cmake", "ninja"]
+requires = ["setuptools>=59", "wheel"]
 
 build-backend = "setuptools.build_meta"
 
 [tool.cibuildwheel]
 test-requires = ["pytest", "numpy", "apsw>=3.46"]
 test-command = "pytest {project}/integration_test/python/test"
-skip = ["*-win32", "*-manylinux_i686", "*musllinux*", "pp*", "cp36*", "cp37*", "cp38*"]
+skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp36*", "cp37*", "cp38*", "cp39*"]
+
+[tool.cibuildwheel.macos]
+environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"} # 10.15 is the minimum version that fully supports c++17
+
+# todo: support musllinux
+[tool.cibuildwheel.linux]
+before-build = "yum install -y ninja-build"

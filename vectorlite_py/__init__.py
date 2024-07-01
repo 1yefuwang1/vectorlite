@@ -3,7 +3,7 @@ import os
 __version__ = '0.1.0'
 
 def vectorlite_path():
-    loadable_path = os.path.join(os.path.dirname(__file__), 'libvectorlite')
+    loadable_path = os.path.join(os.path.dirname(__file__), 'vectorlite')
     return os.path.normpath(loadable_path)
 
 

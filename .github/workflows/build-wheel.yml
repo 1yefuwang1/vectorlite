@@ -8,8 +8,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # os: [ubuntu-latest, windows-latest, macos-13, macos-14]
-        os: [ubuntu-latest, macos-13, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        # os: [ubuntu-latest, macos-13, macos-14]
+        # os: [windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -17,28 +18,24 @@ jobs:
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
 
-      - name: setup devcmd
-        if: ${{ matrix.os == 'windows-latest' }}
-            # NOTE: this is necessary to correctly find and use cl.exe
-        uses: ilammy/msvc-dev-cmd@v1.13.0
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.19.1 pipx pytest apsw numpy
 
-      - name: Install linux deps
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        run: |
-          sudo apt-get install zip -y
+      - uses: ilammy/msvc-dev-cmd@v1 
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
 
       - name: Bootstrap vcpkg
         run: |
           git submodule update --init --recursive
           python bootstrap_vcpkg.py
 
-      - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==2.19.1
-
       - name: Build wheels
-        run: python -m cibuildwheel --output-dir wheelhouse
-        env:
-          MACOSX_DEPLOYMENT_TARGET: '10.15' # 10.15 is the minimum version that fully supports c++17
+        run: pipx run cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:

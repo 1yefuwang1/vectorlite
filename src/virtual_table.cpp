@@ -107,6 +107,16 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
   std::string_view index_file_path;
   if (argc == 3 + kModuleParamOffset) {
     index_file_path = argv[2 + kModuleParamOffset];
+    int size = index_file_path.size();
+    // Handle cases where the index_file_path is enclosed in double/single
+    // quotes. It is necessary for windows paths, because they contain ':', that
+    // must be quoted for sqlite to parse correctly.
+    if (size > 2) {
+      if ((index_file_path[0] == '\"' && index_file_path[size - 1] == '\"') ||
+          (index_file_path[0] == '\'' && index_file_path[size - 1] == '\'')) {
+        index_file_path = index_file_path.substr(1, size - 2);
+      }
+    }
   }
 
   std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
