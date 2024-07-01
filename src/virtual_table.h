@@ -1,11 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <set>
-#include <utility>  // std::pair
 #include <string_view>
-#include <filesystem>
+#include <utility>  // std::pair
 
 #include "absl/status/statusor.h"
 #include "hnswlib/hnswlib.h"
@@ -48,7 +48,8 @@ class VirtualTable : public sqlite3_vtab {
 
   ~VirtualTable();
 
-  VirtualTable(NamedVectorSpace space, const IndexOptions& options, std::string_view file_path)
+  VirtualTable(NamedVectorSpace space, const IndexOptions& options,
+               std::string_view file_path)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.space.get(), options.max_elements, options.M,
@@ -66,7 +67,7 @@ class VirtualTable : public sqlite3_vtab {
   // Load index from file_path_.
   absl::Status LoadIndexFromFile();
 
-  absl::Status DeleteIndexFile(); 
+  absl::Status DeleteIndexFile();
 
   absl::Status SaveIndexToFile();
 
