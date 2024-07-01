@@ -51,6 +51,7 @@ cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}
 
 print("Adding %d vectors" % (len(data)))
 def insert_vectors():
+    # rowid MUST be explicitly set when inserting vectors and cannot be auto-generated.
     cur.executemany('insert into x (rowid, my_embedding) values (?, ?)', [(i, data[i].tobytes()) for i in range(NUM_ELEMENTS)])
 
 time_taken = timeit.timeit(insert_vectors, number=1)
