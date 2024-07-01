@@ -14,6 +14,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: benjlevesque/short-sha@v3.0
+        id: short_sha
     
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
@@ -37,7 +40,11 @@ jobs:
       - name: Build wheels
         run: pipx run cibuildwheel --output-dir wheelhouse
 
+      - name: Short SHA
+        shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          name: vectorlite-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
