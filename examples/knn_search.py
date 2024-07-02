@@ -9,6 +9,10 @@ Example of using vectorlite extension to perform KNN search on a table of vector
 """
 
 use_apsw = os.environ.get('USE_BUILTIN_SQLITE3', '0') == '0'
+use_local_vectorlite = os.environ.get('USE_LOCAL_VECTORLITE')
+
+if not use_local_vectorlite:
+    import vectorlite_py
 
 DIM = 1000
 NUM_ELEMENTS = 10000
@@ -20,7 +24,7 @@ def create_connection():
     # create connection to in-memory database
     conn = apsw.Connection(':memory:') if use_apsw else sqlite3.connect(':memory:')
     conn.enable_load_extension(True)
-    conn.load_extension('../build/release/vectorlite.so')
+    conn.load_extension(use_local_vectorlite if use_local_vectorlite else vectorlite_py.vectorlite_path())
     return conn
 
 conn = create_connection()
