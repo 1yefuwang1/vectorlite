@@ -49,19 +49,10 @@ jobs:
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
 
-      - name: Short SHA
-        shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
       - uses: actions/upload-artifact@v4
         with:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vectorlite-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
-          path: ./build/release/vectorlite.*
 
   upload_wheels:
     name: Upload wheels
