@@ -13,4 +13,5 @@ environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"} # 10.15 is the minimum versio
 
 # todo: support musllinux
 [tool.cibuildwheel.linux]
-before-build = "yum install -y ninja-build"
+# https://github.com/pypa/cibuildwheel/issues/1915
+before-build = "sed -i s/mirrorlist.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo ; sed -i s/^#.baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo;yum install -y ninja-build"
