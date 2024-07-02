@@ -10,6 +10,9 @@ on:
         type: 'choice'
         options: ['no', 'pypi', 'testpypi']
 
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build_wheels:
@@ -56,7 +59,7 @@ jobs:
 
   upload_wheels:
     name: Upload wheels
-    if: ${{ github.event.inputs.upload_wheel != 'no' }}
+    if: ${{ github.event.inputs.upload_wheel != 'no' && github.event_name != 'pull_request' }}
     needs: build_wheels
     runs-on: ubuntu-latest
     strategy:
