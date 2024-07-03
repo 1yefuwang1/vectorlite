@@ -40,9 +40,13 @@ jobs:
 
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.6'
 
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
+        with:
+          version: 1.11.1
 
       - name: Bootstrap vcpkg
         run: |
