@@ -104,6 +104,10 @@ if use_apsw:
     # cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1) and rowid in (1, 2)', (data[0].tobytes(), 10))
     # print(cur.fetchall())
 
+    # However, multiple constraints can be combined using 'or'.
+    cur.execute(f'select rowid, distance from x where (knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)) or (knn_search(my_embedding, knn_param(?, ?)) and rowid in (3,4,5))', (data[0].tobytes(), 10, data[1].tobytes(), 10))
+    print(cur.fetchall())
+
 
     # delete a row
     cur.execute(f'delete from x where rowid = 1')
