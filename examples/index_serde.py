@@ -5,7 +5,7 @@ import numpy as np
 import os
 import timeit
 """
-Example of using vectorlite extension to perform KNN search on a table of vectors.
+This is an example of using vectorlite to search vectors and serialize/deserialize the index.
 """
 
 use_apsw = os.environ.get('USE_BUILTIN_SQLITE3', '0') == '0'
