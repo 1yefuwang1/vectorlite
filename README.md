@@ -27,10 +27,13 @@ Below is a minimal example of using vectorlite. It can also be found in the exam
 import vectorlite_py
 import apsw
 import numpy as np
+"""
+Quick start of using vectorlite extension.
+"""
 
 conn = apsw.Connection(':memory:')
 conn.enable_load_extension(True) # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path()) # loads vectorlite
+conn.load_extension(vectorlite_py.vectorlite_path()) # load vectorlite
 
 cursor = conn.cursor()
 # check if vectorlite is loaded
@@ -70,33 +73,12 @@ print(f'vector at rowid 1234: {result[0]}')
 result = cursor.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10))', [data[0].tobytes()]).fetchall()
 print(f'10 nearest neighbors of row 0 is {result}')
 
-# Find 10 approximate nearest neighbors of data[0] for rowid from 1000 to 2000 using metadata(rowid) filtering.
+# Find 10 approximate nearest neighbors of the first embedding in vectors with rowid within [1001, 2000) using metadata(rowid) filtering.
 rowids = ','.join([str(rowid) for rowid in range(1000, 2000)])
 result = cursor.execute(f'select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10)) and rowid in ({rowids})', [data[0].tobytes()]).fetchall()
-
-# Insert the test data into the virtual table. Note that the rowid MUST be explicitly set when inserting vectors and cannot be auto-generated.
-# The rowid is used to uniquely identify a vector and serve as a "foreign key" to relate to the vector's metadata.
-# Vectorlite takes vectors in raw bytes, so a numpy vector need to be converted to bytes before inserting into the table.
-cursor.executemany('insert into my_table(rowid, my_embedding) values (?, ?)', [(i, data[i].tobytes()) for i in range(NUM_ELEMENTS)])
-
-# Query the virtual table to get the vector at rowid 12345. Note the vector needs to be converted back to json using vector_to_json() to be human-readable. 
-result = cursor.execute('select vector_to_json(my_embedding) from my_table where rowid = 1234').fetchone()
-print(f'vector at rowid 1234: {result[0]}')
-
-# Find 10 approximate nearest neighbors of data[0] and there distances from data[0].
-# knn_search() is used to tell vectorlite to do a vector search.
-# knn_param(V, K, ef) is used to pass the query vector V, the number of nearest neighbors K to find and an optional ef parameter to tune the performance of the search.
-# If ef is not specified, ef defaults to 10. For more info on ef, please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md
-result = cursor.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10))', [data[0].tobytes()]).fetchall()
-print(f'10 nearest neighbors of row 0 is {result}')
-
-# Find 10 approximate nearest neighbors of data[0] for rowid from 1000 to 2000 using metadata(rowid) filtering.
-rowids = ','.join([str(rowid) for rowid in range(1000, 2000)])
-result = cursor.execute(f'select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10)) and rowid in ({rowids})', [data[0].tobytes()]).fetchall()
-print(f'10 nearest neighbors of row 0 from rowid 1000 to 2000 is {result}')
+print(f'10 nearest neighbors of row 0 in vectors with rowid within [1000, 2000) is {result}')
 
 conn.close()
-
 
 ```
 
@@ -129,8 +111,17 @@ sh build_release.sh # for release build
 
 ```shell
 python3 -m build -w
+
 ```
 vectorlite_py wheel can be found in `dist` folder
+
+# Roadmap
+- [ ] SIMD support for ARM platform
+- [ ] Support user defined metadata/rowid filter
+- [ ] Support Multi-vector document search and epsilon search
+- [ ] Support multi-threaded search
+- [ ] Release vectorlite to more package managers.
+
 # Known limitations
 1. On a single query, a knn_search vector constraint can only be paired with at most one rowid constraint and vice versa. 
 For example, The following queries will fail:
@@ -158,6 +149,7 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 6. Metadata filter(rowid filter) requires sqlite3 >= 3.38. Python's built-in `sqlite` module is usually built with old versions. Please use a newer sqlite binding such as `apsw` if you want to use metadata filter. knn_search() without rowid fitler still works for old sqlite3.
 7. The vector index is held in memory.
 8. Deleting a row only marks the vector as deleted and doesn't free the memory. The vector will not be included in later queries. However, if another vector is inserted with the same rowid, the memory will be reused.
+9. A vectorlite table can only have one vector column.
 
 # Acknowledgement
 This project is greatly inspired by following projects
