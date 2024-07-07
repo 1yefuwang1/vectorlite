@@ -192,11 +192,17 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     if (knn_param->ef_search.has_value()) {
       index_.setEf(*knn_param->ef_search);
     }
-    auto result = index_.searchKnnCloserFirst(
-        space_.normalize ? knn_param->query_vector.Normalize().data().data()
-                         : knn_param->query_vector.data().data(),
-        knn_param->k, rowid_filter.get());
-    return result;
+    try {
+      auto result = index_.searchKnnCloserFirst(
+          space_.normalize ? knn_param->query_vector.Normalize().data().data()
+                           : knn_param->query_vector.data().data(),
+          knn_param->k, rowid_filter.get());
+      return result;
+
+    } catch (const std::runtime_error& e) {
+      return absl::InternalError(e.what());
+    }
+
   } else {
     QueryExecutor::QueryResult result;
     if (rowid_constraint_) {
