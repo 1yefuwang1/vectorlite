@@ -46,16 +46,16 @@ query_data = {dim: np.float32(np.random.random((NUM_QUERIES, dim))) for dim in D
 k = 10
 
 # (ef_construction, M)
-hnsw_params = [(16, 200), (32, 200)]
+hnsw_params = [(200, 32), (200, 48), (200, 64)]
 
 # ef_search
-efs = [10, 50, 100]
+efs = [10, 50, 100, 150]
 
 
 # 'ip'(inner product) is not tested as it is not an actual metric that measures the distance between two vectors
 distance_types = ["l2", "cosine"]
 
-# Calculate correot results using Brute Force index
+# Calculate correct results using Brute Force index
 correct_labels = {}
 for distance_type in distance_types:
     correct_labels[distance_type] = {}
