@@ -66,16 +66,22 @@ jobs:
       - name: Run python examples
         shell: bash
         run: |
-          python -m pip install -r examples/requirements.txt
 
           for wheel in wheelhouse/*.whl; do
             echo "Running examples for $wheel"
             python -m pip install $wheel --force-reinstall
+            python -m pip install -r examples/requirements.txt
             for example in examples/*.py; do
               echo "Running $example"
               python $example
             done
           done
+
+      - name: Run benchmark
+        shell: bash
+        run: |
+          python -m pip install -r benchmark/requirements.txt
+          python benchmark/benchmark.py
 
   upload_wheels:
     name: Upload wheels

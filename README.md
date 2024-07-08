@@ -6,14 +6,66 @@ For other languages, vectorlite.[so|dll|dylib] can be extracted from the wheel f
 
 Vectorlite is currently in beta. There could be breaking changes.
 ## Highlights
-1. Fast ANN-search backed by hnswlib.
+1. Fast ANN-search backed by hnswlib. Please see benchmark below.
 2. Works on Windows, Linux and MacOS.
 3. SIMD accelerated vector distance calculation for x86 platform, using `vector_distance()`
-4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
+4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
 3. Full control over HNSW parameters for performance tuning.
 4. Metadata filter support (requires sqlite version >= 3.38).
 5. Index serde support. A vectorlite table can be saved to a file, and be reloaded from it. Index files created by hnswlib can also be loaded by vectorlite.
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
+
+## Benchamrk
+Vectorlite is fast. Compared with [sqlite-vss](https://github.com/facebookresearch/faiss), vectorlite is 10x faster in insertion and 2x-10x faster in searching with much better recall rate.
+The benchmark method is that:
+1. Insert 10000 randomly-generated vectors into a vectorlite table.
+2. Randomly generate 100 vectors and then query the table with them.
+
+The benchmark is run on my PC with a i5-12600KF CPU and 16G RAM and on WSL.
+The benchmark code can be found in benchmark folder, which can be used as an example of how to improve recall_rate for your scenario by tuning HNSW parameters.
+
+```
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ distance_type ┃ vector dimension ┃ ef_construction ┃ M   ┃ ef_search ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│ l2            │ 256              │ 16              │ 200 │ 10        │ 310.31 us               │ 81.46 us               │ 52.40%      │
+│ l2            │ 256              │ 16              │ 200 │ 50        │ 310.31 us               │ 217.17 us              │ 88.40%      │
+│ l2            │ 256              │ 16              │ 200 │ 100       │ 310.31 us               │ 314.81 us              │ 97.40%      │
+│ l2            │ 256              │ 32              │ 200 │ 10        │ 327.48 us               │ 89.16 us               │ 52.40%      │
+│ l2            │ 256              │ 32              │ 200 │ 50        │ 327.48 us               │ 213.95 us              │ 88.40%      │
+│ l2            │ 256              │ 32              │ 200 │ 100       │ 327.48 us               │ 349.63 us              │ 97.40%      │
+│ l2            │ 1024             │ 16              │ 200 │ 10        │ 1460.37 us              │ 445.21 us              │ 42.70%      │
+│ l2            │ 1024             │ 16              │ 200 │ 50        │ 1460.37 us              │ 1362.84 us             │ 81.90%      │
+│ l2            │ 1024             │ 16              │ 200 │ 100       │ 1460.37 us              │ 1989.38 us             │ 92.90%      │
+│ l2            │ 1024             │ 32              │ 200 │ 10        │ 1436.74 us              │ 415.00 us              │ 42.70%      │
+│ l2            │ 1024             │ 32              │ 200 │ 50        │ 1436.74 us              │ 1282.99 us             │ 81.90%      │
+│ l2            │ 1024             │ 32              │ 200 │ 100       │ 1436.74 us              │ 1904.94 us             │ 92.90%      │
+│ cosine        │ 256              │ 16              │ 200 │ 10        │ 268.53 us               │ 63.51 us               │ 52.40%      │
+│ cosine        │ 256              │ 16              │ 200 │ 50        │ 268.53 us               │ 163.83 us              │ 89.40%      │
+│ cosine        │ 256              │ 16              │ 200 │ 100       │ 268.53 us               │ 264.20 us              │ 96.40%      │
+│ cosine        │ 256              │ 32              │ 200 │ 10        │ 286.86 us               │ 64.63 us               │ 52.40%      │
+│ cosine        │ 256              │ 32              │ 200 │ 50        │ 286.86 us               │ 192.57 us              │ 89.40%      │
+│ cosine        │ 256              │ 32              │ 200 │ 100       │ 286.86 us               │ 338.05 us              │ 96.40%      │
+│ cosine        │ 1024             │ 16              │ 200 │ 10        │ 1235.72 us              │ 411.42 us              │ 47.30%      │
+│ cosine        │ 1024             │ 16              │ 200 │ 50        │ 1235.72 us              │ 1113.31 us             │ 85.20%      │
+│ cosine        │ 1024             │ 16              │ 200 │ 100       │ 1235.72 us              │ 1652.70 us             │ 95.60%      │
+│ cosine        │ 1024             │ 32              │ 200 │ 10        │ 1152.72 us              │ 378.64 us              │ 47.30%      │
+│ cosine        │ 1024             │ 32              │ 200 │ 50        │ 1152.72 us              │ 1142.82 us             │ 85.20%      │
+│ cosine        │ 1024             │ 32              │ 200 │ 100       │ 1152.72 us              │ 1634.47 us             │ 95.60%      │
+└───────────────┴──────────────────┴─────────────────┴─────┴───────────┴─────────────────────────┴────────────────────────┴─────────────┘
+```
+The result of the same benchmark for [sqlite-vss](https://github.com/asg017/sqlite-vss) is below: 
+```
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ vector dimension ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│ 256              │ 3694.37 us              │ 755.17 us              │ 55.40%      │
+│ 1024             │ 18598.29 us             │ 3848.64 us             │ 48.60%      │
+└──────────────────┴─────────────────────────┴────────────────────────┴─────────────┘
+```
+I believe the performance difference is mainly caused by the underlying vector search library.
+Sqlite-vss uses [faiss](https://github.com/facebookresearch/faiss), which is optimized for batched scenarios.
+Vectorlite uses [hnswlib](https://github.com/facebookresearch/faiss), which is optimized for online vector searching.
 
 # Quick Start
 The quickest way to get started is to install vectorlite using python.
@@ -121,6 +173,7 @@ vectorlite_py wheel can be found in `dist` folder
 - [ ] Support Multi-vector document search and epsilon search
 - [ ] Support multi-threaded search
 - [ ] Release vectorlite to more package managers.
+- [ ] Support more vector types, e.g. float16, int8.
 
 # Known limitations
 1. On a single query, a knn_search vector constraint can only be paired with at most one rowid constraint and vice versa. 
