@@ -34,7 +34,7 @@ Vectorlite is currently in beta. There could be breaking changes.
 2. Works on Windows, Linux and MacOS.
 3. SIMD accelerated vector distance calculation for x86 platform, using `vector_distance()`
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
-3. Full control over HNSW parameters for performance tuning.
+3. Full control over [HNSW parameters](https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md) for performance tuning.
 4. Metadata(rowid) filter pushdown support (requires sqlite version >= 3.38).
 5. Index serde support. A vectorlite table can be saved to a file, and be reloaded from it. Index files created by hnswlib can also be loaded by vectorlite.
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
