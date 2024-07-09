@@ -1,6 +1,29 @@
 # Overview
 Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux.
 
+Below is an example of using it in sqlite CLI shell:
+
+```sql
+-- Load vectorlite
+.load path/to/vectorlite.[so|dll|dylib]
+-- shows vectorlite version and build info.
+select vectorlite_info(); 
+-- Calculate vector l2(squared) distance
+select vector_distance(vector_from_json('[1,2,3]'), vector_from_json('[3,4,5]'), 'l2');
+-- Create a virtual table named my_table with one vector column my_embedding with dimention of 3
+create virtual table my_table using vectorlite(my_embedding float32[3], hnsw(max_elements=100));
+-- Insert vectors into my_table. rowid can be used to relate to a vector's metadata stored elsewhere, e.g. another table.
+insert into my_table(rowid, my_embedding) values (0, vector_from_json('[1,2,3]'));
+insert into my_table(rowid, my_embedding) values (1, vector_from_json('[2,3,4]'));
+insert into my_table(rowid, my_embedding) values (2, vector_from_json('[7,7,7]'));
+-- Find 2 approximate nearest neighbors of vector [3,4,5] with distances
+select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[3,4,5]'), 2));
+-- Find the nearest neighbor of vector [3,4,5] among vectors with rowid 0 and 1. (requires sqlite_version>=3.38)
+-- It is called metadata filter in vectorlite, because you could get rowid set beforehand based on vectors' metadata and then perform vector search.
+select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[3,4,5]'), 1)) and rowid in (0, 1) ;
+
+```
+
 Currently, vectorlite is pre-compiled for Windows-x64, Linux-x64, MacOS-x64, MacOS-arm64 and distributed as python wheels.
 For other languages, vectorlite.[so|dll|dylib] can be extracted from the wheel for your platform, given that a *.whl file is actually a zip archive.
 
@@ -16,7 +39,7 @@ Vectorlite is currently in beta. There could be breaking changes.
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
 
 ## Benchamrk
-Vectorlite is fast. Compared with [sqlite-vss](https://github.com/facebookresearch/faiss), vectorlite is 10x faster in inserting vectors and 2x-10x faster in searching , and offers much better recall rate if proper HNSW parameters are set.
+Vectorlite is fast. Compared with [sqlite-vss](https://github.com/asg017/sqlite-vss), vectorlite is 10x faster in inserting vectors and 2x-10x faster in searching , and offers much better recall rate if proper HNSW parameters are set.
 
 Benchmark is done in following steps:
 1. Insert 10000 randomly-generated vectors into a vectorlite table.
@@ -31,71 +54,72 @@ Picking good HNSW parameters is crucial for achieving high performance. Please b
 
 
 ```
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
-┃ distance_type ┃ vector dimension ┃ ef_construction ┃ M  ┃ ef_search ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-│ l2            │ 256              │ 200             │ 32 │ 10        │ 297.24 us               │ 41.43 us               │ 32.00%      │
-│ l2            │ 256              │ 200             │ 32 │ 50        │ 297.24 us               │ 144.02 us              │ 71.00%      │
-│ l2            │ 256              │ 200             │ 32 │ 100       │ 297.24 us               │ 194.07 us              │ 89.10%      │
-│ l2            │ 256              │ 200             │ 32 │ 150       │ 297.24 us               │ 258.51 us              │ 95.70%      │
-│ l2            │ 256              │ 200             │ 48 │ 10        │ 308.29 us               │ 41.44 us               │ 40.00%      │
-│ l2            │ 256              │ 200             │ 48 │ 50        │ 308.29 us               │ 135.68 us              │ 79.90%      │
-│ l2            │ 256              │ 200             │ 48 │ 100       │ 308.29 us               │ 212.45 us              │ 94.30%      │
-│ l2            │ 256              │ 200             │ 48 │ 150       │ 308.29 us               │ 288.03 us              │ 98.10%      │
-│ l2            │ 256              │ 200             │ 64 │ 10        │ 315.36 us               │ 51.16 us               │ 45.30%      │
-│ l2            │ 256              │ 200             │ 64 │ 50        │ 315.36 us               │ 176.78 us              │ 83.80%      │
-│ l2            │ 256              │ 200             │ 64 │ 100       │ 315.36 us               │ 262.93 us              │ 96.50%      │
-│ l2            │ 256              │ 200             │ 64 │ 150       │ 315.36 us               │ 350.85 us              │ 98.80%      │
-│ l2            │ 1024             │ 200             │ 32 │ 10        │ 1467.88 us              │ 172.84 us              │ 22.70%      │
-│ l2            │ 1024             │ 200             │ 32 │ 50        │ 1467.88 us              │ 556.84 us              │ 56.60%      │
-│ l2            │ 1024             │ 200             │ 32 │ 100       │ 1467.88 us              │ 988.22 us              │ 77.40%      │
-│ l2            │ 1024             │ 200             │ 32 │ 150       │ 1467.88 us              │ 1374.78 us             │ 87.20%      │
-│ l2            │ 1024             │ 200             │ 48 │ 10        │ 1565.23 us              │ 240.40 us              │ 28.30%      │
-│ l2            │ 1024             │ 200             │ 48 │ 50        │ 1565.23 us              │ 805.00 us              │ 67.20%      │
-│ l2            │ 1024             │ 200             │ 48 │ 100       │ 1565.23 us              │ 1321.40 us             │ 85.80%      │
-│ l2            │ 1024             │ 200             │ 48 │ 150       │ 1565.23 us              │ 1711.43 us             │ 93.50%      │
-│ l2            │ 1024             │ 200             │ 64 │ 10        │ 1495.51 us              │ 359.36 us              │ 31.20%      │
-│ l2            │ 1024             │ 200             │ 64 │ 50        │ 1495.51 us              │ 1031.87 us             │ 71.60%      │
-│ l2            │ 1024             │ 200             │ 64 │ 100       │ 1495.51 us              │ 1493.56 us             │ 89.30%      │
-│ l2            │ 1024             │ 200             │ 64 │ 150       │ 1495.51 us              │ 2142.30 us             │ 95.10%      │
-│ cosine        │ 256              │ 200             │ 32 │ 10        │ 269.65 us               │ 36.94 us               │ 37.50%      │
-│ cosine        │ 256              │ 200             │ 32 │ 50        │ 269.65 us               │ 103.17 us              │ 79.50%      │
-│ cosine        │ 256              │ 200             │ 32 │ 100       │ 269.65 us               │ 155.54 us              │ 91.50%      │
-│ cosine        │ 256              │ 200             │ 32 │ 150       │ 269.65 us               │ 218.37 us              │ 96.60%      │
-│ cosine        │ 256              │ 200             │ 48 │ 10        │ 276.83 us               │ 62.64 us               │ 42.40%      │
-│ cosine        │ 256              │ 200             │ 48 │ 50        │ 276.83 us               │ 113.28 us              │ 85.00%      │
-│ cosine        │ 256              │ 200             │ 48 │ 100       │ 276.83 us               │ 193.28 us              │ 95.70%      │
-│ cosine        │ 256              │ 200             │ 48 │ 150       │ 276.83 us               │ 251.09 us              │ 98.20%      │
-│ cosine        │ 256              │ 200             │ 64 │ 10        │ 286.84 us               │ 56.21 us               │ 47.60%      │
-│ cosine        │ 256              │ 200             │ 64 │ 50        │ 286.84 us               │ 131.34 us              │ 88.70%      │
-│ cosine        │ 256              │ 200             │ 64 │ 100       │ 286.84 us               │ 226.67 us              │ 97.00%      │
-│ cosine        │ 256              │ 200             │ 64 │ 150       │ 286.84 us               │ 302.13 us              │ 98.90%      │
-│ cosine        │ 1024             │ 200             │ 32 │ 10        │ 1261.69 us              │ 163.41 us              │ 28.90%      │
-│ cosine        │ 1024             │ 200             │ 32 │ 50        │ 1261.69 us              │ 477.67 us              │ 67.90%      │
-│ cosine        │ 1024             │ 200             │ 32 │ 100       │ 1261.69 us              │ 890.98 us              │ 84.10%      │
-│ cosine        │ 1024             │ 200             │ 32 │ 150       │ 1261.69 us              │ 1138.74 us             │ 91.30%      │
-│ cosine        │ 1024             │ 200             │ 48 │ 10        │ 1324.49 us              │ 218.41 us              │ 33.40%      │
-│ cosine        │ 1024             │ 200             │ 48 │ 50        │ 1324.49 us              │ 660.30 us              │ 73.70%      │
-│ cosine        │ 1024             │ 200             │ 48 │ 100       │ 1324.49 us              │ 1127.36 us             │ 89.40%      │
-│ cosine        │ 1024             │ 200             │ 48 │ 150       │ 1324.49 us              │ 1446.57 us             │ 95.10%      │
-│ cosine        │ 1024             │ 200             │ 64 │ 10        │ 1317.50 us              │ 262.43 us              │ 36.50%      │
-│ cosine        │ 1024             │ 200             │ 64 │ 50        │ 1317.50 us              │ 809.18 us              │ 78.60%      │
-│ cosine        │ 1024             │ 200             │ 64 │ 100       │ 1317.50 us              │ 1333.40 us             │ 92.90%      │
-│ cosine        │ 1024             │ 200             │ 64 │ 150       │ 1317.50 us              │ 1753.07 us             │ 96.50%      │
-└───────────────┴──────────────────┴─────────────────┴────┴───────────┴─────────────────────────┴────────────────────────┴─────────────┘
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ distance ┃ vector    ┃ ef           ┃    ┃ ef     ┃ insert_time ┃ search_time ┃ recall ┃
+┃ type     ┃ dimension ┃ construction ┃ M  ┃ search ┃ per vector  ┃ per query   ┃ rate   ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
+│ l2       │ 256       │ 200          │ 32 │ 10     │ 291.13 us   │ 35.70 us    │ 31.60% │
+│ l2       │ 256       │ 200          │ 32 │ 50     │ 291.13 us   │ 99.50 us    │ 72.30% │
+│ l2       │ 256       │ 200          │ 32 │ 100    │ 291.13 us   │ 168.80 us   │ 88.60% │
+│ l2       │ 256       │ 200          │ 32 │ 150    │ 291.13 us   │ 310.53 us   │ 95.50% │
+│ l2       │ 256       │ 200          │ 48 │ 10     │ 286.92 us   │ 37.79 us    │ 37.30% │
+│ l2       │ 256       │ 200          │ 48 │ 50     │ 286.92 us   │ 117.73 us   │ 80.30% │
+│ l2       │ 256       │ 200          │ 48 │ 100    │ 286.92 us   │ 196.01 us   │ 93.80% │
+│ l2       │ 256       │ 200          │ 48 │ 150    │ 286.92 us   │ 259.88 us   │ 98.20% │
+│ l2       │ 256       │ 200          │ 64 │ 10     │ 285.82 us   │ 50.26 us    │ 42.60% │
+│ l2       │ 256       │ 200          │ 64 │ 50     │ 285.82 us   │ 138.83 us   │ 84.00% │
+│ l2       │ 256       │ 200          │ 64 │ 100    │ 285.82 us   │ 253.18 us   │ 95.40% │
+│ l2       │ 256       │ 200          │ 64 │ 150    │ 285.82 us   │ 316.45 us   │ 98.70% │
+│ l2       │ 1024      │ 200          │ 32 │ 10     │ 1395.02 us  │ 158.75 us   │ 23.50% │
+│ l2       │ 1024      │ 200          │ 32 │ 50     │ 1395.02 us  │ 564.27 us   │ 60.30% │
+│ l2       │ 1024      │ 200          │ 32 │ 100    │ 1395.02 us  │ 919.26 us   │ 79.30% │
+│ l2       │ 1024      │ 200          │ 32 │ 150    │ 1395.02 us  │ 1232.40 us  │ 88.20% │
+│ l2       │ 1024      │ 200          │ 48 │ 10     │ 1489.91 us  │ 252.91 us   │ 28.50% │
+│ l2       │ 1024      │ 200          │ 48 │ 50     │ 1489.91 us  │ 848.13 us   │ 69.40% │
+│ l2       │ 1024      │ 200          │ 48 │ 100    │ 1489.91 us  │ 1294.02 us  │ 86.80% │
+│ l2       │ 1024      │ 200          │ 48 │ 150    │ 1489.91 us  │ 1680.97 us  │ 94.20% │
+│ l2       │ 1024      │ 200          │ 64 │ 10     │ 1412.03 us  │ 273.36 us   │ 33.30% │
+│ l2       │ 1024      │ 200          │ 64 │ 50     │ 1412.03 us  │ 899.13 us   │ 75.50% │
+│ l2       │ 1024      │ 200          │ 64 │ 100    │ 1412.03 us  │ 1419.61 us  │ 90.10% │
+│ l2       │ 1024      │ 200          │ 64 │ 150    │ 1412.03 us  │ 1821.85 us  │ 96.00% │
+│ cosine   │ 256       │ 200          │ 32 │ 10     │ 255.22 us   │ 28.66 us    │ 38.60% │
+│ cosine   │ 256       │ 200          │ 32 │ 50     │ 255.22 us   │ 85.39 us    │ 75.90% │
+│ cosine   │ 256       │ 200          │ 32 │ 100    │ 255.22 us   │ 137.31 us   │ 91.10% │
+│ cosine   │ 256       │ 200          │ 32 │ 150    │ 255.22 us   │ 190.87 us   │ 95.30% │
+│ cosine   │ 256       │ 200          │ 48 │ 10     │ 259.62 us   │ 57.31 us    │ 46.60% │
+│ cosine   │ 256       │ 200          │ 48 │ 50     │ 259.62 us   │ 170.54 us   │ 84.80% │
+│ cosine   │ 256       │ 200          │ 48 │ 100    │ 259.62 us   │ 221.11 us   │ 94.80% │
+│ cosine   │ 256       │ 200          │ 48 │ 150    │ 259.62 us   │ 239.90 us   │ 97.90% │
+│ cosine   │ 256       │ 200          │ 64 │ 10     │ 273.21 us   │ 49.34 us    │ 48.10% │
+│ cosine   │ 256       │ 200          │ 64 │ 50     │ 273.21 us   │ 139.07 us   │ 88.00% │
+│ cosine   │ 256       │ 200          │ 64 │ 100    │ 273.21 us   │ 242.51 us   │ 96.30% │
+│ cosine   │ 256       │ 200          │ 64 │ 150    │ 273.21 us   │ 296.21 us   │ 98.40% │
+│ cosine   │ 1024      │ 200          │ 32 │ 10     │ 1192.27 us  │ 146.86 us   │ 27.40% │
+│ cosine   │ 1024      │ 200          │ 32 │ 50     │ 1192.27 us  │ 451.61 us   │ 66.10% │
+│ cosine   │ 1024      │ 200          │ 32 │ 100    │ 1192.27 us  │ 826.40 us   │ 83.30% │
+│ cosine   │ 1024      │ 200          │ 32 │ 150    │ 1192.27 us  │ 1199.33 us  │ 90.00% │
+│ cosine   │ 1024      │ 200          │ 48 │ 10     │ 1337.96 us  │ 200.14 us   │ 33.10% │
+│ cosine   │ 1024      │ 200          │ 48 │ 50     │ 1337.96 us  │ 654.35 us   │ 72.60% │
+│ cosine   │ 1024      │ 200          │ 48 │ 100    │ 1337.96 us  │ 1091.57 us  │ 88.90% │
+│ cosine   │ 1024      │ 200          │ 48 │ 150    │ 1337.96 us  │ 1429.51 us  │ 94.50% │
+│ cosine   │ 1024      │ 200          │ 64 │ 10     │ 1287.88 us  │ 257.67 us   │ 38.20% │
+│ cosine   │ 1024      │ 200          │ 64 │ 50     │ 1287.88 us  │ 767.61 us   │ 77.00% │
+│ cosine   │ 1024      │ 200          │ 64 │ 100    │ 1287.88 us  │ 1250.36 us  │ 92.10% │
+│ cosine   │ 1024      │ 200          │ 64 │ 150    │ 1287.88 us  │ 1699.57 us  │ 96.50% │
+└──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
 ```
 The result of the same benchmark is also run for [sqlite-vss](https://github.com/asg017/sqlite-vss) using its default index: 
 ```
 ┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ vector dimension ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
 ┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-│ 256              │ 3999.12 us              │ 869.13 us              │ 52.60%      │
-│ 1024             │ 18820.58 us             │ 4293.13 us             │ 50.80%      │
+│ 256              │ 3644.42 us              │ 1483.18 us             │ 55.00%      │
+│ 1024             │ 18466.91 us             │ 3412.92 us             │ 52.20%      │
 └──────────────────┴─────────────────────────┴────────────────────────┴─────────────┘
 ```
 I believe the performance difference is mainly caused by the underlying vector search library.
 Sqlite-vss uses [faiss](https://github.com/facebookresearch/faiss), which is optimized for batched operations.
-Vectorlite uses [hnswlib](https://github.com/facebookresearch/faiss), which is optimized for realtime vector searching.
+Vectorlite uses [hnswlib](https://github.com/nmslib/hnswlib), which is optimized for realtime vector searching.
 
 # Quick Start
 The quickest way to get started is to install vectorlite using python.

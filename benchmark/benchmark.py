@@ -90,14 +90,14 @@ class ResultTable:
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         table = Table()
-        table.add_column("distance_type")
-        table.add_column("vector dimension")
-        table.add_column("ef_construction")
+        table.add_column("distance\ntype")
+        table.add_column("vector\ndimension")
+        table.add_column("ef\nconstruction")
         table.add_column("M")
-        table.add_column("ef_search")
-        table.add_column("insert_time(per vector)")
-        table.add_column("search_time(per query)")
-        table.add_column("recall_rate")
+        table.add_column("ef\nsearch")
+        table.add_column("insert_time\nper vector")
+        table.add_column("search_time\nper query")
+        table.add_column("recall\nrate")
         for result in self.results:
             table.add_row(
                 result.distance_type,
