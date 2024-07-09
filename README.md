@@ -20,6 +20,7 @@ insert into my_table(rowid, my_embedding) values (2, vector_from_json('[7,7,7]')
 select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[3,4,5]'), 2));
 -- Find the nearest neighbor of vector [3,4,5] among vectors with rowid 0 and 1. (requires sqlite_version>=3.38)
 -- It is called metadata filter in vectorlite, because you could get rowid set beforehand based on vectors' metadata and then perform vector search.
+-- Metadata filter is pushed down to the underlying index when traversing the HNSW graph.
 select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[3,4,5]'), 1)) and rowid in (0, 1) ;
 
 ```
@@ -34,7 +35,7 @@ Vectorlite is currently in beta. There could be breaking changes.
 3. SIMD accelerated vector distance calculation for x86 platform, using `vector_distance()`
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
 3. Full control over HNSW parameters for performance tuning.
-4. Metadata filter support (requires sqlite version >= 3.38).
+4. Metadata(rowid) filter pushdown support (requires sqlite version >= 3.38).
 5. Index serde support. A vectorlite table can be saved to a file, and be reloaded from it. Index files created by hnswlib can also be loaded by vectorlite.
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
 
