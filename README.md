@@ -40,7 +40,7 @@ Vectorlite is currently in beta. There could be breaking changes.
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
 
 ## Benchamrk
-Vectorlite is fast. Compared with [sqlite-vss](https://github.com/asg017/sqlite-vss), vectorlite is 10x faster in inserting vectors and 2x-10x faster in searching , and offers much better recall rate if proper HNSW parameters are set.
+Vectorlite is fast. Compared with [sqlite-vss](https://github.com/asg017/sqlite-vss), vectorlite is 10x faster in inserting vectors and 2x-40x faster in searching (depending on HNSW parameters with speed-accuracy tradeoff), and offers much better recall rate if proper HNSW parameters are set.
 
 Benchmark is done in following steps:
 1. Insert 10000 randomly-generated vectors into a vectorlite table.
