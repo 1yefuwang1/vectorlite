@@ -235,7 +235,7 @@ print(f'vector at rowid 1234: {result[0]}')
 result = cursor.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10))', [data[0].tobytes()]).fetchall()
 print(f'10 nearest neighbors of row 0 is {result}')
 
-# Find 10 approximate nearest neighbors of the first embedding in vectors with rowid within [1001, 2000) using metadata(rowid) filtering.
+# Find 10 approximate nearest neighbors of the first embedding in vectors with rowid within [1000, 2000) using metadata(rowid) filtering.
 rowids = ','.join([str(rowid) for rowid in range(1000, 2000)])
 result = cursor.execute(f'select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10)) and rowid in ({rowids})', [data[0].tobytes()]).fetchall()
 print(f'10 nearest neighbors of row 0 in vectors with rowid within [1000, 2000) is {result}')
