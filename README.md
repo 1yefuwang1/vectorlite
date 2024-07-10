@@ -103,7 +103,7 @@ Benchmark is done in following steps:
 
 The benchmark is run in WSL on my PC with a i5-12600KF intel CPU and 16G RAM.
 
-The benchmark code can be found in benchmark folder, which can be used as an example of how to improve recall rate for your scenario by tuning HNSW parameters.
+The benchmark code can be found in [benchmark folder](https://github.com/1yefuwang1/vectorlite/tree/main/benchmark), which can be used as an example of how to improve recall rate for your scenario by tuning HNSW parameters.
 
 Picking good HNSW parameters is crucial for achieving high performance. Please benchmark and find the best HNSW parameters for your scenario.
 
@@ -163,7 +163,7 @@ Picking good HNSW parameters is crucial for achieving high performance. Please b
 │ cosine   │ 1024      │ 200          │ 64 │ 150    │ 1287.88 us  │ 1699.57 us  │ 96.50% │
 └──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
 ```
-The result of the same benchmark is also run for [sqlite-vss](https://github.com/asg017/sqlite-vss) using its default index: 
+The same benchmark is also run for [sqlite-vss](https://github.com/asg017/sqlite-vss) using its default index: 
 ```
 ┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ vector dimension ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
