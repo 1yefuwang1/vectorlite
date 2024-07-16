@@ -33,7 +33,7 @@ For other languages, `vectorlite.[so|dll|dylib]` can be extracted from the wheel
 
 Vectorlite is currently in beta. There could be breaking changes.
 ## Highlights
-1. Fast ANN-search backed by hnswlib. Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchamrk).
+1. Fast ANN-search backed by hnswlib. Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
 2. Works on Windows, Linux and MacOS.
 3. SIMD accelerated vector distance calculation for x86 platform, using `vector_distance()`
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
