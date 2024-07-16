@@ -93,7 +93,7 @@ select rowid, distance from my_vectorlite_table where knn_search(vector_name, kn
 select rowid, distance from my_vectorlite_table where knn_search(vector_name, knn_param({vector_blob}, {k})) and rowid in (1,2,3,4,5)
 ```
 
-## Benchamrk
+## Benchmark
 Vectorlite is fast. Compared with [sqlite-vss](https://github.com/asg017/sqlite-vss), vectorlite is 10x faster in inserting vectors and 2x-40x faster in searching (depending on HNSW parameters with speed-accuracy tradeoff), and offers much better recall rate if proper HNSW parameters are set.
 
 Benchmark is done in following steps:
