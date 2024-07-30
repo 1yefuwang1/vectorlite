@@ -85,6 +85,9 @@ setup(
     license='Apache License, Version 2.0',
     version=VERSION,
     packages=['vectorlite_py'],
+    package_dir={
+        'vectorlite_py': 'bindings/python/vectorlite_py'
+    },
     # package_data={"vectorlite_py": ['*.so', '*.dylib', '*.dll']},
     install_requires=[],
     ext_modules=[CMakeExtension('vectorlite')],
