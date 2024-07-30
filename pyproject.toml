@@ -5,7 +5,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.cibuildwheel]
 test-requires = ["pytest", "numpy", "apsw>=3.46"]
-test-command = "pytest {project}/integration_test/python/test"
+# --import-mode=importlib forces pytest to use installed packages instead of the local source code
+test-command = "pytest --import-mode=importlib {project}/bindings/python/vectorlite_py/test"
 skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp36*", "cp37*", "cp38*", "cp39*"]
 
 [tool.cibuildwheel.macos]

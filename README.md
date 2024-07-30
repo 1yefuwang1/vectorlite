@@ -246,7 +246,7 @@ conn.close()
 
 ```
 
-More examples can be found in examples and integration_test folder.
+More examples can be found in examples and bindings/python/vectorlite_py/test folder.
 
 # Build Instructions
 If you want to contribute or compile vectorlite for your own platform, you can follow following instructions to build it.
@@ -262,7 +262,7 @@ git clone --recurse-submodules git@github.com:1yefuwang1/vectorlite.git
 
 python3 bootstrap_vcpkg.py
 
-# install dependencies for running integration tests
+# install dependencies for running python tests
 python3 -m pip install -r requirements-dev.txt
 
 sh build.sh # for debug build
