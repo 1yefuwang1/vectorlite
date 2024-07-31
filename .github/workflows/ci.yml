@@ -10,6 +10,13 @@ on:
         type: 'choice'
         options: ['no', 'pypi', 'testpypi']
 
+      publish_npm:
+        description: 'whether to publish the npm packages'
+        required: false
+        default: 'no'
+        type: 'choice'
+        options: ['no', 'yes']
+
   pull_request:
     branches:
       - main
@@ -88,9 +95,6 @@ jobs:
     if: ${{ github.event.inputs.upload_wheel != 'no' && github.event_name != 'pull_request' }}
     needs: build_wheels
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
 
     steps:
       - uses: actions/checkout@v4
@@ -98,10 +102,9 @@ jobs:
       - uses: benjlevesque/short-sha@v3.0
         id: short_sha
     
-      # Download artifact
+      # Download all artifacts
       - uses: actions/download-artifact@v4
         with:
-          name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse
 
       - name: Upload to test.pypi.org
@@ -109,17 +112,60 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
-        run: pipx run twine upload --repository testpypi wheelhouse/*.whl
+        run: pipx run twine upload --repository testpypi wheelhouse/**/*.whl
       
       - name: Upload to pypi.org
-        if: ${{ github.event.inputs.upload_wheel == 'pypi' && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: pipx run twine upload wheelhouse/*.whl
+        run: pipx run twine upload wheelhouse/**/*.whl
 
       - name: Fail if uploading to pypi.org without a tag
-        if: ${{ github.event.inputs.upload_wheel == 'pypi' && !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && !(startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
         run: | 
           echo "Error: Uploading to pypi.org requires a tag"
           exit 1
+
+  publish_npm_pkgs:
+    name: Upload npm packages
+    if: ${{ github.event.inputs.publish_npm == 'yes' && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
+    needs: build_wheels
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: benjlevesque/short-sha@v3.0
+        id: short_sha
+    
+      # Download all artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./wheelhouse
+
+      # extract vectorlite from wheels and copy to nodejs bindings directory
+      - name: unzip wheels
+        run: |
+          sh extract_wheels.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Test locally
+        working-directory: bindings/nodejs/packages/vectorlite
+        run: |
+          npm i -D
+          npm link ../vectorlite-linux-x64
+          npm run test
+
+      - name: Publish to npm
+        working-directory: bindings/nodejs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+        run: |
+          mv package.json.tpl package.json
+          npm publish --workspaces --access public
+

@@ -42,3 +42,6 @@ vcpkg_installed/*
 dist/*
 
 *egg-info
+
+node_modules
+bindings/nodejs/vectorlite/package-lock.json

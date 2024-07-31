@@ -1,0 +1,1 @@
+This folder hosts nodejs bindings for vectorlite. `vectorlite.[so|dll|dylib]` is copied to their own platform dependent package folder. Please check ci.yml for details.

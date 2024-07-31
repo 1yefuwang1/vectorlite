@@ -1,0 +1,23 @@
+{
+  "name": "vectorlite",
+  "version": "0.1.0",
+  "homepage": "https://github.com/1yefuwang1/vectorlite",
+  "main": "src/index.js",
+  "files": ["src"],
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "author": "1yefuwang1@gmail.com",
+  "license": "Apache-2.0",
+  "description": "A fast and tunable vector search extension for SQLite",
+  "keywords": ["sqlite3", "vector database", "vectordb"],
+  "devDependencies": {
+    "better-sqlite3": "^11.1.2"
+  },
+  "optionalDependencies": {
+    "@1yefuwang1/vectorlite-darwin-x64": "0.1.0",
+    "@1yefuwang1/vectorlite-darwin-arm64": "0.1.0",
+    "@1yefuwang1/vectorlite-linux-x64": "0.1.0",
+    "@1yefuwang1/vectorlite-win32-x64": "0.1.0"
+  }
+}

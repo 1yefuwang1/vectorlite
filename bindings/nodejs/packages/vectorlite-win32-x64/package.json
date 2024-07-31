@@ -1,0 +1,13 @@
+{
+  "name": "@1yefuwang1/vectorlite-win32-x64",
+  "version": "0.1.0",
+  "homepage": "https://github.com/1yefuwang1/vectorlite",
+  "main": "src/index.js",
+  "files": ["src"],
+  "author": "1yefuwang1@gmail.com",
+  "license": "Apache-2.0",
+  "description": "A fast and tunable vector search extension for SQLite",
+  "keywords": ["sqlite3", "vector database", "vectordb"],
+  "os": ["win32"],
+  "cpu": ["x64"]
+}

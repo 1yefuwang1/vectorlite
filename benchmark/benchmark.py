@@ -34,7 +34,7 @@ conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 10000  # number of vectors
+NUM_ELEMENTS = 1000  # number of vectors
 NUM_QUERIES = 100  # number of queries
 
 DIMS = [256, 1024]
