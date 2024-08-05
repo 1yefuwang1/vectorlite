@@ -2,7 +2,7 @@ const sqlite3 = require('better-sqlite3');
 const vectorlite = require('../src/index.js');
 
 const db = new sqlite3(':memory:');
-db.loadExtension(vectorlite.vectorlitePath());
+db.loadExtension('/home/yefu/sqlite-hnsw/build/dev/vectorlite.so');
 
 console.log(db.prepare('select vectorlite_info()').all());
 
@@ -22,6 +22,12 @@ console.log(result);
 
 // a vector query with rowid filter
 result = db.prepare('select rowid from test where knn_search(vec, knn_param(?, 2)) and rowid in (1,2,3)')
+    .all([Buffer.from(Float32Array.from(Array.from({length: 10}, () => Math.random())).buffer)]);
+
+console.log(result);
+
+// a vector query with rowid filter
+result = db.prepare('select rowid, vector_distance(vec, ?, \'l2\') from test where rowid in (0,1,2,3)')
     .all([Buffer.from(Float32Array.from(Array.from({length: 10}, () => Math.random())).buffer)]);
 
 console.log(result);
