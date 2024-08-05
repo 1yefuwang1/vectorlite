@@ -1,3 +1,6 @@
+![NPM Version](https://img.shields.io/npm/v/vectorlite)
+![PyPI - Version](https://img.shields.io/pypi/v/vectorlite-py)
+
 # Overview
 Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. 
 
@@ -27,9 +30,12 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 
 ```
 
-Currently, vectorlite is pre-compiled for Windows-x64, Linux-x64, MacOS-x64, MacOS-arm64 and distributed as python wheels. It can be installed simply by:
+Currently, vectorlite is pre-compiled for Windows-x64, Linux-x64, MacOS-x64, MacOS-arm64 and distributed as python wheels and npm packages. It can be installed simply by:
 ```shell
+# For python
 pip install vectorlite-py
+# for nodejs
+npm i vectorlite
 ```
 For other languages, `vectorlite.[so|dll|dylib]` can be extracted from the wheel for your platform, given that a *.whl file is actually a zip archive.
 
@@ -37,7 +43,7 @@ Vectorlite is currently in beta. There could be breaking changes.
 ## Highlights
 1. Fast ANN-search backed by hnswlib. Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
 2. Works on Windows, Linux and MacOS.
-3. SIMD accelerated vector distance calculation for x86 platform, using `vector_distance()`
+3. SIMD accelerated vector distance calculation for x64 platform, using `vector_distance()`
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
 3. Full control over [HNSW parameters](https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md) for performance tuning. Please check [this example](https://github.com/1yefuwang1/vectorlite/blob/main/examples/hnsw_param.py).
 4. Predicate pushdown support for vector metadata(rowid) filter (requires sqlite version >= 3.38). Please check [this example](https://github.com/1yefuwang1/vectorlite/blob/main/examples/metadata_filter.py);
