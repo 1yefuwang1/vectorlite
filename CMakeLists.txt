@@ -35,7 +35,7 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
     set(OPTION_USE_AVX ON)
 endif ()
 
-add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vector.cpp src/util.cpp src/vector_space.cpp src/index_options.cpp src/sqlite_functions.cpp src/constraint.cpp)
+add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vector.cpp src/vector_view.cpp src/util.cpp src/vector_space.cpp src/index_options.cpp src/sqlite_functions.cpp src/constraint.cpp)
 # remove the lib prefix to make the shared library name consistent on all platforms.
 set_target_properties(vectorlite PROPERTIES PREFIX "")
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
