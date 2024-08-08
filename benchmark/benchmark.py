@@ -28,17 +28,20 @@ def timeit(func):
 
 conn = apsw.Connection(":memory:")
 conn.enable_load_extension(True)  # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
+# conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
+conn.load_extension('build/release/vectorlite')  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 2000  # number of vectors
+NUM_ELEMENTS = 10000  # number of vectors
 NUM_QUERIES = 100  # number of queries
 
 DIMS = [256, 1024]
 data = {dim: np.float32(np.random.random((NUM_ELEMENTS, dim))) for dim in DIMS}
+data_bytes = {dim: [data[dim][i].tobytes() for i in range(NUM_ELEMENTS)] for dim in DIMS}
 
 query_data = {dim: np.float32(np.random.random((NUM_QUERIES, dim))) for dim in DIMS}
+query_data_bytes = {dim: [query_data[dim][i].tobytes() for i in range(NUM_QUERIES)] for dim in DIMS}
 
 # search for k nearest neighbors in this benchmark
 k = 10
@@ -67,6 +70,7 @@ for distance_type in distance_types:
         correct_labels[distance_type][dim] = labels
         del bf_index
 
+console = Console()
 
 @dataclasses.dataclass
 class BenchmarkResult:
@@ -124,7 +128,7 @@ def benchmark(distance_type, dim, ef_constructoin, M):
     insert_time_us, _ = timeit(
         lambda: cursor.executemany(
             f"insert into {table_name}(rowid, embedding) values (?, ?)",
-            [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
         )
     )
     result.insert_time_us = insert_time_us / NUM_ELEMENTS
@@ -137,12 +141,13 @@ def benchmark(distance_type, dim, ef_constructoin, M):
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where knn_search(embedding, knn_param(?, ?, ?))",
-                        (query_data[dim][i].tobytes(), k, ef),
+                        (query_data_bytes[dim][i], k, ef),
                     ).fetchall()
                 )
             return result
 
         search_time_us, results = timeit(search)
+        # console.log(results)
         recall_rate = np.mean(
             [
                 np.intersect1d(results[i], correct_labels[distance_type][dim][i]).size
@@ -164,7 +169,6 @@ for distance_type in distance_types:
         for ef_construction, M in hnsw_params:
             benchmark(distance_type, dim, ef_construction, M)
 
-console = Console()
 
 result_table = ResultTable(benchmark_results)
 console.print(result_table)
@@ -213,39 +217,34 @@ def benchmark_brute_force(dim: int):
     insert_time_us, _ = timeit(
         lambda: cursor.executemany(
             f"insert into {table_name}(rowid, embedding) values (?, ?)",
-            [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
         )
     )
     benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
 
-    def my_tracer(cursor: apsw.Cursor, statement: str, bindings) -> bool:
-        print("SQL:", statement.strip())
-        print("Bindings:", bindings)
-        return True  # if you return False then execution is aborted
-
-    cursor.exec_trace = my_tracer
     def search():
         result = []
         for i in range(NUM_QUERIES):
-            # console.log(cursor.execute(f"select typeof(?)", (query_data[dim][i].tobytes(),)).fetchone())
-            # console.log(type(query_data[dim][i]))
-            console.log(cursor.execute(f"select vector_distance(?, ?, 'l2')", (query_data[dim][i].tobytes(), query_data[dim][i].tobytes())).fetchone())
             result.append(
                 cursor.execute(
-                    f"select rowid, vector_distance(?, embedding, 'l2') as distance from {table_name} order by distance desc limit {k}",
-                    [query_data[dim][i].tobytes()],
+                    f"select rowid from {table_name} order by vector_distance(?, embedding, 'l2') asc limit {k}",
+                    [query_data_bytes[dim][i]],
                 ).fetchall()
             )
-        return [r[0] for r in result]
+        return result
 
     search_time_us, results = timeit(search)
+    # console.log(results)
     benchmark_result.search_time_us = search_time_us / NUM_QUERIES
     recall_rate = np.mean(
-        np.intersect1d(results[i], correct_labels["l2"][dim][i]).size / k
-        for i in range(NUM_QUERIES)
+        [
+            np.intersect1d(results[i], correct_labels["l2"][dim][i]).size / k
+            for i in range(NUM_QUERIES)
+        ]
     )
     benchmark_result.recall_rate = recall_rate
     brute_force_benchmark_results.append(benchmark_result)
+
 for dim in DIMS:
     benchmark_brute_force(dim)
 brute_force_table = BruteForceResultTable(brute_force_benchmark_results)
@@ -278,7 +277,7 @@ if benchmark_vss and platform.system().lower() == "linux":
         insert_time_us, _ = timeit(
             lambda: cursor.executemany(
                 f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
             )
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
@@ -289,7 +288,7 @@ if benchmark_vss and platform.system().lower() == "linux":
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where vss_search(embedding, ?) limit {k}",
-                        (query_data[dim][i].tobytes(),),
+                        (query_data_bytes[dim][i],),
                     ).fetchall()
                 )
             return result
@@ -333,7 +332,7 @@ if benchmark_sqlite_vec and platform.system().lower() == "linux":
         insert_time_us, _ = timeit(
             lambda: cursor.executemany(
                 f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
             )
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
@@ -344,7 +343,7 @@ if benchmark_sqlite_vec and platform.system().lower() == "linux":
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where embedding match ? and k = {k}",
-                        (query_data[dim][i].tobytes(),),
+                        (query_data_bytes[dim][i],),
                     ).fetchall()
                 )
             return result

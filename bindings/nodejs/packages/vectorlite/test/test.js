@@ -2,7 +2,7 @@ const sqlite3 = require('better-sqlite3');
 const vectorlite = require('../src/index.js');
 
 const db = new sqlite3(':memory:');
-db.loadExtension('/home/yefu/sqlite-hnsw/build/dev/vectorlite.so');
+db.loadExtension(vectorlite.vectorlitePath());
 
 console.log(db.prepare('select vectorlite_info()').all());
 

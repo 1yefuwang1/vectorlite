@@ -70,7 +70,7 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   std::string_view v1_str(
-      reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
   auto v1 = vectorlite::Vector::FromBlob(v1_str);
@@ -82,7 +82,7 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   std::string_view v2_str(
-      reinterpret_cast<const char *>(sqlite3_value_text(argv[1])),
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[1])),
       sqlite3_value_bytes(argv[1]));
   auto v2 = vectorlite::Vector::FromBlob(v2_str);
   if (!v2.ok()) {
