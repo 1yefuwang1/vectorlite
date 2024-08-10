@@ -1,5 +1,5 @@
 import time
-from typing import Literal
+from typing import Literal, Optional, List
 import numpy as np
 import vectorlite_py
 import apsw
@@ -15,12 +15,10 @@ Benchamrk vectorlite's performance and recall rate using method described in htt
 """
 
 
-
-
 # Roll our own timeit function to measure time in us and get return value of the func.
 # Why Python's built-in timeit.timeit is not used:
 # 1. it includes unnecessary overheads, because compiles the code passed to it
-# 2. func's return value is cannot be obtained directly
+# 2. func's return value cannot be obtained directly
 def timeit(func):
     start_us = time.perf_counter_ns() / 1000
     retval = func()
@@ -31,25 +29,28 @@ def timeit(func):
 conn = apsw.Connection(":memory:")
 conn.enable_load_extension(True)  # enable extension loading
 conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
+# conn.load_extension('build/release/vectorlite')  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 1000  # number of vectors
+NUM_ELEMENTS = 5000  # number of vectors, higher number 
 NUM_QUERIES = 100  # number of queries
 
-DIMS = [256, 1024]
+DIMS = [128, 512, 1536]
 data = {dim: np.float32(np.random.random((NUM_ELEMENTS, dim))) for dim in DIMS}
+data_bytes = {dim: [data[dim][i].tobytes() for i in range(NUM_ELEMENTS)] for dim in DIMS}
 
 query_data = {dim: np.float32(np.random.random((NUM_QUERIES, dim))) for dim in DIMS}
+query_data_bytes = {dim: [query_data[dim][i].tobytes() for i in range(NUM_QUERIES)] for dim in DIMS}
 
 # search for k nearest neighbors in this benchmark
 k = 10
 
 # (ef_construction, M)
-hnsw_params = [(200, 32), (200, 48), (200, 64)]
+hnsw_params = [(100, 30)]
 
 # ef_search
-efs = [10, 50, 100, 150]
+efs = [10, 50, 100]
 
 
 # 'ip'(inner product) is not tested as it is not an actual metric that measures the distance between two vectors
@@ -69,6 +70,7 @@ for distance_type in distance_types:
         correct_labels[distance_type][dim] = labels
         del bf_index
 
+console = Console()
 
 @dataclasses.dataclass
 class BenchmarkResult:
@@ -84,7 +86,7 @@ class BenchmarkResult:
 
 @dataclasses.dataclass
 class ResultTable:
-    results: list[BenchmarkResult]
+    results: List[BenchmarkResult]
 
     def __rich_console__(
         self, console: Console, options: ConsoleOptions
@@ -126,7 +128,7 @@ def benchmark(distance_type, dim, ef_constructoin, M):
     insert_time_us, _ = timeit(
         lambda: cursor.executemany(
             f"insert into {table_name}(rowid, embedding) values (?, ?)",
-            [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
         )
     )
     result.insert_time_us = insert_time_us / NUM_ELEMENTS
@@ -139,12 +141,13 @@ def benchmark(distance_type, dim, ef_constructoin, M):
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where knn_search(embedding, knn_param(?, ?, ?))",
-                        (query_data[dim][i].tobytes(), k, ef),
+                        (query_data_bytes[dim][i], k, ef),
                     ).fetchall()
                 )
             return result
 
         search_time_us, results = timeit(search)
+        # console.log(results)
         recall_rate = np.mean(
             [
                 np.intersect1d(results[i], correct_labels[distance_type][dim][i]).size
@@ -166,52 +169,106 @@ for distance_type in distance_types:
         for ef_construction, M in hnsw_params:
             benchmark(distance_type, dim, ef_construction, M)
 
-console = Console()
 
 result_table = ResultTable(benchmark_results)
 console.print(result_table)
 
 
+@dataclasses.dataclass
+class BruteForceBenchmarkResult:
+    dim: int
+    insert_time_us: float  # in micro seconds, per vector
+    search_time_us: float  # in micro seconds, per query
+    recall_rate: float  # in micro seconds
+
+
+@dataclasses.dataclass
+class BruteForceResultTable:
+    results: List[BruteForceBenchmarkResult]
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        table = Table()
+        table.add_column("vector dimension")
+        table.add_column("insert_time(per vector)")
+        table.add_column("search_time(per query)")
+        table.add_column("recall_rate")
+        for result in self.results:
+            table.add_row(
+                str(result.dim),
+                f"{result.insert_time_us:.2f} us",
+                f"{result.search_time_us:.2f} us",
+                f"{result.recall_rate * 100:.2f}%",
+            )
+        yield table
+
+
+brute_force_benchmark_results = []
+
+console.print("Bencharmk brute force as comparison.")
+
+def benchmark_brute_force(dim: int):
+    benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
+    table_name = f"table_vectorlite_bf_{dim}"
+    cursor.execute(
+        f"create table {table_name}(rowid integer primary key, embedding blob)"
+    )
+
+    insert_time_us, _ = timeit(
+        lambda: cursor.executemany(
+            f"insert into {table_name}(rowid, embedding) values (?, ?)",
+            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+        )
+    )
+    benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
+
+    def search():
+        result = []
+        for i in range(NUM_QUERIES):
+            result.append(
+                cursor.execute(
+                    f"select rowid from {table_name} order by vector_distance(?, embedding, 'l2') asc limit {k}",
+                    [query_data_bytes[dim][i]],
+                ).fetchall()
+            )
+        return result
+
+    search_time_us, results = timeit(search)
+    # console.log(results)
+    benchmark_result.search_time_us = search_time_us / NUM_QUERIES
+    recall_rate = np.mean(
+        [
+            np.intersect1d(results[i], correct_labels["l2"][dim][i]).size / k
+            for i in range(NUM_QUERIES)
+        ]
+    )
+    benchmark_result.recall_rate = recall_rate
+    brute_force_benchmark_results.append(benchmark_result)
+
+for dim in DIMS:
+    benchmark_brute_force(dim)
+brute_force_table = BruteForceResultTable(brute_force_benchmark_results)
+console.print(brute_force_table)
+
+
+# Benchmark sqlite_vss as compariso.
+# pip install sqlite-vss
 import platform
-benchmark_vss = os.environ.get('BENCHMARK_VSS', '0') != '0'
-if benchmark_vss and platform.system().lower() == "linux":
+
+benchmark_vss = os.environ.get("BENCHMARK_VSS", "0") != "0"
+if benchmark_vss and (platform.system().lower() == "linux" or platform.system().lower() == "darwin"):
     # note sqlite_vss is not self-contained.
     # Need to install dependencies manually using: sudo apt-get install -y libgomp1 libatlas-base-dev liblapack-dev
     console.print("Bencharmk sqlite_vss as comparison.")
     import sqlite_vss
+
     sqlite_vss.load(conn)
 
-    @dataclasses.dataclass
-    class VssBenchmarkResult:
-        dim: int
-        insert_time_us: float  # in micro seconds, per vector
-        search_time_us: float  # in micro seconds, per query
-        recall_rate: float  # in micro seconds
-
-    @dataclasses.dataclass
-    class VssResultTable:
-        results: list[VssBenchmarkResult]
-
-        def __rich_console__(
-            self, console: Console, options: ConsoleOptions
-        ) -> RenderResult:
-            table = Table()
-            table.add_column("vector dimension")
-            table.add_column("insert_time(per vector)")
-            table.add_column("search_time(per query)")
-            table.add_column("recall_rate")
-            for result in self.results:
-                table.add_row(
-                    str(result.dim),
-                    f"{result.insert_time_us:.2f} us",
-                    f"{result.search_time_us:.2f} us",
-                    f"{result.recall_rate * 100:.2f}%",
-                )
-            yield table
-
     vss_benchmark_results = []
+
     def benchmark_sqlite_vss(dim: int):
-        benchmark_result = VssBenchmarkResult(dim, 0, 0, 0)
+        benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
         table_name = f"table_vss_{dim}"
         cursor.execute(
             f"create virtual table {table_name} using vss0(embedding({dim}))"
@@ -221,7 +278,7 @@ if benchmark_vss and platform.system().lower() == "linux":
         insert_time_us, _ = timeit(
             lambda: cursor.executemany(
                 f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data[dim][i].tobytes()) for i in range(NUM_ELEMENTS)],
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
             )
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
@@ -232,17 +289,16 @@ if benchmark_vss and platform.system().lower() == "linux":
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where vss_search(embedding, ?) limit {k}",
-                        (query_data[dim][i].tobytes(),),
+                        (query_data_bytes[dim][i],),
                     ).fetchall()
                 )
             return result
-        
+
         search_time_us, results = timeit(search)
         benchmark_result.search_time_us = search_time_us / NUM_QUERIES
         recall_rate = np.mean(
             [
-                np.intersect1d(results[i], correct_labels["cosine"][dim][i]).size
-                / k
+                np.intersect1d(results[i], correct_labels["l2"][dim][i]).size / k
                 for i in range(NUM_QUERIES)
             ]
         )
@@ -252,5 +308,60 @@ if benchmark_vss and platform.system().lower() == "linux":
     for dim in DIMS:
         benchmark_sqlite_vss(dim)
 
-    vss_result_table = VssResultTable(vss_benchmark_results)
+    vss_result_table = BruteForceResultTable(vss_benchmark_results)
     console.print(vss_result_table)
+
+# benchmark sqlite-vec
+# pip install sqlite-vec
+benchmark_sqlite_vec = os.environ.get("BENCHMARK_SQLITE_VEC", "0") != "0"
+if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.system().lower() == "darwin"):
+    # VssBenchamrkResult and VssResultTable can be reused
+    vec_benchmark_results = []
+    console.print("Bencharmk sqlite_vec as comparison.")
+    import sqlite_vec
+
+    conn.load_extension(sqlite_vec.loadable_path())
+
+    def benchmark_sqlite_vec(dim: int):
+        benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
+        table_name = f"table_vec_{dim}"
+        cursor.execute(
+            f"create virtual table {table_name} using vec0(rowid integer primary key, embedding float[{dim}])"
+        )
+
+        # measure insert time
+        insert_time_us, _ = timeit(
+            lambda: cursor.executemany(
+                f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+            )
+        )
+        benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
+
+        def search():
+            result = []
+            for i in range(NUM_QUERIES):
+                result.append(
+                    cursor.execute(
+                        f"select rowid from {table_name} where embedding match ? and k = {k}",
+                        (query_data_bytes[dim][i],),
+                    ).fetchall()
+                )
+            return result
+
+        search_time_us, results = timeit(search)
+        benchmark_result.search_time_us = search_time_us / NUM_QUERIES
+        recall_rate = np.mean(
+            [
+                np.intersect1d(results[i], correct_labels["l2"][dim][i]).size / k
+                for i in range(NUM_QUERIES)
+            ]
+        )
+        benchmark_result.recall_rate = recall_rate
+        vec_benchmark_results.append(benchmark_result)
+
+    for dim in DIMS:
+        benchmark_sqlite_vec(dim)
+
+    vec_result_table = BruteForceResultTable(vec_benchmark_results)
+    console.print(vec_result_table)

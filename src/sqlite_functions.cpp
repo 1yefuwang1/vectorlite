@@ -36,10 +36,19 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  if (sqlite3_value_type(argv[0]) != SQLITE_BLOB ||
-      sqlite3_value_type(argv[1]) != SQLITE_BLOB) {
-    sqlite3_result_error(ctx, "vectors_distance expects vectors of type blob",
-                         -1);
+  auto type1 = sqlite3_value_type(argv[0]);
+  auto type2 = sqlite3_value_type(argv[1]);
+  if (type1 != SQLITE_BLOB || type2 != SQLITE_BLOB) {
+    DLOG_IF(INFO, type1 != SQLITE_BLOB && type1 == SQLITE_TEXT)
+        << "vector1 is of type TEXT" << sqlite3_value_text(argv[0])
+        << " with size " << sqlite3_value_bytes(argv[0]);
+    DLOG_IF(INFO, type2 != SQLITE_BLOB && type2 == SQLITE_TEXT)
+        << "vector2 is of type TEXT" << sqlite3_value_text(argv[1])
+        << " with size " << sqlite3_value_bytes(argv[1]);
+    std::string err = absl::StrFormat(
+        "vector_distance expects vectors of type blob but found %u and %u",
+        type1, type2);
+    sqlite3_result_error(ctx, err.c_str(), -1);
     return;
   }
 
@@ -61,10 +70,10 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   std::string_view v1_str(
-      reinterpret_cast<const char *>(sqlite3_value_text(argv[0])),
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  auto v1 = vectorlite::Vector::FromBlob(v1_str);
+  auto v1 = vectorlite::VectorView::FromBlob(v1_str);
   if (!v1.ok()) {
     std::string err = absl::StrFormat("Failed to parse 1st vector due to: %s",
                                       v1.status().message());
@@ -73,9 +82,9 @@ void VectorDistance(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
 
   std::string_view v2_str(
-      reinterpret_cast<const char *>(sqlite3_value_text(argv[1])),
+      reinterpret_cast<const char *>(sqlite3_value_blob(argv[1])),
       sqlite3_value_bytes(argv[1]));
-  auto v2 = vectorlite::Vector::FromBlob(v2_str);
+  auto v2 = vectorlite::VectorView::FromBlob(v2_str);
   if (!v2.ok()) {
     std::string err = absl::StrFormat("Failed to parse 2nd vector due to: %s",
                                       v2.status().message());
@@ -139,17 +148,15 @@ void VectorToJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
       reinterpret_cast<const char *>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
 
-  // todo: avoid copying by not constructing a new vector. Because we only need
-  // read-only access here.
-  auto vector = vectorlite::Vector::FromBlob(vector_blob);
-  if (!vector.ok()) {
+  auto vector_view = vectorlite::VectorView::FromBlob(vector_blob);
+  if (!vector_view.ok()) {
     std::string err = absl::StrFormat("Failed to parse vector due to: %s",
-                                      vector.status().message());
+                                      vector_view.status().message());
     sqlite3_result_error(ctx, err.c_str(), err.length());
     return;
   }
 
-  auto json = vector->ToJSON();
+  auto json = vector_view->ToJSON();
   sqlite3_result_text(ctx, json.data(), json.size(), SQLITE_TRANSIENT);
   return;
 }

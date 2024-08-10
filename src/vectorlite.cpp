@@ -51,24 +51,30 @@ VECTORLITE_EXPORT int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg,
   int rc = SQLITE_OK;
   SQLITE_EXTENSION_INIT2(pApi);
 
-  rc = sqlite3_create_function(db, "vector_distance", 3, SQLITE_UTF8, nullptr,
-                               vectorlite::VectorDistance, nullptr, nullptr);
+  rc = sqlite3_create_function(
+      db, "vector_distance", 3,
+      SQLITE_UTF8 | SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC, nullptr,
+      vectorlite::VectorDistance, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create function vector_distance: %s",
                                 sqlite3_errstr(rc));
     return rc;
   }
 
-  rc = sqlite3_create_function(db, "vector_from_json", 1, SQLITE_UTF8, nullptr,
-                               vectorlite::VectorFromJson, nullptr, nullptr);
+  rc = sqlite3_create_function(
+      db, "vector_from_json", 1,
+      SQLITE_UTF8 | SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC, nullptr,
+      vectorlite::VectorFromJson, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf(
         "Failed to create function vector_from_json: %s", sqlite3_errstr(rc));
     return rc;
   }
 
-  rc = sqlite3_create_function(db, "vector_to_json", 1, SQLITE_UTF8, nullptr,
-                               vectorlite::VectorToJson, nullptr, nullptr);
+  rc = sqlite3_create_function(
+      db, "vector_to_json", 1,
+      SQLITE_UTF8 | SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC, nullptr,
+      vectorlite::VectorToJson, nullptr, nullptr);
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create function vector_to_json: %s",
                                 sqlite3_errstr(rc));

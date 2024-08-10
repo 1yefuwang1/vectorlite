@@ -15,6 +15,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 #include "vector_space.h"
+#include "vector_view.h"
 
 namespace vectorlite {
 
@@ -44,67 +45,71 @@ absl::StatusOr<Vector> Vector::FromJSON(std::string_view json) {
 }
 
 absl::StatusOr<Vector> Vector::FromBlob(std::string_view blob) {
-  std::vector<float> result;
-  if (blob.size() % sizeof(float) != 0) {
-    return absl::InvalidArgumentError("Blob size is not a multiple of 4.");
+  auto vector_view = VectorView::FromBlob(blob);
+  if (vector_view.ok()) {
+    return Vector(*vector_view);
   }
-  result.resize(blob.size() / sizeof(float));
-  std::memcpy(result.data(), blob.data(), blob.size());
-  return Vector(std::move(result));
+  return vector_view.status();
 }
 
 std::string Vector::ToJSON() const {
-  rapidjson::Document doc;
-  doc.SetArray();
+  VectorView vector_view(*this);
 
-  auto& allocator = doc.GetAllocator();
-  for (float v : data_) {
-    doc.PushBack(v, allocator);
-  }
-
-  rapidjson::StringBuffer buf;
-  rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
-  doc.Accept(writer);
-
-  return buf.GetString();
+  return vector_view.ToJSON();
 }
 
-absl::StatusOr<float> Distance(const Vector& v1, const Vector& v2,
+absl::StatusOr<float> Distance(VectorView v1, VectorView v2,
                                DistanceType distance_type) {
   if (v1.dim() != v2.dim()) {
     std::string err =
         absl::StrFormat("Dimension mismatch: %d != %d", v1.dim(), v2.dim());
     return absl::InvalidArgumentError(err);
   }
+
   auto vector_space =
       VectorSpace::Create(v1.dim(), distance_type, VectorType::Float32);
   if (!vector_space.ok()) {
     return vector_space.status();
   }
 
-  const Vector& lhs = vector_space->normalize ? v1.Normalize() : v1;
-  const Vector& rhs = vector_space->normalize ? v2.Normalize() : v2;
+  if (!vector_space->normalize) {
+    return vector_space->space->get_dist_func()(
+        v1.data().data(), v2.data().data(),
+        vector_space->space->get_dist_func_param());
+  }
+
+  VECTORLITE_ASSERT(vector_space->normalize);
+
+  Vector lhs = Vector::Normalize(v1);
+  Vector rhs = Vector::Normalize(v2);
   return vector_space->space->get_dist_func()(
       lhs.data().data(), rhs.data().data(),
       vector_space->space->get_dist_func_param());
 }
 
 std::string_view Vector::ToBlob() const {
-  return std::string_view(reinterpret_cast<const char*>(data_.data()),
-                          data_.size() * sizeof(float));
+  VectorView vector_view(*this);
+
+  return vector_view.ToBlob();
+}
+
+Vector Vector::Normalize() const {
+  VectorView vector_view(*this);
+
+  return Vector::Normalize(vector_view);
 }
 
 // Implementation follows
 // https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
-Vector Vector::Normalize() const {
-  std::vector<float> normalized(data_.size());
+Vector Vector::Normalize(VectorView vector_view) {
+  std::vector<float> normalized(vector_view.data().size());
   float norm = 0.0f;
-  for (float data : data_) {
+  for (float data : vector_view.data()) {
     norm += data * data;
   }
   norm = 1.0f / (sqrtf(norm) + 1e-30f);
-  for (int i = 0; i < data_.size(); i++) {
-    normalized[i] = data_[i] * norm;
+  for (int i = 0; i < vector_view.data().size(); i++) {
+    normalized[i] = vector_view.data()[i] * norm;
   }
   return Vector(std::move(normalized));
 }
