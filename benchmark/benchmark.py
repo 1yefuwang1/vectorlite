@@ -1,5 +1,5 @@
 import time
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 import numpy as np
 import vectorlite_py
 import apsw
@@ -28,15 +28,15 @@ def timeit(func):
 
 conn = apsw.Connection(":memory:")
 conn.enable_load_extension(True)  # enable extension loading
-# conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
-conn.load_extension('build/release/vectorlite')  # loads vectorlite
+conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
+# conn.load_extension('build/release/vectorlite')  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 1000  # number of vectors
+NUM_ELEMENTS = 5000  # number of vectors, higher number 
 NUM_QUERIES = 100  # number of queries
 
-DIMS = [256, 1024]
+DIMS = [128, 512, 1536]
 data = {dim: np.float32(np.random.random((NUM_ELEMENTS, dim))) for dim in DIMS}
 data_bytes = {dim: [data[dim][i].tobytes() for i in range(NUM_ELEMENTS)] for dim in DIMS}
 
@@ -47,10 +47,10 @@ query_data_bytes = {dim: [query_data[dim][i].tobytes() for i in range(NUM_QUERIE
 k = 10
 
 # (ef_construction, M)
-hnsw_params = [(200, 64)]
+hnsw_params = [(100, 30)]
 
 # ef_search
-efs = [10, 50, 100, 150]
+efs = [10, 50, 100]
 
 
 # 'ip'(inner product) is not tested as it is not an actual metric that measures the distance between two vectors
@@ -86,7 +86,7 @@ class BenchmarkResult:
 
 @dataclasses.dataclass
 class ResultTable:
-    results: list[BenchmarkResult]
+    results: List[BenchmarkResult]
 
     def __rich_console__(
         self, console: Console, options: ConsoleOptions
@@ -184,7 +184,7 @@ class BruteForceBenchmarkResult:
 
 @dataclasses.dataclass
 class BruteForceResultTable:
-    results: list[BruteForceBenchmarkResult]
+    results: List[BruteForceBenchmarkResult]
 
     def __rich_console__(
         self, console: Console, options: ConsoleOptions
@@ -206,6 +206,7 @@ class BruteForceResultTable:
 
 brute_force_benchmark_results = []
 
+console.print("Bencharmk brute force as comparison.")
 
 def benchmark_brute_force(dim: int):
     benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
@@ -256,7 +257,7 @@ console.print(brute_force_table)
 import platform
 
 benchmark_vss = os.environ.get("BENCHMARK_VSS", "0") != "0"
-if benchmark_vss and platform.system().lower() == "linux":
+if benchmark_vss and (platform.system().lower() == "linux" or platform.system().lower() == "darwin"):
     # note sqlite_vss is not self-contained.
     # Need to install dependencies manually using: sudo apt-get install -y libgomp1 libatlas-base-dev liblapack-dev
     console.print("Bencharmk sqlite_vss as comparison.")
@@ -313,7 +314,7 @@ if benchmark_vss and platform.system().lower() == "linux":
 # benchmark sqlite-vec
 # pip install sqlite-vec
 benchmark_sqlite_vec = os.environ.get("BENCHMARK_SQLITE_VEC", "0") != "0"
-if benchmark_sqlite_vec and platform.system().lower() == "linux":
+if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.system().lower() == "darwin"):
     # VssBenchamrkResult and VssResultTable can be reused
     vec_benchmark_results = []
     console.print("Bencharmk sqlite_vec as comparison.")
