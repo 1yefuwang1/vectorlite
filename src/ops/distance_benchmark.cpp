@@ -59,6 +59,42 @@ static void BM_InnerProduct_HNSWLIB(benchmark::State& state) {
   }
 }
 
+static void BM_L2DistanceSquared_Vectorlite(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  auto v2 = GenerateOneRandomVector(dim);
+
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(
+        vectorlite::distance::L2DistanceSquared(v1.data(), v2.data(), dim));
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_L2DistanceSquared_Scalar(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  auto v2 = GenerateOneRandomVector(dim);
+
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(hnswlib::L2Sqr(v1.data(), v2.data(), &dim));
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_L2DistanceSquared_HNSWLIB(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  auto v2 = GenerateOneRandomVector(dim);
+
+  hnswlib::L2Space space(dim);
+  auto dist_func = space.get_dist_func();
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(dist_func(v1.data(), v2.data(), &dim));
+    benchmark::ClobberMemory();
+  }
+}
+
 static void BM_Normalize_Vectorlite(benchmark::State& state) {
   size_t dim = state.range(0);
   auto v1 = GenerateOneRandomVector(dim);
@@ -91,3 +127,10 @@ BENCHMARK(BM_InnerProduct_Vectorlite)
     });
 BENCHMARK(BM_Normalize_Vectorlite)->RangeMultiplier(2)->Range(128, 8 << 11);
 BENCHMARK(BM_Normalize_Scalar)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_L2DistanceSquared_Scalar)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_L2DistanceSquared_Vectorlite)
+    ->RangeMultiplier(2)
+    ->Range(128, 8 << 11);
+BENCHMARK(BM_L2DistanceSquared_HNSWLIB)
+    ->RangeMultiplier(2)
+    ->Range(128, 8 << 11);

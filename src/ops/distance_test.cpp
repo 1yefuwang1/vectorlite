@@ -66,8 +66,8 @@ TEST(InnerProductDistance, ShouldReturnOneForEmptyVectors) {
 }
 
 TEST(InnerProductDistance, ShouldReturnSimilarResultToHNSWLIB) {
-  for (size_t dim = 128; dim <= 128; dim++) {
-    auto vectors = GenerateRandomVectors(2, dim);
+  for (size_t dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
     hnswlib::InnerProductSpace space(dim);
     auto dist_func = space.get_dist_func();
     for (int i = 0; i < vectors.size(); ++i) {
@@ -82,6 +82,36 @@ TEST(InnerProductDistance, ShouldReturnSimilarResultToHNSWLIB) {
         float hnswlib_result = dist_func(v1, v2, &dim);
 
         EXPECT_NEAR(result, hnswlib_result, 1e-3);
+      }
+    }
+  }
+}
+
+TEST(L2DistanceSquared, ShouldReturnZeroForEmptyVectors) {
+  float v1[] = {};
+  float v2[] = {};
+  float result = vectorlite::distance::L2DistanceSquared(v1, v2, 0);
+  EXPECT_FLOAT_EQ(result, 0.0f);
+}
+
+TEST(L2DistanceSquared, ShouldWorkWithRandomVectors) {
+  for (size_t dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    hnswlib::L2Space space(dim);
+    auto dist_func = space.get_dist_func();
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        auto v1 = vectors[i].data();
+        auto v2 = vectors[j].data();
+        float result = vectorlite::distance::L2DistanceSquared(v1, v2, dim);
+        float hnswlib_result = dist_func(v1, v2, &dim);
+        float expected = 0;
+        for (int k = 0; k < dim; ++k) {
+          float diff = v1[k] - v2[k];
+          expected += diff * diff;
+        }
+        EXPECT_NEAR(result, hnswlib_result, 1e-3);
+        EXPECT_NEAR(result, expected, 1e-2);
       }
     }
   }

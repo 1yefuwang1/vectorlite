@@ -1,5 +1,7 @@
 #include "distance.h"
 
+#include <hwy/base.h>
+
 #include <cmath>
 // >>>> for dynamic dispatch only, skip if you want static dispatch
 
@@ -87,7 +89,8 @@ static float InnerProductImplVectorized(const float* v1, const float* v2,
   }
 }
 
-float InnerProductImpl(const float* v1, const float* v2, size_t num_elements) {
+static float InnerProductImpl(const float* v1, const float* v2,
+                              size_t num_elements) {
   const hn::ScalableTag<float> d;
   const size_t N = hn::Lanes(d);
 
@@ -118,9 +121,87 @@ float InnerProductImpl(const float* v1, const float* v2, size_t num_elements) {
   }
 }
 
+static float L2DistanceSquaredImplVectorized(const float* HWY_RESTRICT v1,
+                                             const float* HWY_RESTRICT v2,
+                                             size_t num_elements) {
+  const hn::ScalableTag<float> d;
+  const size_t N = hn::Lanes(d);
+  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
+  using V = hn::Vec<decltype(d)>;
+
+  V sum0 = Zero(d);
+  V sum1 = Zero(d);
+  V sum2 = Zero(d);
+  V sum3 = Zero(d);
+
+  size_t i = 0;
+  // Main loop: unrolled
+  for (; i + 4 * N <= num_elements; /* i += 4 * N */) {  // incr in loop
+    const auto diff0 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    i += N;
+    sum0 = MulAdd(diff0, diff0, sum0);
+    const auto diff1 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    i += N;
+    sum1 = MulAdd(diff1, diff1, sum1);
+    const auto diff2 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    i += N;
+    sum2 = MulAdd(diff2, diff2, sum2);
+    const auto diff3 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    i += N;
+    sum3 = MulAdd(diff3, diff3, sum3);
+  }
+
+  // Up to 3 iterations of whole vectors
+  for (; i + N <= num_elements; i += N) {
+    const auto diff = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    sum0 = MulAdd(diff, diff, sum0);
+  }
+// Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = Add(sum0, sum1);
+  sum2 = Add(sum2, sum3);
+  sum0 = Add(sum0, sum2);
+
+  return hn::ReduceSum(d, sum0);
+}
+
+static float L2DistanceSquaredImpl(const float* HWY_RESTRICT v1,
+                                   const float* HWY_RESTRICT v2,
+                                   size_t num_elements) {
+  const hn::ScalableTag<float> d;
+  const size_t N = hn::Lanes(d);
+
+  const size_t leftover = num_elements % N;
+  float result = 0;
+  if (num_elements >= N) {
+    result = L2DistanceSquaredImplVectorized(v1, v2, num_elements - leftover);
+  }
+
+  if (leftover > 0) {
+    // Manually 2x unroll the loop
+    float sum0 = 0;
+    float sum1 = 0;
+    size_t i = num_elements - leftover;
+    for (; i + 2 <= num_elements; i += 2) {
+      float diff0 = v1[i] - v2[i];
+      sum0 += diff0 * diff0;
+      float diff1 = v1[i + 1] - v2[i + 1];
+      sum1 += diff1 * diff1;
+    }
+
+    if (i < num_elements) {
+      float diff = v1[i] - v2[i];
+      sum0 += diff * diff;
+    }
+
+    return result + sum0 + sum1;
+  } else {
+    return result;
+  }
+}
+
 // A vectorized implementation following
 // https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
-void NormalizeImpl(float* HWY_RESTRICT inout, size_t num_elements) {
+static void NormalizeImpl(float* HWY_RESTRICT inout, size_t num_elements) {
   using D = hn::ScalableTag<float>;
   const D d;
   const float squared_sum = InnerProductImpl(inout, inout, num_elements);
@@ -146,6 +227,7 @@ namespace distance {
 // the same outer namespace that contains FloorLog2.
 HWY_EXPORT(InnerProductImpl);
 HWY_EXPORT(NormalizeImpl);
+HWY_EXPORT(L2DistanceSquaredImpl);
 
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements) {
@@ -162,12 +244,22 @@ HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t size) {
   return;
 }
 
-// Implementation follows https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
+HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
+                                      size_t num_elements) {
+  if (HWY_UNLIKELY(v1 == v2)) {
+    return 0.0f;
+  }
+
+  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImpl)(v1, v2, num_elements);
+}
+
+// Implementation follows
+// https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
 // Not sure whether compiler will do auto-vectorization for this function.
 HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
   float norm = 0.0f;
   for (int i = 0; i < size; i++) {
-		float data = inout[i];
+    float data = inout[i];
     norm += data * data;
   }
   norm = 1.0f / (sqrtf(norm) + 1e-30f);

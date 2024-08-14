@@ -1,5 +1,6 @@
 #pragma once
 
+#include <hwy/highway_export.h>
 #include <string_view>
 
 #include "hwy/base.h"
@@ -19,6 +20,10 @@ HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements);
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
                                          size_t num_elements);
+
+// v1 and v2 MUST not be nullptr but can point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
+                                      size_t num_elements);
 
 // Nornalize the input vector in place.
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t num_elements);
