@@ -19,3 +19,8 @@ target_link_libraries(distance_test PRIVATE distance GTest::gtest GTest::gtest_m
 gtest_discover_tests(distance_test)
 
 add_test(NAME distance_test COMMAND distance_test)
+
+add_executable(benchmark_distance distance_benchmark.cpp)
+target_include_directories(benchmark_distance PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(benchmark_distance PRIVATE distance benchmark::benchmark benchmark::benchmark_main)
+target_compile_options(benchmark_distance PRIVATE -march=native)

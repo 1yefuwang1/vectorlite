@@ -1,5 +1,9 @@
 {
 	"clangd.arguments": [
 		"--compile-commands-dir=${workspaceFolder}/build/dev"
-	]
+	],
+	"files.associations": {
+		".fantomasignore": "ignore",
+		"string_view": "cpp"
+	}
 }

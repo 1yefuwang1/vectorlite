@@ -20,6 +20,7 @@ find_package(RapidJSON CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(benchmark CONFIG REQUIRED)
 
 find_package(re2 CONFIG REQUIRED)
 
