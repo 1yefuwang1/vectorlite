@@ -153,12 +153,27 @@ HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
 }
 
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
-                                         size_t size) {
-  return 1.0f - InnerProduct(v1, v2, size);
+                                         size_t num_elements) {
+  return 1.0f - InnerProduct(v1, v2, num_elements);
 }
 
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t size) {
   HWY_DYNAMIC_DISPATCH(NormalizeImpl)(inout, size);
+  return;
+}
+
+// Implementation follows https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
+// Not sure whether compiler will do auto-vectorization for this function.
+HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
+  float norm = 0.0f;
+  for (int i = 0; i < size; i++) {
+		float data = inout[i];
+    norm += data * data;
+  }
+  norm = 1.0f / (sqrtf(norm) + 1e-30f);
+  for (int i = 0; i < size; i++) {
+    inout[i] = inout[i] * norm;
+  }
   return;
 }
 

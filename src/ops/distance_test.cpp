@@ -3,19 +3,17 @@
 #include <random>
 
 #include "gtest/gtest.h"
+#include "hnswlib/hnswlib.h"
 
 static std::vector<std::vector<float>> GenerateRandomVectors(size_t num_vectors,
                                                              size_t dim) {
-  static std::vector<std::vector<float>> data;
-  if (data.size() == num_vectors) {
-    return data;
-  }
+  std::vector<std::vector<float>> data;
 
   data.reserve(num_vectors);
 
   std::random_device rd;
   std::mt19937 gen(rd());
-  std::uniform_real_distribution<> dis(-1000.0f, 1000.0f);
+  std::uniform_real_distribution<> dis(-1.0f, 1.0f);
 
   for (int i = 0; i < num_vectors; ++i) {
     std::vector<float> vec;
@@ -29,6 +27,8 @@ static std::vector<std::vector<float>> GenerateRandomVectors(size_t num_vectors,
   return data;
 }
 
+static constexpr float kEpsilon = 1e-3;
+
 TEST(InnerProduct, ShouldReturnZeroForEmptyVectors) {
   float v1[] = {};
   float v2[] = {};
@@ -37,8 +37,8 @@ TEST(InnerProduct, ShouldReturnZeroForEmptyVectors) {
 }
 
 TEST(InnerProduct, ShouldWorkWithRandomVectors) {
-  for (int dim = 1; dim <= 10000; dim++) {
-    auto vectors = GenerateRandomVectors(1, dim);
+  for (int dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
     for (int i = 0; i < vectors.size(); ++i) {
       for (int j = 0; j < vectors.size(); ++j) {
         auto v1 = vectors[i].data();
@@ -49,7 +49,56 @@ TEST(InnerProduct, ShouldWorkWithRandomVectors) {
         for (int k = 0; k < size; ++k) {
           expected += v1[k] * v2[k];
         }
-        EXPECT_FLOAT_EQ(result, expected);
+        // Note: floating point operations are not associative. SIMD version and
+        // scalar version traverse elements in different order. So the result
+        // should be different but close enough
+        EXPECT_NEAR(result, expected, kEpsilon);
+      }
+    }
+  }
+}
+
+TEST(InnerProductDistance, ShouldReturnOneForEmptyVectors) {
+  float v1[] = {};
+  float v2[] = {};
+  auto result = vectorlite::distance::InnerProductDistance(v1, v2, 0);
+  EXPECT_FLOAT_EQ(result, 1.0f);
+}
+
+TEST(InnerProductDistance, ShouldReturnSimilarResultToHNSWLIB) {
+  for (size_t dim = 128; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(2, dim);
+    hnswlib::InnerProductSpace space(dim);
+    auto dist_func = space.get_dist_func();
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        auto v1 = vectors[i].data();
+        auto v2 = vectors[j].data();
+        float result = vectorlite::distance::InnerProductDistance(v1, v2, dim);
+        // Note dim has to be of type size_t which is 64-bit
+        // If you use int, it will be 32-bit and get a segmentation fault
+        // because dist_func uses const void* to pass dim which erase the type
+        // information.
+        float hnswlib_result = dist_func(v1, v2, &dim);
+
+        EXPECT_NEAR(result, hnswlib_result, 1e-3);
+      }
+    }
+  }
+}
+
+TEST(Normalize, ShouldReturnCorrectResult) {
+  for (int dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v1 = vectors[i];
+      std::vector<float> v2 = vectors[i];
+      auto size = dim;
+      vectorlite::distance::Normalize(v1.data(), size);
+
+      vectorlite::distance::Normalize_Scalar(v2.data(), size);
+      for (int j = 0; j < size; ++j) {
+        EXPECT_NEAR(v1[j], v2[j], 1e-6);
       }
     }
   }

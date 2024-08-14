@@ -20,7 +20,14 @@ gtest_discover_tests(distance_test)
 
 add_test(NAME distance_test COMMAND distance_test)
 
-add_executable(benchmark_distance distance_benchmark.cpp)
-target_include_directories(benchmark_distance PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(benchmark_distance PRIVATE distance benchmark::benchmark benchmark::benchmark_main)
-target_compile_options(benchmark_distance PRIVATE -march=native)
+add_executable(distance_benchmark distance_benchmark.cpp)
+target_include_directories(distance_benchmark PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(distance_benchmark PRIVATE distance benchmark::benchmark benchmark::benchmark_main)
+
+if (MSVC)
+    target_compile_options(distance_test PRIVATE /arch:AVX)
+    target_compile_options(distance_benchmark PRIVATE /arch:AVX)
+else()
+    target_compile_options(distance_test PRIVATE -march=native)
+    target_compile_options(distance_benchmark PRIVATE -march=native)
+endif()
