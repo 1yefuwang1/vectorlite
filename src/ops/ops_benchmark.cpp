@@ -1,7 +1,7 @@
 #include <random>
 
 #include "benchmark/benchmark.h"
-#include "distance.h"
+#include "ops.h"
 #include "hnswlib/hnswlib.h"
 
 static std::vector<float> GenerateOneRandomVector(size_t dim) {

@@ -1,4 +1,4 @@
-#include "distance.h"
+#include "ops.h"
 
 #include <hwy/base.h>
 
@@ -8,7 +8,7 @@
 // For dynamic dispatch, specify the name of the current file (unfortunately
 // __FILE__ is not reliable) so that foreach_target.h can re-include it.
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "distance.cpp"
+#define HWY_TARGET_INCLUDE "ops.cpp"
 // Generates code for each enabled target by re-including this source file.
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 
@@ -278,4 +278,4 @@ HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
 }  // namespace distance
 }  // namespace vectorlite
 
-#endif
+#endif // HWY_ONCE

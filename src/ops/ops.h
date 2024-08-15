@@ -1,17 +1,18 @@
 #pragma once
 
-#include <hwy/highway_export.h>
 #include <string_view>
 
 #include "hwy/base.h"
 
 // This file implements vector operations using google's Highway SIMD library.
-// Based on the benchmark on my PC, InnerProductDistance is 1.5x-3x faster than
-// HNSWLIB's SIMD implementation when dealing with vectors with 256 elements or
-// more. The performance gain is more significant when the vector length is
-// larger. Due to using dynamic dispatch, the performance gain is not as good
-// when dealing with vectors with less than 256 elements. Because the overhead
-// of dynamic dispatch is not negligible.
+// Based on the benchmark on my PC(i5-12600KF with AVX2 support),
+// InnerProductDistance is 1.5x-3x faster than HNSWLIB's SIMD implementation
+// when dealing with vectors with 256 elements or more. The performance gain is
+// mainly due to Highway can leverage fused Multiply-Add instructions of AVX2
+// while HNSWLIB can't(HNSWLIB uses Multiply-Add for AVX512 though). Due to
+// using dynamic dispatch, the performance gain is not as good when dealing with
+// vectors with less than 256 elements. Because the overhead of dynamic dispatch
+// is not negligible.
 namespace vectorlite {
 namespace distance {
 
