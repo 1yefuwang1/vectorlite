@@ -33,7 +33,6 @@ if vectorlite_path != vectorlite_py.vectorlite_path():
 conn = apsw.Connection(":memory:")
 conn.enable_load_extension(True)  # enable extension loading
 conn.load_extension(vectorlite_path)  # loads vectorlite
-# conn.load_extension('build/release/vectorlite')  # loads vectorlite
 
 cursor = conn.cursor()
 

@@ -25,8 +25,7 @@ target_include_directories(ops_benchmark PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(ops_benchmark PRIVATE ops benchmark::benchmark benchmark::benchmark_main)
 
 if (MSVC)
-    target_compile_options(ops_test
- PRIVATE /arch:AVX)
+    target_compile_options(ops_test PRIVATE /arch:AVX)
     target_compile_options(ops_benchmark PRIVATE /arch:AVX)
 else()
     target_compile_options(ops_test

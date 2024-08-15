@@ -52,13 +52,13 @@ class CMakeBuild(build_ext):
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)
         print(f'Running unit tests')
-        subprocess.run([ctest_path, '--test-dir', os.path.join('build', 'release'), '--rerun-failed', '--output-on-failure'], check=True)
+        subprocess.run([ctest_path, '--test-dir', os.path.join('build', 'release', 'vectorlite'), '--rerun-failed', '--output-on-failure'], check=True)
         
 class CMakeInstallLib(install_lib):
     def run(self):
         install_to = Path(self.build_dir, PACKAGE_NAME)
         print(f'Install lib to {install_to}')
-        lib = Path('build', 'release', get_lib_name())
+        lib = Path('build', 'release', 'vectorlite', get_lib_name())
         if not lib.exists():
             raise FileNotFoundError(f'Build output not found: {lib}')
 

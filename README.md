@@ -275,7 +275,7 @@ sh build.sh # for debug build
 sh build_release.sh # for release build
 
 ```
-`vecorlite.[so|dll|dylib]` can be found in `build/release` or `build/dev` folder
+`vecorlite.[so|dll|dylib]` can be found in `build/release/vectorlite` or `build/dev/vectorlite` folder
 
 ### Build wheel
 
