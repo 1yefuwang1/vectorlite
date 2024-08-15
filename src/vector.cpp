@@ -16,6 +16,7 @@
 #include "rapidjson/writer.h"
 #include "vector_space.h"
 #include "vector_view.h"
+#include "ops/ops.h"
 
 namespace vectorlite {
 
@@ -66,25 +67,31 @@ absl::StatusOr<float> Distance(VectorView v1, VectorView v2,
     return absl::InvalidArgumentError(err);
   }
 
-  auto vector_space =
-      VectorSpace::Create(v1.dim(), distance_type, VectorType::Float32);
-  if (!vector_space.ok()) {
-    return vector_space.status();
+  ops::DistanceFunc distance_func = nullptr;
+  
+  switch (distance_type) {
+    case DistanceType::L2:
+      distance_func = ops::L2DistanceSquared;
+      break;
+    case DistanceType::InnerProduct:
+      distance_func = ops::InnerProductDistance;
+      break;
+    case DistanceType::Cosine:
+      distance_func = ops::InnerProductDistance;
+      break;
+    default:
+      return absl::InvalidArgumentError("Invalid distance type");
   }
 
-  if (!vector_space->normalize) {
-    return vector_space->space->get_dist_func()(
-        v1.data().data(), v2.data().data(),
-        vector_space->space->get_dist_func_param());
-  }
+  bool normalize = distance_type == DistanceType::Cosine;
 
-  VECTORLITE_ASSERT(vector_space->normalize);
+  if (!normalize) {
+    return distance_func(v1.data().data(), v2.data().data(), v1.dim());
+  }
 
   Vector lhs = Vector::Normalize(v1);
   Vector rhs = Vector::Normalize(v2);
-  return vector_space->space->get_dist_func()(
-      lhs.data().data(), rhs.data().data(),
-      vector_space->space->get_dist_func_param());
+  return distance_func(lhs.data().data(), rhs.data().data(), v1.dim());
 }
 
 std::string_view Vector::ToBlob() const {
@@ -99,19 +106,10 @@ Vector Vector::Normalize() const {
   return Vector::Normalize(vector_view);
 }
 
-// Implementation follows
-// https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
 Vector Vector::Normalize(VectorView vector_view) {
-  std::vector<float> normalized(vector_view.data().size());
-  float norm = 0.0f;
-  for (float data : vector_view.data()) {
-    norm += data * data;
-  }
-  norm = 1.0f / (sqrtf(norm) + 1e-30f);
-  for (int i = 0; i < vector_view.data().size(); i++) {
-    normalized[i] = vector_view.data()[i] * norm;
-  }
-  return Vector(std::move(normalized));
+  Vector v(vector_view);
+  ops::Normalize(v.data_.data(), vector_view.dim());
+  return v;
 }
 
 }  // namespace vectorlite

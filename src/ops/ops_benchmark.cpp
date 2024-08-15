@@ -25,7 +25,7 @@ static void BM_InnerProduct_Vectorlite(benchmark::State& state) {
   auto v2 = GenerateOneRandomVector(dim);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(vectorlite::distance::InnerProductDistance(
+    benchmark::DoNotOptimize(vectorlite::ops::InnerProductDistance(
         v1.data(), self_product ? v1.data() : v2.data(), dim));
     benchmark::ClobberMemory();
   }
@@ -66,7 +66,7 @@ static void BM_L2DistanceSquared_Vectorlite(benchmark::State& state) {
 
   for (auto _ : state) {
     benchmark::DoNotOptimize(
-        vectorlite::distance::L2DistanceSquared(v1.data(), v2.data(), dim));
+        vectorlite::ops::L2DistanceSquared(v1.data(), v2.data(), dim));
     benchmark::ClobberMemory();
   }
 }
@@ -100,7 +100,7 @@ static void BM_Normalize_Vectorlite(benchmark::State& state) {
   auto v1 = GenerateOneRandomVector(dim);
 
   for (auto _ : state) {
-    vectorlite::distance::Normalize(v1.data(), dim);
+    vectorlite::ops::Normalize(v1.data(), dim);
   }
 }
 
@@ -109,7 +109,7 @@ static void BM_Normalize_Scalar(benchmark::State& state) {
   auto v1 = GenerateOneRandomVector(dim);
 
   for (auto _ : state) {
-    vectorlite::distance::Normalize_Scalar(v1.data(), dim);
+    vectorlite::ops::Normalize_Scalar(v1.data(), dim);
   }
 }
 

@@ -221,7 +221,7 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 
 namespace vectorlite {
-namespace distance {
+namespace ops {
 
 // This macro declares a static array used for dynamic dispatch; it resides in
 // the same outer namespace that contains FloorLog2.

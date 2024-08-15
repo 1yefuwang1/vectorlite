@@ -1,13 +1,20 @@
 import vectorlite_py
 import apsw
 import numpy as np
+import os
 """
 Quick start of using vectorlite extension.
 """
 
+
+vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_path())
+
+if vectorlite_path != vectorlite_py.vectorlite_path():
+    print(f"Using local vectorlite: {vectorlite_path}")
+
 conn = apsw.Connection(':memory:')
 conn.enable_load_extension(True) # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path()) # load vectorlite
+conn.load_extension(vectorlite_path) # load vectorlite
 
 cursor = conn.cursor()
 # check if vectorlite is loaded

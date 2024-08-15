@@ -90,7 +90,7 @@ TEST(VectorDistance, ShouldWork) {
   for (auto space :
        {vectorlite::DistanceType::L2, vectorlite::DistanceType::InnerProduct}) {
     distance = Distance(v3, v4, space);
-    EXPECT_FALSE(distance.ok());
+    EXPECT_TRUE(distance.ok());
   }
 }
 

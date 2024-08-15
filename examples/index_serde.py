@@ -4,15 +4,17 @@ import apsw
 import numpy as np
 import os
 import timeit
+import vectorlite_py
 """
 This is an example of using vectorlite to search vectors and serialize/deserialize the index.
 """
 
-use_apsw = os.environ.get('USE_BUILTIN_SQLITE3', '0') == '0'
-use_local_vectorlite = os.environ.get('USE_LOCAL_VECTORLITE')
+vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_path())
 
-if not use_local_vectorlite:
-    import vectorlite_py
+if vectorlite_path != vectorlite_py.vectorlite_path():
+    print(f"Using local vectorlite: {vectorlite_path}")
+
+use_apsw = os.environ.get('USE_BUILTIN_SQLITE3', '0') == '0'
 
 DIM = 1000
 NUM_ELEMENTS = 10000
@@ -24,7 +26,7 @@ def create_connection():
     # create connection to in-memory database
     conn = apsw.Connection(':memory:') if use_apsw else sqlite3.connect(':memory:')
     conn.enable_load_extension(True)
-    conn.load_extension(use_local_vectorlite if use_local_vectorlite else vectorlite_py.vectorlite_path())
+    conn.load_extension(vectorlite_path)
     return conn
 
 conn = create_connection()

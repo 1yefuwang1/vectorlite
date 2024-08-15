@@ -42,7 +42,7 @@ add_library(vectorlite SHARED src/vectorlite.cpp src/virtual_table.cpp src/vecto
 # remove the lib prefix to make the shared library name consistent on all platforms.
 set_target_properties(vectorlite PROPERTIES PREFIX "")
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
-target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2)
+target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2 ops)
 # copy the shared library to the python package to make running integration tests easier
 add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/bindings/python/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
 
@@ -51,7 +51,7 @@ enable_testing()
 file(GLOB TEST_SOURCES src/*.cpp)
 add_executable(unit_test ${TEST_SOURCES})
 target_include_directories(unit_test PUBLIC ${PROJECT_BINARY_DIR})
-target_link_libraries(unit_test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2)
+target_link_libraries(unit_test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2 ops)
 # target_compile_options(unit_test PRIVATE -Wall -fno-omit-frame-pointer -g -O0)
 # target_link_options(unit_test PRIVATE -fsanitize=address)
 if(OPTION_USE_AVX)
