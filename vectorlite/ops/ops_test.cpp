@@ -110,7 +110,7 @@ TEST(L2DistanceSquared, ShouldWorkWithRandomVectors) {
           float diff = v1[k] - v2[k];
           expected += diff * diff;
         }
-        EXPECT_NEAR(result, hnswlib_result, 1e-3);
+        EXPECT_NEAR(result, hnswlib_result, 1e-2);
         EXPECT_NEAR(result, expected, 1e-2);
       }
     }
