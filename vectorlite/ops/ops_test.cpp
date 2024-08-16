@@ -30,8 +30,9 @@ static std::vector<std::vector<float>> GenerateRandomVectors(size_t num_vectors,
 static constexpr float kEpsilon = 1e-3;
 
 TEST(InnerProduct, ShouldReturnZeroForEmptyVectors) {
-  float v1[] = {};
-  float v2[] = {};
+  // Fixes C2466: cannot allocate an array of constant size 0 on MSVC
+  float v1[] = {1};
+  float v2[] = {1};
   auto result = vectorlite::ops::InnerProduct(v1, v2, 0);
   EXPECT_FLOAT_EQ(result, 0.0f);
 }
@@ -59,8 +60,9 @@ TEST(InnerProduct, ShouldWorkWithRandomVectors) {
 }
 
 TEST(InnerProductDistance, ShouldReturnOneForEmptyVectors) {
-  float v1[] = {};
-  float v2[] = {};
+  // Fixes C2466: cannot allocate an array of constant size 0 on MSVC
+  float v1[] = {1};
+  float v2[] = {1};
   auto result = vectorlite::ops::InnerProductDistance(v1, v2, 0);
   EXPECT_FLOAT_EQ(result, 1.0f);
 }
@@ -88,8 +90,9 @@ TEST(InnerProductDistance, ShouldReturnSimilarResultToHNSWLIB) {
 }
 
 TEST(L2DistanceSquared, ShouldReturnZeroForEmptyVectors) {
-  float v1[] = {};
-  float v2[] = {};
+  // Fixes C2466: cannot allocate an array of constant size 0 on MSVC
+  float v1[] = {1};
+  float v2[] = {1};
   float result = vectorlite::ops::L2DistanceSquared(v1, v2, 0);
   EXPECT_FLOAT_EQ(result, 0.0f);
 }
