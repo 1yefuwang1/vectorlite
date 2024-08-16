@@ -28,7 +28,8 @@ if (MSVC)
     target_compile_options(ops_test PRIVATE /arch:AVX)
     target_compile_options(ops_benchmark PRIVATE /arch:AVX)
 else()
-    target_compile_options(ops_test
- PRIVATE -march=native)
+    # Fixes compilation on Linux. libops will be linked into vectorlite.so, so -fPIC is needed.
+    target_compile_options(ops PRIVATE -fPIC)
+    target_compile_options(ops_test PRIVATE -march=native)
     target_compile_options(ops_benchmark PRIVATE -march=native)
 endif()
