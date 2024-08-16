@@ -25,18 +25,21 @@ def timeit(func):
     end_us = time.perf_counter_ns() / 1000
     return end_us - start_us, retval
 
+vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_path())
+
+if vectorlite_path != vectorlite_py.vectorlite_path():
+    print(f"Using local vectorlite: {vectorlite_path}")
 
 conn = apsw.Connection(":memory:")
 conn.enable_load_extension(True)  # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path())  # loads vectorlite
-# conn.load_extension('build/release/vectorlite')  # loads vectorlite
+conn.load_extension(vectorlite_path)  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 5000  # number of vectors, higher number 
+NUM_ELEMENTS = 5000  # number of vectors 
 NUM_QUERIES = 100  # number of queries
 
-DIMS = [128, 512, 1536]
+DIMS = [128, 512, 1536, 3000]
 data = {dim: np.float32(np.random.random((NUM_ELEMENTS, dim))) for dim in DIMS}
 data_bytes = {dim: [data[dim][i].tobytes() for i in range(NUM_ELEMENTS)] for dim in DIMS}
 

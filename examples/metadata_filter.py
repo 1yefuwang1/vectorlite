@@ -1,6 +1,7 @@
 import vectorlite_py
 import numpy as np
 import apsw
+import os
 
 """
 A contrived example of using vectorlite to search vectors with metadata filter.
@@ -10,9 +11,14 @@ The rowid constraint is pushed down to the HNSW index when traversing the HNSW g
 
 """
 
+vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_path())
+
+if vectorlite_path != vectorlite_py.vectorlite_path():
+    print(f"Using local vectorlite: {vectorlite_path}")
+
 conn = apsw.Connection(':memory:')
 conn.enable_load_extension(True) # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path()) # loads vectorlite
+conn.load_extension(vectorlite_path) # loads vectorlite
 
 cursor = conn.cursor()
 

@@ -5,6 +5,7 @@
 
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
+#include "distance.h"
 #include "macros.h"
 #include "re2/re2.h"
 #include "util.h"
@@ -42,13 +43,13 @@ absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim,
   result.vector_type = vector_type;
   switch (distance_type) {
     case DistanceType::L2:
-      result.space = std::make_unique<hnswlib::L2Space>(dim);
+      result.space = std::make_unique<vectorlite::L2Space>(dim);
       break;
     case DistanceType::InnerProduct:
-      result.space = std::make_unique<hnswlib::InnerProductSpace>(dim);
+      result.space = std::make_unique<vectorlite::InnerProductSpace>(dim);
       break;
     case DistanceType::Cosine:
-      result.space = std::make_unique<hnswlib::InnerProductSpace>(dim);
+      result.space = std::make_unique<vectorlite::InnerProductSpace>(dim);
       break;
     default:
       std::string err_msg =

@@ -1,8 +1,7 @@
 #include "sqlite_functions.h"
 
-#include <sqlite3ext.h>
-
 #include <string>
+#include <string_view>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -10,7 +9,7 @@
 #include "util.h"
 #include "vector.h"
 #include "vector_space.h"
-#include "version.h"
+#include "vectorlite/version.h"
 
 // Defined in vectorlite.cpp
 extern const sqlite3_api_routines *sqlite3_api;

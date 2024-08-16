@@ -1,13 +1,20 @@
 import vectorlite_py
 import apsw 
 import numpy as np
+import os
 """
 This is an example of setting HNSW parameters in vectorlite.
 """
 
+
+vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_path())
+
+if vectorlite_path != vectorlite_py.vectorlite_path():
+    print(f"Using local vectorlite: {vectorlite_path}")
+
 conn = apsw.Connection(':memory:')
 conn.enable_load_extension(True) # enable extension loading
-conn.load_extension(vectorlite_py.vectorlite_path()) # loads vectorlite
+conn.load_extension(vectorlite_path) # loads vectorlite
 
 cursor = conn.cursor()
 
