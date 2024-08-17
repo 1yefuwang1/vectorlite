@@ -3,3 +3,5 @@ numpy>=1.22
 apsw>=3.45
 rich>=13.7
 hnswlib>=0.8
+matplotlib
+pandas
