@@ -69,6 +69,13 @@ jobs:
         with:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
+
+      - name: Upload wheels to release
+        if: ${{ github.event.inputs.upload_wheel == 'yes' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run:
+          gh release upload ${{ github.ref_name }} ./wheelhouse/*.whl --clobber
       
       - name: Run python examples
         shell: bash
@@ -85,10 +92,18 @@ jobs:
           done
 
       - name: Run benchmark
+        working-directory: benchmark
         shell: bash
         run: |
-          python -m pip install -r benchmark/requirements.txt
-          python benchmark/benchmark.py
+          python -m pip install -r requirements.txt
+          python benchmark.py
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
+          path: ./benchmark/vector*.png
+
 
   upload_wheels:
     name: Upload wheels
