@@ -37,7 +37,7 @@ conn.load_extension(vectorlite_path)  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 3000  # number of vectors 
+NUM_ELEMENTS = int(os.environ.get("NUM_ELEMENTS", 3000)) # number of vectors 
 NUM_QUERIES = 100  # number of queries
 
 DIMS = [128, 512, 1536, 3000]
@@ -75,7 +75,7 @@ for distance_type in distance_types:
         del bf_index
 
 console = Console()
-console(f"Benchmarking using {NUM_ELEMENTS} randomly vectors. {NUM_QUERIES} {k}-neariest neighbor queries will be performed on each case.")
+console.print(f"Benchmarking using {NUM_ELEMENTS} randomly vectors. {NUM_QUERIES} {k}-neariest neighbor queries will be performed on each case.")
 
 @dataclasses.dataclass
 class BenchmarkResult:
@@ -138,6 +138,18 @@ benchmark_results = []
 plot_data_for_insertion = defaultdict(list)
 plot_data_for_query = defaultdict(list)
 
+def transactional(func):
+    # def wrapper():
+    #     with conn:
+    #         func()
+    # return wrapper
+    def wrapper():
+        cursor.execute("BEGIN TRANSACTION;")
+        func()
+        cursor.execute("COMMIT;")
+    return wrapper
+
+
 
 def benchmark(distance_type, dim, ef_constructoin, M):
     result = BenchmarkResult(distance_type, dim, ef_constructoin, M, 0, 0, 0, 0)
@@ -148,10 +160,10 @@ def benchmark(distance_type, dim, ef_constructoin, M):
 
     # measure insert time
     insert_time_us, _ = timeit(
-        lambda: cursor.executemany(
+        transactional(lambda: cursor.executemany(
             f"insert into {table_name}(rowid, embedding) values (?, ?)",
             [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-        )
+        ))
     )
     result.insert_time_us = insert_time_us / NUM_ELEMENTS
     plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"vectorlite_{distance_type}"))
@@ -186,6 +198,7 @@ def benchmark(distance_type, dim, ef_constructoin, M):
         )
         benchmark_results.append(result)
         plot_data_for_query[dim].append(PlotData(result.search_time_us, f"vectorlite_{distance_type}_ef_{ef}"))
+    cursor.execute(f"drop table {table_name}")
 
 
 for distance_type in distance_types:
@@ -237,6 +250,8 @@ def benchmark_hnswlib(distance_type, dim, ef_construction, M):
         )
         hnswlib_benchmark_results.append(result)
         plot_data_for_query[dim].append(PlotData(result.search_time_us, f"hnswlib_{distance_type}_ef_{ef}"))
+    del hnswlib_index
+
 for distance_type in distance_types:
     for dim in DIMS:
         for ef_construction, M in hnsw_params:
@@ -257,10 +272,11 @@ def benchmark_brute_force(dim: int):
     )
 
     insert_time_us, _ = timeit(
-        lambda: cursor.executemany(
-            f"insert into {table_name}(rowid, embedding) values (?, ?)",
-            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-        )
+        transactional(
+            lambda: cursor.executemany(
+                f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+        ))
     )
     benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
     plot_data_for_insertion[dim].append(PlotData(benchmark_result.insert_time_us, "vectorlite_scalar_brute_force"))
@@ -288,6 +304,7 @@ def benchmark_brute_force(dim: int):
     benchmark_result.recall_rate = recall_rate
     brute_force_benchmark_results.append(benchmark_result)
     plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "vectorlite_scalar_brute_force"))
+    cursor.execute(f"drop table {table_name}")
 
 for dim in DIMS:
     benchmark_brute_force(dim)
@@ -319,10 +336,11 @@ if benchmark_vss and (platform.system().lower() == "linux" or platform.system().
 
         # measure insert time
         insert_time_us, _ = timeit(
-            lambda: cursor.executemany(
-                f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-            )
+            transactional(
+                lambda: cursor.executemany(
+                    f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                    [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+            ))
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
         # insertion for sqlite_vss is so slow that it makes other data points insignificant
@@ -350,6 +368,7 @@ if benchmark_vss and (platform.system().lower() == "linux" or platform.system().
         benchmark_result.recall_rate = recall_rate
         vss_benchmark_results.append(benchmark_result)
         plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "sqlite_vss"))
+        cursor.execute(f"drop table {table_name}")
 
     for dim in DIMS:
         benchmark_sqlite_vss(dim)
@@ -377,10 +396,11 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
 
         # measure insert time
         insert_time_us, _ = timeit(
-            lambda: cursor.executemany(
-                f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-            )
+            transactional(
+                lambda: cursor.executemany(
+                    f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                    [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+            ))
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
         plot_data_for_insertion[dim].append(PlotData(benchmark_result.insert_time_us, "sqlite_vec"))
@@ -406,7 +426,10 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
         )
         benchmark_result.recall_rate = recall_rate
         vec_benchmark_results.append(benchmark_result)
-        plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "sqlite_vec"))
+        if NUM_ELEMENTS < 10000:
+            plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "sqlite_vec"))
+
+        cursor.execute(f"drop table {table_name}")
 
     for dim in DIMS:
         benchmark_sqlite_vec(dim)
@@ -418,10 +441,10 @@ import plot
 def plot_figures():
     vector_insertion_columns = ["dim"] + [plot_data.column for plot_data in plot_data_for_insertion[DIMS[0]]]
     vector_insertion_data = [[dim] + [plot_data.time_taken_us for plot_data in plot_data_for_insertion[dim]] for dim in DIMS]
-    plot.plot("vector_insertion", vector_insertion_columns, vector_insertion_data)
+    plot.plot(f"vector_insertion_{NUM_ELEMENTS}_vectors", vector_insertion_columns, vector_insertion_data)
 
     vector_query_columns = ["dim"] + [plot_data.column for plot_data in plot_data_for_query[DIMS[0]]]
     vector_query_data = [[dim] + [plot_data.time_taken_us for plot_data in plot_data_for_query[dim]] for dim in DIMS]
-    plot.plot("vector_query", vector_query_columns, vector_query_data)
+    plot.plot(f"vector_query_{NUM_ELEMENTS}_vectors", vector_query_columns, vector_query_data)
 
 plot_figures()

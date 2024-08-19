@@ -2,7 +2,7 @@
 ![PyPI - Version](https://img.shields.io/pypi/v/vectorlite-py)
 
 # Overview
-Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. 
+Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. It provides fast vector search capabilities with a SQL interface and runs on every language with a SQLite driver.
 
 For motivation and background of this project, please check [here](https://dev.to/yefuwang/introducing-vectorlite-a-fast-and-tunable-vector-search-extension-for-sqlite-4dcl).
 
@@ -41,9 +41,9 @@ For other languages, `vectorlite.[so|dll|dylib]` can be extracted from the wheel
 
 Vectorlite is currently in beta. There could be breaking changes.
 ## Highlights
-1. Fast ANN-search backed by hnswlib. Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
-2. Works on Windows, Linux and MacOS.
-3. SIMD accelerated vector distance calculation for x64 platform, using `vector_distance()`
+1. Fast ANN(approximate nearest neighbors) search backed by hnswlib. Vector query is significantly faster than similar projects like [sqlite-vec](https://github.com/asg017/sqlite-vec) and [sqlite-vss](https://github.com/asg017/sqlite-vss). Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
+2. Works on Windows, Linux and MacOS(x64 and ARM).
+3. A fast and portable SIMD accelerated vector distance implementation using Google's [highway](https://github.com/google/highway) library. On my PC(i5-12600KF with AVX2 support), vectorlite's implementation is 1.5x-3x faster than hnswlib's when dealing vectors with dimension >= 256.
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
 3. Full control over [HNSW parameters](https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md) for performance tuning. Please check [this example](https://github.com/1yefuwang1/vectorlite/blob/main/examples/hnsw_param.py).
 4. Predicate pushdown support for vector metadata(rowid) filter (requires sqlite version >= 3.38). Please check [this example](https://github.com/1yefuwang1/vectorlite/blob/main/examples/metadata_filter.py);
@@ -102,87 +102,233 @@ select rowid, distance from my_vectorlite_table where knn_search(vector_name, kn
 ```
 
 ## Benchmark
-Vectorlite is fast. Compared with [sqlite-vss](https://github.com/asg017/sqlite-vss), vectorlite is 10x faster in inserting vectors and 2x-40x faster in searching (depending on HNSW parameters with speed-accuracy tradeoff), and offers much better recall rate if proper HNSW parameters are set.
-
-Benchmark is done in following steps:
-1. Insert 10000 randomly-generated vectors into a vectorlite table.
-2. Randomly generate 100 vectors and then query the table with them for 10 nearest neighbors.
+How the benchmark is done:
+1. Insert 10000 randomly-generated vectors into a vectorlite table with HNSW parameters ef_construction=100, M=30.
+2. Randomly generate 100 vectors and then query the table with them for 10 nearest neighbors with ef=10,50,100.
 3. Calculate recall rate by comparing the result with the neighbors calculated using brute force.
-
+4. vectorlite_scalar_brute_force(which is just inserting vectors into a normal sqlite table and do `select rowid from my_table order by vector_distance(query_vector, embedding, 'l2') limit 10`) is benchmarked as the baseline to see how much hnsw speeds up vector query.
+5. hnswlib is also benchmarked to see how much cost SQLite adds to vectorlite.
 The benchmark is run in WSL on my PC with a i5-12600KF intel CPU and 16G RAM.
+
+
+TL;DR
+When dealing with 3000 vectors(which is a fairly small dataset):
+1. Compared with [sqlite-vec](https://github.com/asg017/sqlite-vec), vectorlite's vector query can be 3x-15x faster with 128-d vectors, 6x-26x faster with 512-d vectors, 7x-30x faster with 1536-d vectors and 6x-24x faster with 3000-d vectors. But vectorlite's vector insertion is 6x-16x slower, which is expected because sqlite-vec uses brute force only and doesn't do much indexing.
+2. Compared with vectorlite_scalar_brute_force, hnsw provides about 10x-40x speed up.
+3. Compared with hnswlib, vectorlite's vector query speed and accuracy is on par and is 1.5x faster when dealing with 3000d vectors. The credit goes to vectorlite's vector distance implementation. But vector insertion is about 4x-5x slower.
+4. vectorlite_scalar_brute_force's vector insertion 4x-7x is faster than sqlite-vec, and vector query is about 1.7x faster.
+
+
+2. When dealing with 20000 vectors, 
+1. Compared with [sqlite-vec](https://github.com/asg017/sqlite-vec), vectorlite's vector query can be 8x-33x faster with 128-d vectors, 20x-100x faster with 3000d vectors with speed-accuracy trade-off.
+2. Compared with vectorlite_scalar_brute_force, hnsw provides about 8x-80x speed up with reduced recall rate at 13.8%-85%.
+3. Compared with hnswlib, 
+
+
 
 The benchmark code can be found in [benchmark folder](https://github.com/1yefuwang1/vectorlite/tree/main/benchmark), which can be used as an example of how to improve recall rate for your scenario by tuning HNSW parameters.
 
 Picking good HNSW parameters is crucial for achieving high performance. Please benchmark and find the best HNSW parameters for your scenario.
+### 3000 vectors
+![vecter insertion](media/vector_insertion_3000_vectors.png)
+![vector query](media/vector_query_3000_vectors.png)
+
+<details>
+<summary>Check raw data</summary>
 
 
 ```
+Using local vectorlite: ../build/release/vectorlite/vectorlite.so
+Benchmarking using 3000 randomly vectors. 100 10-nearest neighbor queries will be performed on each case.
 ┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
 ┃ distance ┃ vector    ┃ ef           ┃    ┃ ef     ┃ insert_time ┃ search_time ┃ recall ┃
 ┃ type     ┃ dimension ┃ construction ┃ M  ┃ search ┃ per vector  ┃ per query   ┃ rate   ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
-│ l2       │ 256       │ 200          │ 32 │ 10     │ 291.13 us   │ 35.70 us    │ 31.60% │
-│ l2       │ 256       │ 200          │ 32 │ 50     │ 291.13 us   │ 99.50 us    │ 72.30% │
-│ l2       │ 256       │ 200          │ 32 │ 100    │ 291.13 us   │ 168.80 us   │ 88.60% │
-│ l2       │ 256       │ 200          │ 32 │ 150    │ 291.13 us   │ 310.53 us   │ 95.50% │
-│ l2       │ 256       │ 200          │ 48 │ 10     │ 286.92 us   │ 37.79 us    │ 37.30% │
-│ l2       │ 256       │ 200          │ 48 │ 50     │ 286.92 us   │ 117.73 us   │ 80.30% │
-│ l2       │ 256       │ 200          │ 48 │ 100    │ 286.92 us   │ 196.01 us   │ 93.80% │
-│ l2       │ 256       │ 200          │ 48 │ 150    │ 286.92 us   │ 259.88 us   │ 98.20% │
-│ l2       │ 256       │ 200          │ 64 │ 10     │ 285.82 us   │ 50.26 us    │ 42.60% │
-│ l2       │ 256       │ 200          │ 64 │ 50     │ 285.82 us   │ 138.83 us   │ 84.00% │
-│ l2       │ 256       │ 200          │ 64 │ 100    │ 285.82 us   │ 253.18 us   │ 95.40% │
-│ l2       │ 256       │ 200          │ 64 │ 150    │ 285.82 us   │ 316.45 us   │ 98.70% │
-│ l2       │ 1024      │ 200          │ 32 │ 10     │ 1395.02 us  │ 158.75 us   │ 23.50% │
-│ l2       │ 1024      │ 200          │ 32 │ 50     │ 1395.02 us  │ 564.27 us   │ 60.30% │
-│ l2       │ 1024      │ 200          │ 32 │ 100    │ 1395.02 us  │ 919.26 us   │ 79.30% │
-│ l2       │ 1024      │ 200          │ 32 │ 150    │ 1395.02 us  │ 1232.40 us  │ 88.20% │
-│ l2       │ 1024      │ 200          │ 48 │ 10     │ 1489.91 us  │ 252.91 us   │ 28.50% │
-│ l2       │ 1024      │ 200          │ 48 │ 50     │ 1489.91 us  │ 848.13 us   │ 69.40% │
-│ l2       │ 1024      │ 200          │ 48 │ 100    │ 1489.91 us  │ 1294.02 us  │ 86.80% │
-│ l2       │ 1024      │ 200          │ 48 │ 150    │ 1489.91 us  │ 1680.97 us  │ 94.20% │
-│ l2       │ 1024      │ 200          │ 64 │ 10     │ 1412.03 us  │ 273.36 us   │ 33.30% │
-│ l2       │ 1024      │ 200          │ 64 │ 50     │ 1412.03 us  │ 899.13 us   │ 75.50% │
-│ l2       │ 1024      │ 200          │ 64 │ 100    │ 1412.03 us  │ 1419.61 us  │ 90.10% │
-│ l2       │ 1024      │ 200          │ 64 │ 150    │ 1412.03 us  │ 1821.85 us  │ 96.00% │
-│ cosine   │ 256       │ 200          │ 32 │ 10     │ 255.22 us   │ 28.66 us    │ 38.60% │
-│ cosine   │ 256       │ 200          │ 32 │ 50     │ 255.22 us   │ 85.39 us    │ 75.90% │
-│ cosine   │ 256       │ 200          │ 32 │ 100    │ 255.22 us   │ 137.31 us   │ 91.10% │
-│ cosine   │ 256       │ 200          │ 32 │ 150    │ 255.22 us   │ 190.87 us   │ 95.30% │
-│ cosine   │ 256       │ 200          │ 48 │ 10     │ 259.62 us   │ 57.31 us    │ 46.60% │
-│ cosine   │ 256       │ 200          │ 48 │ 50     │ 259.62 us   │ 170.54 us   │ 84.80% │
-│ cosine   │ 256       │ 200          │ 48 │ 100    │ 259.62 us   │ 221.11 us   │ 94.80% │
-│ cosine   │ 256       │ 200          │ 48 │ 150    │ 259.62 us   │ 239.90 us   │ 97.90% │
-│ cosine   │ 256       │ 200          │ 64 │ 10     │ 273.21 us   │ 49.34 us    │ 48.10% │
-│ cosine   │ 256       │ 200          │ 64 │ 50     │ 273.21 us   │ 139.07 us   │ 88.00% │
-│ cosine   │ 256       │ 200          │ 64 │ 100    │ 273.21 us   │ 242.51 us   │ 96.30% │
-│ cosine   │ 256       │ 200          │ 64 │ 150    │ 273.21 us   │ 296.21 us   │ 98.40% │
-│ cosine   │ 1024      │ 200          │ 32 │ 10     │ 1192.27 us  │ 146.86 us   │ 27.40% │
-│ cosine   │ 1024      │ 200          │ 32 │ 50     │ 1192.27 us  │ 451.61 us   │ 66.10% │
-│ cosine   │ 1024      │ 200          │ 32 │ 100    │ 1192.27 us  │ 826.40 us   │ 83.30% │
-│ cosine   │ 1024      │ 200          │ 32 │ 150    │ 1192.27 us  │ 1199.33 us  │ 90.00% │
-│ cosine   │ 1024      │ 200          │ 48 │ 10     │ 1337.96 us  │ 200.14 us   │ 33.10% │
-│ cosine   │ 1024      │ 200          │ 48 │ 50     │ 1337.96 us  │ 654.35 us   │ 72.60% │
-│ cosine   │ 1024      │ 200          │ 48 │ 100    │ 1337.96 us  │ 1091.57 us  │ 88.90% │
-│ cosine   │ 1024      │ 200          │ 48 │ 150    │ 1337.96 us  │ 1429.51 us  │ 94.50% │
-│ cosine   │ 1024      │ 200          │ 64 │ 10     │ 1287.88 us  │ 257.67 us   │ 38.20% │
-│ cosine   │ 1024      │ 200          │ 64 │ 50     │ 1287.88 us  │ 767.61 us   │ 77.00% │
-│ cosine   │ 1024      │ 200          │ 64 │ 100    │ 1287.88 us  │ 1250.36 us  │ 92.10% │
-│ cosine   │ 1024      │ 200          │ 64 │ 150    │ 1287.88 us  │ 1699.57 us  │ 96.50% │
+│ l2       │ 128       │ 100          │ 30 │ 10     │ 62.41 us    │ 12.96 us    │ 56.40% │
+│ l2       │ 128       │ 100          │ 30 │ 50     │ 62.41 us    │ 42.95 us    │ 93.30% │
+│ l2       │ 128       │ 100          │ 30 │ 100    │ 62.41 us    │ 62.06 us    │ 99.40% │
+│ l2       │ 512       │ 100          │ 30 │ 10     │ 146.40 us   │ 38.05 us    │ 46.60% │
+│ l2       │ 512       │ 100          │ 30 │ 50     │ 146.40 us   │ 95.96 us    │ 86.50% │
+│ l2       │ 512       │ 100          │ 30 │ 100    │ 146.40 us   │ 148.46 us   │ 96.70% │
+│ l2       │ 1536      │ 100          │ 30 │ 10     │ 463.56 us   │ 124.51 us   │ 38.10% │
+│ l2       │ 1536      │ 100          │ 30 │ 50     │ 463.56 us   │ 355.70 us   │ 78.50% │
+│ l2       │ 1536      │ 100          │ 30 │ 100    │ 463.56 us   │ 547.84 us   │ 92.70% │
+│ l2       │ 3000      │ 100          │ 30 │ 10     │ 1323.25 us  │ 391.57 us   │ 36.60% │
+│ l2       │ 3000      │ 100          │ 30 │ 50     │ 1323.25 us  │ 1041.37 us  │ 78.60% │
+│ l2       │ 3000      │ 100          │ 30 │ 100    │ 1323.25 us  │ 1443.10 us  │ 93.10% │
+│ cosine   │ 128       │ 100          │ 30 │ 10     │ 59.75 us    │ 15.27 us    │ 58.30% │
+│ cosine   │ 128       │ 100          │ 30 │ 50     │ 59.75 us    │ 36.72 us    │ 94.60% │
+│ cosine   │ 128       │ 100          │ 30 │ 100    │ 59.75 us    │ 63.67 us    │ 99.30% │
+│ cosine   │ 512       │ 100          │ 30 │ 10     │ 148.19 us   │ 36.98 us    │ 51.00% │
+│ cosine   │ 512       │ 100          │ 30 │ 50     │ 148.19 us   │ 102.46 us   │ 88.10% │
+│ cosine   │ 512       │ 100          │ 30 │ 100    │ 148.19 us   │ 143.41 us   │ 96.90% │
+│ cosine   │ 1536      │ 100          │ 30 │ 10     │ 427.21 us   │ 106.94 us   │ 42.10% │
+│ cosine   │ 1536      │ 100          │ 30 │ 50     │ 427.21 us   │ 285.50 us   │ 83.30% │
+│ cosine   │ 1536      │ 100          │ 30 │ 100    │ 427.21 us   │ 441.66 us   │ 95.60% │
+│ cosine   │ 3000      │ 100          │ 30 │ 10     │ 970.17 us   │ 289.00 us   │ 42.20% │
+│ cosine   │ 3000      │ 100          │ 30 │ 50     │ 970.17 us   │ 848.03 us   │ 83.90% │
+│ cosine   │ 3000      │ 100          │ 30 │ 100    │ 970.17 us   │ 1250.29 us  │ 95.60% │
 └──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
+Bencharmk hnswlib as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ distance ┃ vector    ┃ ef           ┃    ┃ ef     ┃ insert_time ┃ search_time ┃ recall ┃
+┃ type     ┃ dimension ┃ construction ┃ M  ┃ search ┃ per vector  ┃ per query   ┃ rate   ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
+│ l2       │ 128       │ 100          │ 30 │ 10     │ 12.84 us    │ 12.83 us    │ 56.90% │
+│ l2       │ 128       │ 100          │ 30 │ 50     │ 12.84 us    │ 41.93 us    │ 93.60% │
+│ l2       │ 128       │ 100          │ 30 │ 100    │ 12.84 us    │ 65.84 us    │ 99.40% │
+│ l2       │ 512       │ 100          │ 30 │ 10     │ 29.34 us    │ 47.37 us    │ 47.00% │
+│ l2       │ 512       │ 100          │ 30 │ 50     │ 29.34 us    │ 126.29 us   │ 86.40% │
+│ l2       │ 512       │ 100          │ 30 │ 100    │ 29.34 us    │ 198.30 us   │ 96.80% │
+│ l2       │ 1536      │ 100          │ 30 │ 10     │ 90.05 us    │ 149.35 us   │ 37.20% │
+│ l2       │ 1536      │ 100          │ 30 │ 50     │ 90.05 us    │ 431.53 us   │ 78.00% │
+│ l2       │ 1536      │ 100          │ 30 │ 100    │ 90.05 us    │ 765.03 us   │ 92.50% │
+│ l2       │ 3000      │ 100          │ 30 │ 10     │ 388.87 us   │ 708.98 us   │ 36.30% │
+│ l2       │ 3000      │ 100          │ 30 │ 50     │ 388.87 us   │ 1666.87 us  │ 78.90% │
+│ l2       │ 3000      │ 100          │ 30 │ 100    │ 388.87 us   │ 2489.98 us  │ 93.40% │
+│ cosine   │ 128       │ 100          │ 30 │ 10     │ 10.90 us    │ 11.14 us    │ 58.10% │
+│ cosine   │ 128       │ 100          │ 30 │ 50     │ 10.90 us    │ 37.39 us    │ 94.30% │
+│ cosine   │ 128       │ 100          │ 30 │ 100    │ 10.90 us    │ 62.45 us    │ 99.40% │
+│ cosine   │ 512       │ 100          │ 30 │ 10     │ 25.46 us    │ 38.92 us    │ 50.70% │
+│ cosine   │ 512       │ 100          │ 30 │ 50     │ 25.46 us    │ 109.84 us   │ 87.90% │
+│ cosine   │ 512       │ 100          │ 30 │ 100    │ 25.46 us    │ 151.00 us   │ 97.10% │
+│ cosine   │ 1536      │ 100          │ 30 │ 10     │ 77.53 us    │ 119.48 us   │ 42.00% │
+│ cosine   │ 1536      │ 100          │ 30 │ 50     │ 77.53 us    │ 340.78 us   │ 84.00% │
+│ cosine   │ 1536      │ 100          │ 30 │ 100    │ 77.53 us    │ 510.02 us   │ 95.50% │
+│ cosine   │ 3000      │ 100          │ 30 │ 10     │ 234.79 us   │ 453.12 us   │ 43.20% │
+│ cosine   │ 3000      │ 100          │ 30 │ 50     │ 234.79 us   │ 1380.79 us  │ 83.80% │
+│ cosine   │ 3000      │ 100          │ 30 │ 100    │ 234.79 us   │ 1520.92 us  │ 95.70% │
+└──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
+Bencharmk vectorlite brute force(select rowid from my_table order by vector_distance(query_vector, embedding, 'l2')) as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ distance ┃ vector    ┃ insert_time ┃ search_time ┃ recall  ┃
+┃ type     ┃ dimension ┃ per vector  ┃ per query   ┃ rate    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ l2       │ 128       │ 2.38 us     │ 299.14 us   │ 100.00% │
+│ l2       │ 512       │ 3.69 us     │ 571.19 us   │ 100.00% │
+│ l2       │ 1536      │ 4.86 us     │ 2237.64 us  │ 100.00% │
+│ l2       │ 3000      │ 7.69 us     │ 5135.63 us  │ 100.00% │
+└──────────┴───────────┴─────────────┴─────────────┴─────────┘
+Bencharmk sqlite_vss as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ distance ┃ vector    ┃ insert_time ┃ search_time ┃ recall  ┃
+┃ type     ┃ dimension ┃ per vector  ┃ per query   ┃ rate    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ l2       │ 128       │ 395.24 us   │ 2508.52 us  │ 99.90%  │
+│ l2       │ 512       │ 2824.89 us  │ 1530.77 us  │ 100.00% │
+│ l2       │ 1536      │ 8931.72 us  │ 1602.36 us  │ 100.00% │
+│ l2       │ 3000      │ 17498.60 us │ 3142.38 us  │ 100.00% │
+└──────────┴───────────┴─────────────┴─────────────┴─────────┘
+Bencharmk sqlite_vec as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ distance ┃ vector    ┃ insert_time ┃ search_time ┃ recall  ┃
+┃ type     ┃ dimension ┃ per vector  ┃ per query   ┃ rate    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ l2       │ 128       │ 10.21 us    │ 202.05 us   │ 100.00% │
+│ l2       │ 512       │ 14.43 us    │ 989.64 us   │ 100.00% │
+│ l2       │ 1536      │ 31.68 us    │ 3856.08 us  │ 100.00% │
+│ l2       │ 3000      │ 59.94 us    │ 9503.91 us  │ 100.00% │
+└──────────┴───────────┴─────────────┴─────────────┴─────────┘
+
 ```
-The same benchmark is also run for [sqlite-vss](https://github.com/asg017/sqlite-vss) using its default index: 
+</details>
+
+### 20000 vectors
+Please note:
+1. sqlite-vss is not benchmarked with 20000 vectors because its index creation takes so long that it doesn't finish in hours.
+2. sqlite-vec's vector query is benchmarked but not plotted in the figures because it's search time is disproportionally long.
+
+![vecter insertion](media/vector_insertion_20000_vectors.png)
+![vector query](media/vector_query_20000_vectors.png)
+
+<details>
+<summary>Check raw data</summary>
+
 ```
-┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
-┃ vector dimension ┃ insert_time(per vector) ┃ search_time(per query) ┃ recall_rate ┃
-┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-│ 256              │ 3644.42 us              │ 1483.18 us             │ 55.00%      │
-│ 1024             │ 18466.91 us             │ 3412.92 us             │ 52.20%      │
-└──────────────────┴─────────────────────────┴────────────────────────┴─────────────┘
+Using local vectorlite: ../build/release/vectorlite/vectorlite.so
+Benchmarking using 20000 randomly vectors. 100 10-neariest neighbor queries will be performed on each case.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ distance ┃ vector    ┃ ef           ┃    ┃ ef     ┃ insert_time ┃ search_time ┃ recall ┃
+┃ type     ┃ dimension ┃ construction ┃ M  ┃ search ┃ per vector  ┃ per query   ┃ rate   ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
+│ l2       │ 128       │ 100          │ 30 │ 10     │ 187.41 us   │ 46.58 us    │ 29.10% │
+│ l2       │ 128       │ 100          │ 30 │ 50     │ 187.41 us   │ 95.16 us    │ 70.20% │
+│ l2       │ 128       │ 100          │ 30 │ 100    │ 187.41 us   │ 179.51 us   │ 85.70% │
+│ l2       │ 512       │ 100          │ 30 │ 10     │ 820.80 us   │ 105.80 us   │ 18.10% │
+│ l2       │ 512       │ 100          │ 30 │ 50     │ 820.80 us   │ 361.83 us   │ 50.40% │
+│ l2       │ 512       │ 100          │ 30 │ 100    │ 820.80 us   │ 628.88 us   │ 67.00% │
+│ l2       │ 1536      │ 100          │ 30 │ 10     │ 2665.31 us  │ 292.39 us   │ 13.70% │
+│ l2       │ 1536      │ 100          │ 30 │ 50     │ 2665.31 us  │ 1069.47 us  │ 42.40% │
+│ l2       │ 1536      │ 100          │ 30 │ 100    │ 2665.31 us  │ 1744.79 us  │ 59.50% │
+│ l2       │ 3000      │ 100          │ 30 │ 10     │ 5236.76 us  │ 558.56 us   │ 13.80% │
+│ l2       │ 3000      │ 100          │ 30 │ 50     │ 5236.76 us  │ 1787.83 us  │ 39.30% │
+│ l2       │ 3000      │ 100          │ 30 │ 100    │ 5236.76 us  │ 3039.94 us  │ 56.60% │
+│ cosine   │ 128       │ 100          │ 30 │ 10     │ 164.31 us   │ 25.35 us    │ 34.70% │
+│ cosine   │ 128       │ 100          │ 30 │ 50     │ 164.31 us   │ 78.33 us    │ 71.20% │
+│ cosine   │ 128       │ 100          │ 30 │ 100    │ 164.31 us   │ 133.75 us   │ 87.60% │
+│ cosine   │ 512       │ 100          │ 30 │ 10     │ 711.35 us   │ 100.90 us   │ 19.00% │
+│ cosine   │ 512       │ 100          │ 30 │ 50     │ 711.35 us   │ 406.08 us   │ 51.10% │
+│ cosine   │ 512       │ 100          │ 30 │ 100    │ 711.35 us   │ 582.51 us   │ 71.50% │
+│ cosine   │ 1536      │ 100          │ 30 │ 10     │ 2263.96 us  │ 283.88 us   │ 22.60% │
+│ cosine   │ 1536      │ 100          │ 30 │ 50     │ 2263.96 us  │ 919.98 us   │ 54.50% │
+│ cosine   │ 1536      │ 100          │ 30 │ 100    │ 2263.96 us  │ 1674.77 us  │ 72.40% │
+│ cosine   │ 3000      │ 100          │ 30 │ 10     │ 4541.09 us  │ 566.31 us   │ 19.80% │
+│ cosine   │ 3000      │ 100          │ 30 │ 50     │ 4541.09 us  │ 1672.82 us  │ 49.30% │
+│ cosine   │ 3000      │ 100          │ 30 │ 100    │ 4541.09 us  │ 2855.43 us  │ 65.40% │
+└──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
+Bencharmk hnswlib as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ distance ┃ vector    ┃ ef           ┃    ┃ ef     ┃ insert_time ┃ search_time ┃ recall ┃
+┃ type     ┃ dimension ┃ construction ┃ M  ┃ search ┃ per vector  ┃ per query   ┃ rate   ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
+│ l2       │ 128       │ 100          │ 30 │ 10     │ 23.06 us    │ 39.96 us    │ 29.60% │
+│ l2       │ 128       │ 100          │ 30 │ 50     │ 23.06 us    │ 75.02 us    │ 69.80% │
+│ l2       │ 128       │ 100          │ 30 │ 100    │ 23.06 us    │ 160.01 us   │ 85.40% │
+│ l2       │ 512       │ 100          │ 30 │ 10     │ 146.58 us   │ 167.31 us   │ 18.10% │
+│ l2       │ 512       │ 100          │ 30 │ 50     │ 146.58 us   │ 392.12 us   │ 50.80% │
+│ l2       │ 512       │ 100          │ 30 │ 100    │ 146.58 us   │ 781.50 us   │ 67.20% │
+│ l2       │ 1536      │ 100          │ 30 │ 10     │ 657.41 us   │ 298.71 us   │ 12.70% │
+│ l2       │ 1536      │ 100          │ 30 │ 50     │ 657.41 us   │ 1031.61 us  │ 40.60% │
+│ l2       │ 1536      │ 100          │ 30 │ 100    │ 657.41 us   │ 1764.34 us  │ 57.90% │
+│ l2       │ 3000      │ 100          │ 30 │ 10     │ 1842.77 us  │ 852.88 us   │ 13.80% │
+│ l2       │ 3000      │ 100          │ 30 │ 50     │ 1842.77 us  │ 2905.57 us  │ 39.60% │
+│ l2       │ 3000      │ 100          │ 30 │ 100    │ 1842.77 us  │ 4936.35 us  │ 56.50% │
+│ cosine   │ 128       │ 100          │ 30 │ 10     │ 19.25 us    │ 23.27 us    │ 34.20% │
+│ cosine   │ 128       │ 100          │ 30 │ 50     │ 19.25 us    │ 72.66 us    │ 71.40% │
+│ cosine   │ 128       │ 100          │ 30 │ 100    │ 19.25 us    │ 134.11 us   │ 87.60% │
+│ cosine   │ 512       │ 100          │ 30 │ 10     │ 112.80 us   │ 106.90 us   │ 22.70% │
+│ cosine   │ 512       │ 100          │ 30 │ 50     │ 112.80 us   │ 341.23 us   │ 54.20% │
+│ cosine   │ 512       │ 100          │ 30 │ 100    │ 112.80 us   │ 609.93 us   │ 72.40% │
+│ cosine   │ 1536      │ 100          │ 30 │ 10     │ 615.04 us   │ 268.00 us   │ 22.50% │
+│ cosine   │ 1536      │ 100          │ 30 │ 50     │ 615.04 us   │ 898.82 us   │ 54.00% │
+│ cosine   │ 1536      │ 100          │ 30 │ 100    │ 615.04 us   │ 1557.51 us  │ 71.90% │
+│ cosine   │ 3000      │ 100          │ 30 │ 10     │ 1425.49 us  │ 546.18 us   │ 20.60% │
+│ cosine   │ 3000      │ 100          │ 30 │ 50     │ 1425.49 us  │ 2008.53 us  │ 49.20% │
+│ cosine   │ 3000      │ 100          │ 30 │ 100    │ 1425.49 us  │ 3106.51 us  │ 65.00% │
+└──────────┴───────────┴──────────────┴────┴────────┴─────────────┴─────────────┴────────┘
+Bencharmk vectorlite brute force(select rowid from my_table order by vector_distance(query_vector, embedding, 'l2')) as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ distance ┃ vector    ┃ insert_time ┃ search_time ┃ recall  ┃
+┃ type     ┃ dimension ┃ per vector  ┃ per query   ┃ rate    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ l2       │ 128       │ 0.93 us     │ 2039.69 us  │ 100.00% │
+│ l2       │ 512       │ 2.73 us     │ 7177.23 us  │ 100.00% │
+│ l2       │ 1536      │ 4.64 us     │ 17163.25 us │ 100.00% │
+│ l2       │ 3000      │ 6.62 us     │ 25378.79 us │ 100.00% │
+└──────────┴───────────┴─────────────┴─────────────┴─────────┘
+Bencharmk sqlite_vec as comparison.
+┏━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ distance ┃ vector    ┃ insert_time ┃ search_time ┃ recall  ┃
+┃ type     ┃ dimension ┃ per vector  ┃ per query   ┃ rate    ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ l2       │ 128       │ 3.49 us     │ 1560.17 us  │ 100.00% │
+│ l2       │ 512       │ 6.73 us     │ 7778.39 us  │ 100.00% │
+│ l2       │ 1536      │ 17.13 us    │ 26344.76 us │ 100.00% │
+│ l2       │ 3000      │ 35.30 us    │ 60652.58 us │ 100.00% │
+└──────────┴───────────┴─────────────┴─────────────┴─────────┘
 ```
-I believe the performance difference is mainly caused by the underlying vector search library.
-Sqlite-vss uses [faiss](https://github.com/facebookresearch/faiss), which is optimized for batched operations.
-Vectorlite uses [hnswlib](https://github.com/nmslib/hnswlib), which is optimized for realtime vector searching.
+
+</details>
 
 # Quick Start
 The quickest way to get started is to install vectorlite using python.
@@ -286,7 +432,7 @@ python3 -m build -w
 vectorlite_py wheel can be found in `dist` folder
 
 # Roadmap
-- [ ] SIMD support for ARM platform
+- [x] SIMD support for ARM platform
 - [ ] Support user defined metadata/rowid filter
 - [ ] Support Multi-vector document search and epsilon search
 - [ ] Support multi-threaded search
@@ -314,7 +460,7 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[1,2,3]'), 10)) or knn_search(my_embedding, knn_param(vector_from_json('[1,2,3]'), 10)) 
 ```
 2. Only float32 vectors are supported for now.
-3. SIMD is only enabled on x86 platforms. Because the default implementation in hnswlib doesn't support SIMD on ARM. Vectorlite is 3x-4x slower on MacOS-ARM than MacOS-x64. I plan to improve it in the future.
+3. ~~SIMD is only enabled on x86 platforms. Because the default implementation in hnswlib doesn't support SIMD on ARM. Vectorlite is 3x-4x slower on MacOS-ARM than MacOS-x64. I plan to improve it in the future.~~
 4. rowid in sqlite3 is of type int64_t and can be negative. However, rowid in a vectorlite table should be in this range `[0, min(max value of size_t, max value of int64_t)]`. The reason is rowid is used as `labeltype` in hnsw index, which has type `size_t`(usually 32-bit or 64-bit depending on the platform).
 5. Transaction is not supported.
 6. Metadata filter(rowid filter) requires sqlite3 >= 3.38. Python's built-in `sqlite` module is usually built with old versions. Please use a newer sqlite binding such as `apsw` if you want to use metadata filter. knn_search() without rowid fitler still works for old sqlite3.

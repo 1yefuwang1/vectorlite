@@ -1,0 +1,2 @@
+sqlite_vec>=0.1.0
+sqlite_vss>=0.1.0
