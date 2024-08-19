@@ -127,8 +127,8 @@ When dealing with 3000 vectors(which is a fairly small dataset):
 
 
 
-![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_insertion_3000_vectors.png)
-![vector query](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_query_3000_vectors.png)
+![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/main/media/vector_insertion_3000_vectors.png)
+![vector query](https://github.com/1yefuwang1/vectorlite/blob/main/media/vector_query_3000_vectors.png)
 
 <details>
 <summary>Check raw data</summary>
@@ -242,8 +242,8 @@ Please note:
 1. sqlite-vss is not benchmarked with 20000 vectors because its index creation takes so long that it doesn't finish in hours.
 2. sqlite-vec's vector query is benchmarked and included in the raw data, but not plotted in the figure because it's search time is disproportionally long.
 
-![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_insertion_20000_vectors.png)
-![vector query](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_query_20000_vectors.png)
+![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/main/media/vector_insertion_20000_vectors.png)
+![vector query](https://github.com/1yefuwang1/vectorlite/blob/main/media/vector_query_20000_vectors.png)
 
 <details>
 <summary>Check raw data</summary>
