@@ -8,6 +8,7 @@ import hnswlib
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.table import Table
 import os
+from collections import defaultdict
 
 
 """
@@ -17,7 +18,7 @@ Benchamrk vectorlite's performance and recall rate using method described in htt
 
 # Roll our own timeit function to measure time in us and get return value of the func.
 # Why Python's built-in timeit.timeit is not used:
-# 1. it includes unnecessary overheads, because compiles the code passed to it
+# 1. it compiles the code passed to it, which is unnecessary overhead.
 # 2. func's return value cannot be obtained directly
 def timeit(func):
     start_us = time.perf_counter_ns() / 1000
@@ -36,7 +37,7 @@ conn.load_extension(vectorlite_path)  # loads vectorlite
 
 cursor = conn.cursor()
 
-NUM_ELEMENTS = 5000  # number of vectors 
+NUM_ELEMENTS = int(os.environ.get("NUM_ELEMENTS", 3000)) # number of vectors 
 NUM_QUERIES = 100  # number of queries
 
 DIMS = [128, 512, 1536, 3000]
@@ -74,17 +75,18 @@ for distance_type in distance_types:
         del bf_index
 
 console = Console()
+console.print(f"Benchmarking using {NUM_ELEMENTS} randomly vectors. {NUM_QUERIES} {k}-neariest neighbor queries will be performed on each case.")
 
 @dataclasses.dataclass
 class BenchmarkResult:
     distance_type: Literal["l2", "cosine"]
     dim: int
-    ef_construction: int
-    M: int
-    ef_search: int
+    ef_construction: Optional[int]
+    M: Optional[int]
+    ef_search: Optional[int]
     insert_time_us: float  # in micro seconds, per vector
     search_time_us: float  # in micro seconds, per query
-    recall_rate: float  # in micro seconds
+    recall_rate: float
 
 
 @dataclasses.dataclass
@@ -97,27 +99,56 @@ class ResultTable:
         table = Table()
         table.add_column("distance\ntype")
         table.add_column("vector\ndimension")
-        table.add_column("ef\nconstruction")
-        table.add_column("M")
-        table.add_column("ef\nsearch")
+        if self.results[0].ef_construction is not None:
+            table.add_column("ef\nconstruction")
+            table.add_column("M")
+            table.add_column("ef\nsearch")
         table.add_column("insert_time\nper vector")
         table.add_column("search_time\nper query")
         table.add_column("recall\nrate")
         for result in self.results:
-            table.add_row(
-                result.distance_type,
-                str(result.dim),
-                str(result.ef_construction),
-                str(result.M),
-                str(result.ef_search),
-                f"{result.insert_time_us:.2f} us",
-                f"{result.search_time_us:.2f} us",
-                f"{result.recall_rate * 100:.2f}%",
-            )
+            if self.results[0].ef_construction is not None:
+                table.add_row(
+                    result.distance_type,
+                    str(result.dim),
+                    str(result.ef_construction),
+                    str(result.M),
+                    str(result.ef_search),
+                    f"{result.insert_time_us:.2f} us",
+                    f"{result.search_time_us:.2f} us",
+                    f"{result.recall_rate * 100:.2f}%",
+                )
+            else:
+                table.add_row(
+                    result.distance_type,
+                    str(result.dim),
+                    f"{result.insert_time_us:.2f} us",
+                    f"{result.search_time_us:.2f} us",
+                    f"{result.recall_rate * 100:.2f}%",
+                )
         yield table
+
+@dataclasses.dataclass
+class PlotData:
+    time_taken_us: float
+    column: str
 
 
 benchmark_results = []
+plot_data_for_insertion = defaultdict(list)
+plot_data_for_query = defaultdict(list)
+
+def transactional(func):
+    # def wrapper():
+    #     with conn:
+    #         func()
+    # return wrapper
+    def wrapper():
+        cursor.execute("BEGIN TRANSACTION;")
+        func()
+        cursor.execute("COMMIT;")
+    return wrapper
+
 
 
 def benchmark(distance_type, dim, ef_constructoin, M):
@@ -129,12 +160,13 @@ def benchmark(distance_type, dim, ef_constructoin, M):
 
     # measure insert time
     insert_time_us, _ = timeit(
-        lambda: cursor.executemany(
+        transactional(lambda: cursor.executemany(
             f"insert into {table_name}(rowid, embedding) values (?, ?)",
             [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-        )
+        ))
     )
     result.insert_time_us = insert_time_us / NUM_ELEMENTS
+    plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"vectorlite_{distance_type}"))
 
     for ef in efs:
 
@@ -165,6 +197,8 @@ def benchmark(distance_type, dim, ef_constructoin, M):
             recall_rate=recall_rate,
         )
         benchmark_results.append(result)
+        plot_data_for_query[dim].append(PlotData(result.search_time_us, f"vectorlite_{distance_type}_ef_{ef}"))
+    cursor.execute(f"drop table {table_name}")
 
 
 for distance_type in distance_types:
@@ -177,54 +211,75 @@ result_table = ResultTable(benchmark_results)
 console.print(result_table)
 
 
-@dataclasses.dataclass
-class BruteForceBenchmarkResult:
-    dim: int
-    insert_time_us: float  # in micro seconds, per vector
-    search_time_us: float  # in micro seconds, per query
-    recall_rate: float  # in micro seconds
+hnswlib_benchmark_results = []
+console.print("Bencharmk hnswlib as comparison.")
+def benchmark_hnswlib(distance_type, dim, ef_construction, M):
+    result = BenchmarkResult(distance_type, dim, ef_construction, M, 0, 0, 0, 0)
+    hnswlib_index = hnswlib.Index(space=distance_type, dim=dim)
+    hnswlib_index.init_index(max_elements=NUM_ELEMENTS, ef_construction=ef_construction, M=M)
 
+    # measure insert time
+    insert_time_us, _ = timeit(
+        lambda: hnswlib_index.add_items(data[dim])
+    )
+    result.insert_time_us = insert_time_us / NUM_ELEMENTS
+    plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"hnswlib_{distance_type}"))
 
-@dataclasses.dataclass
-class BruteForceResultTable:
-    results: List[BruteForceBenchmarkResult]
+    for ef in efs:
+        hnswlib_index.set_ef(ef)
+        def search():
+            result = []
+            for i in range(NUM_QUERIES):
+                labels, distances = hnswlib_index.knn_query(query_data[dim][i], k=k)
+                result.append(labels)
+            return result
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
-        table = Table()
-        table.add_column("vector dimension")
-        table.add_column("insert_time(per vector)")
-        table.add_column("search_time(per query)")
-        table.add_column("recall_rate")
-        for result in self.results:
-            table.add_row(
-                str(result.dim),
-                f"{result.insert_time_us:.2f} us",
-                f"{result.search_time_us:.2f} us",
-                f"{result.recall_rate * 100:.2f}%",
-            )
-        yield table
+        search_time_us, results = timeit(search)
+        recall_rate = np.mean(
+            [
+                np.intersect1d(results[i], correct_labels[distance_type][dim][i]).size
+                / k
+                for i in range(NUM_QUERIES)
+            ]
+        )
+        result = dataclasses.replace(
+            result,
+            ef_search=ef,
+            search_time_us=search_time_us / NUM_QUERIES,
+            recall_rate=recall_rate,
+        )
+        hnswlib_benchmark_results.append(result)
+        plot_data_for_query[dim].append(PlotData(result.search_time_us, f"hnswlib_{distance_type}_ef_{ef}"))
+    del hnswlib_index
 
+for distance_type in distance_types:
+    for dim in DIMS:
+        for ef_construction, M in hnsw_params:
+            benchmark_hnswlib(distance_type, dim, ef_construction, M)
+
+hnswlib_result_table = ResultTable(hnswlib_benchmark_results)
+console.print(hnswlib_result_table)
 
 brute_force_benchmark_results = []
 
-console.print("Bencharmk brute force as comparison.")
+console.print("Bencharmk vectorlite brute force(select rowid from my_table order by vector_distance(query_vector, embedding, 'l2')) as comparison.")
 
 def benchmark_brute_force(dim: int):
-    benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
+    benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0)
     table_name = f"table_vectorlite_bf_{dim}"
     cursor.execute(
         f"create table {table_name}(rowid integer primary key, embedding blob)"
     )
 
     insert_time_us, _ = timeit(
-        lambda: cursor.executemany(
-            f"insert into {table_name}(rowid, embedding) values (?, ?)",
-            [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-        )
+        transactional(
+            lambda: cursor.executemany(
+                f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+        ))
     )
     benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
+    plot_data_for_insertion[dim].append(PlotData(benchmark_result.insert_time_us, "vectorlite_scalar_brute_force"))
 
     def search():
         result = []
@@ -248,10 +303,12 @@ def benchmark_brute_force(dim: int):
     )
     benchmark_result.recall_rate = recall_rate
     brute_force_benchmark_results.append(benchmark_result)
+    plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "vectorlite_scalar_brute_force"))
+    cursor.execute(f"drop table {table_name}")
 
 for dim in DIMS:
     benchmark_brute_force(dim)
-brute_force_table = BruteForceResultTable(brute_force_benchmark_results)
+brute_force_table = ResultTable(brute_force_benchmark_results)
 console.print(brute_force_table)
 
 
@@ -271,7 +328,7 @@ if benchmark_vss and (platform.system().lower() == "linux" or platform.system().
     vss_benchmark_results = []
 
     def benchmark_sqlite_vss(dim: int):
-        benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
+        benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0)
         table_name = f"table_vss_{dim}"
         cursor.execute(
             f"create virtual table {table_name} using vss0(embedding({dim}))"
@@ -279,12 +336,15 @@ if benchmark_vss and (platform.system().lower() == "linux" or platform.system().
 
         # measure insert time
         insert_time_us, _ = timeit(
-            lambda: cursor.executemany(
-                f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-            )
+            transactional(
+                lambda: cursor.executemany(
+                    f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                    [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+            ))
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
+        # insertion for sqlite_vss is so slow that it makes other data points insignificant
+        plot_data_for_insertion[dim].append(PlotData(benchmark_result.insert_time_us, "sqlite_vss"))
 
         def search():
             result = []
@@ -307,11 +367,13 @@ if benchmark_vss and (platform.system().lower() == "linux" or platform.system().
         )
         benchmark_result.recall_rate = recall_rate
         vss_benchmark_results.append(benchmark_result)
+        plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "sqlite_vss"))
+        cursor.execute(f"drop table {table_name}")
 
     for dim in DIMS:
         benchmark_sqlite_vss(dim)
 
-    vss_result_table = BruteForceResultTable(vss_benchmark_results)
+    vss_result_table = ResultTable(vss_benchmark_results)
     console.print(vss_result_table)
 
 # benchmark sqlite-vec
@@ -326,7 +388,7 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
     conn.load_extension(sqlite_vec.loadable_path())
 
     def benchmark_sqlite_vec(dim: int):
-        benchmark_result = BruteForceBenchmarkResult(dim, 0, 0, 0)
+        benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0)
         table_name = f"table_vec_{dim}"
         cursor.execute(
             f"create virtual table {table_name} using vec0(rowid integer primary key, embedding float[{dim}])"
@@ -334,12 +396,14 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
 
         # measure insert time
         insert_time_us, _ = timeit(
-            lambda: cursor.executemany(
-                f"insert into {table_name}(rowid, embedding) values (?, ?)",
-                [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
-            )
+            transactional(
+                lambda: cursor.executemany(
+                    f"insert into {table_name}(rowid, embedding) values (?, ?)",
+                    [(i, data_bytes[dim][i]) for i in range(NUM_ELEMENTS)],
+            ))
         )
         benchmark_result.insert_time_us = insert_time_us / NUM_ELEMENTS
+        plot_data_for_insertion[dim].append(PlotData(benchmark_result.insert_time_us, "sqlite_vec"))
 
         def search():
             result = []
@@ -362,9 +426,25 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
         )
         benchmark_result.recall_rate = recall_rate
         vec_benchmark_results.append(benchmark_result)
+        if NUM_ELEMENTS < 10000:
+            plot_data_for_query[dim].append(PlotData(benchmark_result.search_time_us, "sqlite_vec"))
+
+        cursor.execute(f"drop table {table_name}")
 
     for dim in DIMS:
         benchmark_sqlite_vec(dim)
 
-    vec_result_table = BruteForceResultTable(vec_benchmark_results)
+    vec_result_table = ResultTable(vec_benchmark_results)
     console.print(vec_result_table)
+
+import plot
+def plot_figures():
+    vector_insertion_columns = ["dim"] + [plot_data.column for plot_data in plot_data_for_insertion[DIMS[0]]]
+    vector_insertion_data = [[dim] + [plot_data.time_taken_us for plot_data in plot_data_for_insertion[dim]] for dim in DIMS]
+    plot.plot(f"vector_insertion_{NUM_ELEMENTS}_vectors", vector_insertion_columns, vector_insertion_data)
+
+    vector_query_columns = ["dim"] + [plot_data.column for plot_data in plot_data_for_query[DIMS[0]]]
+    vector_query_data = [[dim] + [plot_data.time_taken_us for plot_data in plot_data_for_query[dim]] for dim in DIMS]
+    plot.plot(f"vector_query_{NUM_ELEMENTS}_vectors", vector_query_columns, vector_query_data)
+
+plot_figures()
