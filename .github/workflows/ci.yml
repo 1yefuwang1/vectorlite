@@ -70,12 +70,19 @@ jobs:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
 
-      - name: Upload wheels to release
-        if: ${{ github.event.inputs.upload_wheel == 'yes' && github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
+      - name: Get release version
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
+        shell: bash
+        run: |
+          echo "RELEASE_VERSION=$(echo ${{ github.ref_name }} | sed -E 's/^release\///')" >> $GITHUB_ENV
+
+      - name: Upload wheels to release assets
+        if: ${{ github.event_name == 'workflow_dispatch' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run:
-          gh release upload ${{ github.ref_name }} ./wheelhouse/*.whl --clobber
+          gh release upload ${{ env.RELEASE_VERSION }} ./wheelhouse/*.whl --clobber
       
       - name: Run python examples
         shell: bash
