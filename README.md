@@ -41,7 +41,7 @@ For other languages, `vectorlite.[so|dll|dylib]` can be extracted from the wheel
 
 Vectorlite is currently in beta. There could be breaking changes.
 ## Highlights
-1. Fast ANN(approximate nearest neighbors) search backed by hnswlib. Vector query is significantly faster than similar projects like [sqlite-vec](https://github.com/asg017/sqlite-vec) and [sqlite-vss](https://github.com/asg017/sqlite-vss). Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
+1. Fast ANN(approximate nearest neighbors) search backed by [hnswlib](https://github.com/nmslib/hnswlib). Vector query is significantly faster than similar projects like [sqlite-vec](https://github.com/asg017/sqlite-vec) and [sqlite-vss](https://github.com/asg017/sqlite-vss). Please see benchmark [below](https://github.com/1yefuwang1/vectorlite?tab=readme-ov-file#benchmark).
 2. Works on Windows, Linux and MacOS(x64 and ARM).
 3. A fast and portable SIMD accelerated vector distance implementation using Google's [highway](https://github.com/google/highway) library. On my PC(i5-12600KF with AVX2 support), vectorlite's implementation is 1.5x-3x faster than hnswlib's when dealing vectors with dimension >= 256.
 4. Supports all vector distance types provided by hnswlib: l2(squared l2), cosine, ip(inner product. I do not recomend you to use it though). For more info please check [hnswlib's doc](https://github.com/nmslib/hnswlib/tree/v0.8.0?tab=readme-ov-file#supported-distances).
@@ -103,35 +103,32 @@ select rowid, distance from my_vectorlite_table where knn_search(vector_name, kn
 
 ## Benchmark
 How the benchmark is done:
-1. Insert 10000 randomly-generated vectors into a vectorlite table with HNSW parameters ef_construction=100, M=30.
-2. Randomly generate 100 vectors and then query the table with them for 10 nearest neighbors with ef=10,50,100.
+1. Insert 3000/20000 randomly-generated vectors of dimension 128,512,1536 and 3000 into a vectorlite table with HNSW parameters ef_construction=100, M=30.
+2. Randomly generate 100 vectors and then query the table with them for 10 nearest neighbors with ef=10,50,100 to see how ef impacts recall rate.
 3. Calculate recall rate by comparing the result with the neighbors calculated using brute force.
 4. vectorlite_scalar_brute_force(which is just inserting vectors into a normal sqlite table and do `select rowid from my_table order by vector_distance(query_vector, embedding, 'l2') limit 10`) is benchmarked as the baseline to see how much hnsw speeds up vector query.
-5. hnswlib is also benchmarked to see how much cost SQLite adds to vectorlite.
+5. [hnswlib](https://github.com/nmslib/hnswlib) is also benchmarked to see how much cost SQLite adds to vectorlite.
 The benchmark is run in WSL on my PC with a i5-12600KF intel CPU and 16G RAM.
 
 
-TL;DR
+TL;DR:
+1. Vectorlite's vector query is 3x-100x faster than [sqlite-vec](https://github.com/asg017/sqlite-vec) at the cost of lower recall rate. The difference gets larger when the dataset size grows, which is expected because sqlite-vec only supports brute force. 
+2. Surprisingly, vectorlite_scalar_brute_force's vector query is about 1.5x faster for vectors with dimension >= 512 but slower than sqlite-vec for 128d vectors. vectorlite_scalar_brute_force's vector insertion is 3x-8x faster than sqlite-vec.
+3. Compared with [hnswlib](https://github.com/nmslib/hnswlib), vectorlite provides almost identical recall rate. Vector query speed with L2 distance is on par with 128d vectors and is 1.5x faster when dealing with 3000d vectors. Mainly because vectorlite's vector distance implementation is faster. But vectorlite's vector insertion is about 4x-5x slower, which I guess is the cost added by SQLite.
+4. Compared with brute force baseline(vectorlite_scalar_brute_force), vectorlite's knn query is 8x-80x faster.
+
+The benchmark code can be found in [benchmark folder](https://github.com/1yefuwang1/vectorlite/tree/main/benchmark), which can be used as an example of how to improve recall rate for your scenario by tuning HNSW parameters.
+### 3000 vectors
 When dealing with 3000 vectors(which is a fairly small dataset):
 1. Compared with [sqlite-vec](https://github.com/asg017/sqlite-vec), vectorlite's vector query can be 3x-15x faster with 128-d vectors, 6x-26x faster with 512-d vectors, 7x-30x faster with 1536-d vectors and 6x-24x faster with 3000-d vectors. But vectorlite's vector insertion is 6x-16x slower, which is expected because sqlite-vec uses brute force only and doesn't do much indexing.
 2. Compared with vectorlite_scalar_brute_force, hnsw provides about 10x-40x speed up.
-3. Compared with hnswlib, vectorlite's vector query speed and accuracy is on par and is 1.5x faster when dealing with 3000d vectors. The credit goes to vectorlite's vector distance implementation. But vector insertion is about 4x-5x slower.
-4. vectorlite_scalar_brute_force's vector insertion 4x-7x is faster than sqlite-vec, and vector query is about 1.7x faster.
-
-
-2. When dealing with 20000 vectors, 
-1. Compared with [sqlite-vec](https://github.com/asg017/sqlite-vec), vectorlite's vector query can be 8x-33x faster with 128-d vectors, 20x-100x faster with 3000d vectors with speed-accuracy trade-off.
-2. Compared with vectorlite_scalar_brute_force, hnsw provides about 8x-80x speed up with reduced recall rate at 13.8%-85%.
-3. Compared with hnswlib, 
+3. Compared with [hnswlib](https://github.com/nmslib/hnswlib), vectorlite provides almost identical recall rate. Vector query speed is on par with 128d vectors and is 1.5x faster when dealing with 3000d vectors. Mainly because vectorlite's vector distance implementation is faster. But vector insertion is about 4x-5x slower.
+4. vectorlite_scalar_brute_force's vector insertion 4x-7x is faster than [sqlite-vec](https://github.com/asg017/sqlite-vec), and vector query is about 1.7x faster when dealing with vectors of dimension >= 512.
 
 
 
-The benchmark code can be found in [benchmark folder](https://github.com/1yefuwang1/vectorlite/tree/main/benchmark), which can be used as an example of how to improve recall rate for your scenario by tuning HNSW parameters.
-
-Picking good HNSW parameters is crucial for achieving high performance. Please benchmark and find the best HNSW parameters for your scenario.
-### 3000 vectors
-![vecter insertion](media/vector_insertion_3000_vectors.png)
-![vector query](media/vector_query_3000_vectors.png)
+![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_insertion_3000_vectors.png)
+![vector query](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_query_3000_vectors.png)
 
 <details>
 <summary>Check raw data</summary>
@@ -234,12 +231,19 @@ Bencharmk sqlite_vec as comparison.
 </details>
 
 ### 20000 vectors
+When dealing with 20000 vectors, 
+1. Compared with [sqlite-vec](https://github.com/asg017/sqlite-vec), vectorlite's vector query can be 8x-100x faster depending on vector dimension.
+2. Compared with vectorlite_scalar_brute_force, hnsw provides about 8x-80x speed up with reduced recall rate at 13.8%-85% depending on vector dimension.
+3. Compared with hnswlib, vectorlite provides almost identical recall rate. Vector query is on par with 128d vectors and can be 1.5x faster with 3000d vectors. But vector insertion is 3x-9x slower.
+4. vectorlite_scalar_brute_force's vector insertion is 4x-8x faster than sqlite-vec. sqlite-vec's vector query is 1.5x faster with 128d vectors and 1.8x slower when vector dimension>=512.
+
+
 Please note:
 1. sqlite-vss is not benchmarked with 20000 vectors because its index creation takes so long that it doesn't finish in hours.
-2. sqlite-vec's vector query is benchmarked but not plotted in the figures because it's search time is disproportionally long.
+2. sqlite-vec's vector query is benchmarked and included in the raw data, but not plotted in the figure because it's search time is disproportionally long.
 
-![vecter insertion](media/vector_insertion_20000_vectors.png)
-![vector query](media/vector_query_20000_vectors.png)
+![vecter insertion](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_insertion_20000_vectors.png)
+![vector query](https://github.com/1yefuwang1/vectorlite/blob/bench/media/vector_query_20000_vectors.png)
 
 <details>
 <summary>Check raw data</summary>
