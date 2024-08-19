@@ -23,6 +23,7 @@
 #include "sqlite3ext.h"
 #include "util.h"
 #include "vector_space.h"
+#include "vector_view.h"
 
 extern const sqlite3_api_routines* sqlite3_api;
 
@@ -533,7 +534,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   std::string_view vector_blob(
       reinterpret_cast<const char*>(sqlite3_value_blob(argv[0])),
       sqlite3_value_bytes(argv[0]));
-  auto vec = Vector::FromBlob(vector_blob);
+  auto vec = VectorView::FromBlob(vector_blob);
   if (!vec.ok()) {
     std::string err = absl::StrFormat("Failed to parse vector due to: %s",
                                       vec.status().message());
@@ -558,7 +559,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   }
 
   KnnParam* param = new KnnParam();
-  param->query_vector = std::move(*vec);
+  param->query_vector = *vec;
   param->k = static_cast<uint32_t>(k);
   param->ef_search = std::move(ef_search);
 
@@ -632,7 +633,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       return SQLITE_ERROR;
     }
 
-    auto vector = Vector::FromBlob(std::string_view(
+    auto vector = VectorView::FromBlob(std::string_view(
         reinterpret_cast<const char*>(sqlite3_value_blob(argv[2])),
         sqlite3_value_bytes(argv[2])));
     if (vector.ok()) {
@@ -646,10 +647,12 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       }
 
       try {
-        vtab->index_->addPoint(vtab->space_.normalize
-                                   ? vector->Normalize().data().data()
-                                   : vector->data().data(),
-                               rowid, true);
+        if (!vtab->space_.normalize) {
+          vtab->index_->addPoint(vector->data().data(), rowid, true);
+        } else {
+          Vector normalized_vector = Vector::Normalize(*vector);
+          vtab->index_->addPoint(normalized_vector.data().data(), rowid, true);
+        }
 
       } catch (const std::runtime_error& e) {
         SetZErrMsg(&vtab->zErrMsg, "Failed to insert row %lld due to: %s",
@@ -712,7 +715,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       SetZErrMsg(&vtab->zErrMsg, "vector must be of type Blob");
       return SQLITE_ERROR;
     }
-    auto vector = Vector::FromBlob(std::string_view(
+    auto vector = VectorView::FromBlob(std::string_view(
         reinterpret_cast<const char*>(sqlite3_value_blob(argv[2])),
         sqlite3_value_bytes(argv[2])));
 
@@ -727,10 +730,14 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       }
 
       try {
-        vtab->index_->addPoint(vtab->space_.normalize
-                                   ? vector->Normalize().data().data()
-                                   : vector->data().data(),
-                               rowid, vtab->index_->allow_replace_deleted_);
+        if (!vtab->space_.normalize) {
+          vtab->index_->addPoint(vector->data().data(), rowid,
+                                 vtab->index_->allow_replace_deleted_);
+        } else {
+          Vector normalized_vector = Vector::Normalize(*vector);
+          vtab->index_->addPoint(normalized_vector.data().data(), rowid,
+                                 vtab->index_->allow_replace_deleted_);
+        }
 
       } catch (const std::runtime_error& e) {
         SetZErrMsg(&vtab->zErrMsg, "Failed to update row %lld due to: %s",

@@ -12,13 +12,13 @@
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3.h"
-#include "vector.h"
+#include "vector_view.h"
 #include "vector_space.h"
 
 namespace vectorlite {
 
 struct KnnParam {
-  Vector query_vector;
+  VectorView query_vector;
   uint32_t k;
   std::optional<uint32_t> ef_search;
 };

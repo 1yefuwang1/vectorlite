@@ -15,6 +15,8 @@
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "util.h"
+#include "vector.h"
+#include "vector_view.h"
 
 namespace vectorlite {
 
@@ -193,10 +195,18 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
       index_.setEf(*knn_param->ef_search);
     }
     try {
+      if (!space_.normalize) {
+        return index_.searchKnnCloserFirst(
+            knn_param->query_vector.data().data(), knn_param->k,
+            rowid_filter.get());
+      }
+
+      VECTORLITE_ASSERT(space_.normalize);
+      // Copy the query vector and normalize it.
+      Vector normalized_vector = Vector::Normalize(knn_param->query_vector);
+
       auto result = index_.searchKnnCloserFirst(
-          space_.normalize ? knn_param->query_vector.Normalize().data().data()
-                           : knn_param->query_vector.data().data(),
-          knn_param->k, rowid_filter.get());
+          normalized_vector.data().data(), knn_param->k, rowid_filter.get());
       return result;
 
     } catch (const std::runtime_error& e) {

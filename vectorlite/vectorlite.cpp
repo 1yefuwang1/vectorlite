@@ -4,11 +4,9 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "macros.h"
-#include "sqlite3.h"
 #include "sqlite3ext.h"
 #include "sqlite_functions.h"
 #include "util.h"
-#include "vector.h"
 #include "vector_space.h"
 #include "virtual_table.h"
 
