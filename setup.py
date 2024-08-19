@@ -12,7 +12,7 @@ from setuptools import Extension, setup
 import subprocess
 # import ninja
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 PACKAGE_NAME = 'vectorlite_py'
 
 system = platform.system()

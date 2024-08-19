@@ -1,6 +1,6 @@
 import os
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 def vectorlite_path():
     loadable_path = os.path.join(os.path.dirname(__file__), 'vectorlite')
