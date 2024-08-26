@@ -10,7 +10,7 @@ vector_to_json(vector_blob) -- converts a vector of type BLOB(c-style float32 ar
 vector_distance(vector_blob1, vector_blob2, distance_type_str) -- calculate vector distance between two vectors, distance_type_str could be 'l2', 'cosine', 'ip' 
 ```
 
-In fact, one can easily implement brute force searching using `vector_distance`:
+In fact, one can easily implement brute force searching using `vector_distance`, which returns 100% accurate search results:
 ```sql
 -- use a normal sqlite table
 create table my_table(rowid integer primary key, embedding blob);
@@ -22,7 +22,7 @@ select rowid from my_table order by vector_distance({query_vector}, embedding, '
 
 ```
 ## Virtual Table
-The core of vectorlite is the [virtual table](https://www.sqlite.org/vtab.html) module, which is used to hold vector index and way faster than brute force approach.
+The core of vectorlite is the [virtual table](https://www.sqlite.org/vtab.html) module, which is used to hold vector index and way faster than brute force approach at the cost of not being 100% accurate.
 A vectorlite table can be created using:
 
 ```sql

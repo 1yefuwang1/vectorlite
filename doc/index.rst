@@ -7,8 +7,9 @@ Welcome to vectorlite's documentation!
 ===================================
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Contents:
 
    markdown/overview.md
    markdown/api.md
+   markdown/news.md
