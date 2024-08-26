@@ -212,28 +212,30 @@ def benchmark(distance_type, dim, ef_constructoin, M):
 
 import os
 from pymilvus import MilvusClient
+from pymilvus import (
+    connections,
+    FieldSchema, CollectionSchema, DataType,
+    Collection,
+)
 # from pymilvus import model
 import numpy as np
 
-client = MilvusClient("./milvus_demo2.db")
+client = MilvusClient("./milvus_demo6.db")
+# connections.connect(uri="./local_test.db")
 # embedding_fn = model.DefaultEmbeddingFunction()
 def milvus_insert(client, collection_name, data):
     client.insert(collection_name=collection_name, data=data)
 
-def insert_many_func(client, collection_name, dim):
-    return milvus_insert_many(client=client, collection_name=collection_name, dim=dim)
-
 def milvus_insert_many(client, collection_name, dim):
-    for i in range(NUM_ELEMENTS):
-        insert_data = [{"id": i, "embedding": data_bytes[dim][i]}]
-        client.insert(collection_name=collection_name, data=insert_data)
+    insert_data = [{"id": i, "embedding": data[dim][i]} for i in range(NUM_ELEMENTS)]
+    client.insert(collection_name=collection_name, data=insert_data)
 
 def milvus_search(client, collection_name, distance_type, search_data, limit, ef):
     res = client.search(
         collection_name=collection_name,
         data=[search_data],
         limit=limit,
-        # search_params={"metric_type": distance_type.upper(), "params": {"ef": ef}}, # Search parameters
+        search_params={"metric_type": distance_type.upper(), "params": {"ef": ef}}, # Search parameters
     )
     rowids = [result['id'] for result in res[0]]
     return rowids
@@ -242,37 +244,22 @@ def milvus_create_table(client, collection_name, distance_type, ef_construction,
     from pymilvus import CollectionSchema, FieldSchema
     from pymilvus import DataType
 
-    int64_field = FieldSchema(name="id", dtype=DataType.INT64, is_primary=True)
-    float_vector = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-    schema = CollectionSchema(fields=[int64_field, float_vector], enable_dynamic_field=True)
-
+    schema = client.create_schema(enable_dynamic_field=True)
+    schema.add_field("id", DataType.INT64, is_primary=True)
+    schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
     index_params = client.prepare_index_params()
 
     index_params.add_index(
-        field_name="id",
-        # index_type="HNSW"
-    )
-    # index_params.add_index(
-    #     field_name="id", 
-    #     index_type="HNSW",
-    #     metric_type=distance_type.upper(),
-    #     params={ "M": M, "efConstruction": ef_construction}
-    # )
-    index_params.add_index(
         field_name="embedding", 
-        index_type="HNSW",
+        # index_type="HNSW",
         metric_type=distance_type.upper(),
-        params={ "M": M, "efConstruction": ef_construction}
+        # params={ "M": M, "efConstruction": ef_construction}
     )
     client.create_collection(
         collection_name=collection_name,
         schema=schema,
-        # index_params=index_params,
+        index_params=index_params,
         dimension=dim  # The vectors we will use in this demo has 384 dimensions
-    )
-    client.create_index(
-        collection_name=collection_name,
-        index_params=index_params
     )
     
     res = client.get_load_state(
@@ -281,8 +268,6 @@ def milvus_create_table(client, collection_name, distance_type, ef_construction,
     print("--------------------------------")
     print(client.describe_index(collection_name,"embedding"))
     print(client.describe_index(collection_name,"id"))
-    # res = client.get_load_state(collection_name=collection_name)
-    print(res)
 
 def benchmark_milvus(distance_type, dim, ef_constructoin, M):
     result = BenchmarkResult(distance_type, dim, ef_constructoin, M, 0, 0, 0, 0, "milvusLite")
@@ -304,11 +289,10 @@ def benchmark_milvus(distance_type, dim, ef_constructoin, M):
         def search():
             result = []
             for i in range(NUM_QUERIES):
-                print(query_data_for_milvus[dim][i])
                 result.append(
                     milvus_search(client=client, collection_name=collection_name, distance_type=distance_type, search_data=query_data_for_milvus[dim][i], limit=k, ef=ef)
                 )
-            print(result)
+            # print(result)
             return result
 
         search_time_us, results = timeit(search)
