@@ -61,6 +61,18 @@ vector_from_json(json_string) -- converts a json array of type TEXT into BLOB(a 
 vector_to_json(vector_blob) -- converts a vector of type BLOB(c-style float32 array) into a json array of type TEXT
 vector_distance(vector_blob1, vector_blob2, distance_type_str) -- calculate vector distance between two vectors, distance_type_str could be 'l2', 'cosine', 'ip' 
 ```
+In fact, one can easily implement brute force searching using `vector_distance`:
+```sql
+-- use a normal sqlite table
+create table my_table(rowid integer primary key, embedding blob);
+
+-- insert 
+insert into my_table(rowid, embedding) values (0, {your_embedding});
+-- search for 10 nearest neighbors using l2 squared distance
+select rowid from my_table order by vector_distance({query_vector}, embedding, 'l2') asc limit 10
+
+```
+
 ### Virtual Table
 The core of vectorlite is the [virtual table](https://www.sqlite.org/vtab.html) module, which is used to hold vector index.
 A vectorlite table can be created using:

@@ -3,7 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to Example's documentation!
+Welcome to vectorlite's documentation!
 ===================================
 
 .. toctree::
@@ -11,4 +11,4 @@ Welcome to Example's documentation!
    :caption: Contents:
 
    markdown/overview.md
-   markdown/another-feature.md
+   markdown/api.md

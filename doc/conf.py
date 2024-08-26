@@ -6,10 +6,10 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'Example'
-copyright = 'workshop participant'
-author = 'workshop participant'
-release = '0.1'
+project = 'vectorlite'
+copyright = 'vectorlite contributors'
+author = '1yefuwang1@gmail.com'
+release = '0.2.0'
 
 
 # -- General configuration ---------------------------------------------------
