@@ -12,4 +12,5 @@ Welcome to vectorlite's documentation!
 
    markdown/overview.md
    markdown/api.md
+   markdown/getting-started.md
    markdown/news.md
