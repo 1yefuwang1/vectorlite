@@ -5,7 +5,7 @@ The quickest way to get started is to install vectorlite using python.
 pip install vectorlite-py apsw numpy
 ```
 Vectorlite's metadata filter feature requires sqlite>=3.38. Python's builtin `sqlite` module is usually built with old sqlite versions. So `apsw` is used here as sqlite driver, because it provides bindings to latest sqlite. Vectorlite still works with old sqlite versions if metadata filter support is not required.
-Below is a minimal example of using vectorlite. It can also be found in the examples folder.
+Below is a minimal example of using vectorlite. It can also be found in the [examples folder](https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples).
 
 ```python
 import vectorlite_py
@@ -66,4 +66,4 @@ conn.close()
 
 ```
 
-More examples can be found in examples and bindings/python/vectorlite_py/test folder.
+More examples can be found in [examples](https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples) folder.
