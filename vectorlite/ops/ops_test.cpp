@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 #include "hnswlib/hnswlib.h"
+#include "hwy/base.h"
 
 static std::vector<std::vector<float>> GenerateRandomVectors(size_t num_vectors,
                                                              size_t dim) {
@@ -132,6 +133,42 @@ TEST(Normalize, ShouldReturnCorrectResult) {
       vectorlite::ops::Normalize_Scalar(v2.data(), size);
       for (int j = 0; j < size; ++j) {
         EXPECT_NEAR(v1[j], v2[j], 1e-6);
+      }
+    }
+  }
+}
+
+TEST(QuantizeF32ToBF16, ShouldReturnCorrectResult) {
+  for (int dim = 0; dim <= 100; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::bfloat16_t> out(size);
+      vectorlite::ops::QuantizeF32ToBF16(v.data(), out.data(), size);
+
+      for (int j = 0; j < size; ++j) {
+        float expected = hwy::F32FromBF16(hwy::BF16FromF32(v[j]));
+        EXPECT_NEAR(expected, hwy::F32FromBF16(out[j]), 1e-6)
+            << "v[" << j << "] = " << v[j] << " dim = " << dim;
+      }
+    }
+  }
+}
+
+TEST(QuantizeF32ToF16, ShouldReturnCorrectResult) {
+  for (int dim = 0; dim <= 100; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::float16_t> out(size);
+      vectorlite::ops::QuantizeF32ToF16(v.data(), out.data(), size);
+
+      for (int j = 0; j < size; ++j) {
+        float expected = hwy::F32FromF16(hwy::F16FromF32(v[j]));
+        EXPECT_NEAR(expected, hwy::F32FromF16(out[j]), 1e-6)
+            << "v[" << j << "] = " << v[j] << " dim = " << dim;
       }
     }
   }

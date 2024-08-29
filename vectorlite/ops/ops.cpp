@@ -1,8 +1,10 @@
 #include "ops.h"
 
-#include <hwy/base.h>
-
+#include <algorithm>
 #include <cmath>
+#include <vector>
+
+#include "hwy/base.h"
 // >>>> for dynamic dispatch only, skip if you want static dispatch
 
 // For dynamic dispatch, specify the name of the current file (unfortunately
@@ -17,7 +19,6 @@
 // Must come after foreach_target.h to avoid redefinition errors.
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"
-#include "hwy/contrib/math/math-inl.h"
 #include "hwy/highway.h"
 #include "hwy/targets.h"
 
@@ -156,7 +157,7 @@ static float L2DistanceSquaredImplVectorized(const float* HWY_RESTRICT v1,
     const auto diff = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
     sum0 = MulAdd(diff, diff, sum0);
   }
-// Reduction tree: sum of all accumulators by pairs, then across lanes.
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
   sum0 = Add(sum0, sum1);
   sum2 = Add(sum2, sum3);
   sum0 = Add(sum0, sum2);
@@ -211,6 +212,66 @@ static void NormalizeImpl(float* HWY_RESTRICT inout, size_t num_elements) {
   });
 }
 
+template <class HalfFloat, HWY_IF_SPECIAL_FLOAT(HalfFloat)>
+static void QuantizeF32ToHalf(const float* HWY_RESTRICT in,
+                              HalfFloat* HWY_RESTRICT out, size_t size) {
+  static_assert(sizeof(float) / sizeof(HalfFloat) == 2,
+                "HalfFloat must be 16-bit");
+  const hn::ScalableTag<float> df32;
+  // f16 here refers to the 16-bit floating point type, including float16_t and
+  // bfloat16_t
+  const hn::Repartition<HalfFloat, decltype(df32)> df16;
+  const size_t NF = hn::Lanes(df32);
+  using VF = hn::Vec<decltype(df32)>;
+  using VBF = hn::Vec<decltype(df16)>;
+  const hn::Half<decltype(df16)> df16h;
+  constexpr bool is_bfloat16 = std::is_same<HalfFloat, hwy::bfloat16_t>::value;
+
+  size_t i = 0;
+  if (size >= 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
+      const VF v0 = hn::LoadU(df32, in + i);
+      const VF v1 = hn::LoadU(df32, in + i + NF);
+      if constexpr (is_bfloat16) {
+        const VBF bf = hn::OrderedDemote2To(df16, v0, v1);
+        hn::StoreU(bf, df16, out + i);
+      } else {
+        static_assert(std::is_same<HalfFloat, hwy::float16_t>::value,
+                      "Unsupported HalfFloat type");
+        // todo: use OrderedDemote2To once it's implemented for float16_t
+        const VBF bf =
+            hn::Combine(df16, hn::DemoteTo(df16h, v1), hn::DemoteTo(df16h, v0));
+        hn::StoreU(bf, df16, out + i);
+      }
+    }
+  }
+  if (size - i >= NF) {
+    const VF v0 = hn::LoadU(df32, in + i);
+    const hn::Vec<decltype(df16h)> bfh = hn::DemoteTo(df16h, v0);
+    hn::StoreU(bfh, df16h, out + i);
+    i += NF;
+  }
+
+  if (i != size) {
+    const size_t remaining = size - i;
+    const VF v0 = hn::LoadN(df32, in + i, remaining);
+    const hn::Vec<decltype(df16h)> bfh = hn::DemoteTo(df16h, v0);
+    hn::StoreN(bfh, df16h, out + i, remaining);
+  }
+}
+
+static void QuantizeF32ToBF16Impl(const float* HWY_RESTRICT in,
+                                  hwy::bfloat16_t* HWY_RESTRICT out,
+                                  size_t size) {
+  QuantizeF32ToHalf(in, out, size);
+}
+
+static void QuantizeF32ToF16Impl(const float* HWY_RESTRICT in,
+                                 hwy::float16_t* HWY_RESTRICT out,
+                                 size_t size) {
+  QuantizeF32ToHalf(in, out, size);
+}
+
 }  // namespace HWY_NAMESPACE
 
 HWY_AFTER_NAMESPACE();
@@ -228,6 +289,8 @@ namespace ops {
 HWY_EXPORT(InnerProductImpl);
 HWY_EXPORT(NormalizeImpl);
 HWY_EXPORT(L2DistanceSquaredImpl);
+HWY_EXPORT(QuantizeF32ToF16Impl);
+HWY_EXPORT(QuantizeF32ToBF16Impl);
 
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements) {
@@ -269,13 +332,27 @@ HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
   return;
 }
 
-// HWY_DLLEXPORT std::string_view DetectTarget() {
-//   uint64_t supported_targets = HWY_SUPPORTED_TARGETS;
-//   hwy::GetChosenTarget().Update(supported_targets);
-//   return hwy::TargetName(supported_targets);
-// }
+HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
+  std::vector<int64_t> targets = hwy::SupportedAndGeneratedTargets();
+  std::vector<const char*> target_names(targets.size());
+  std::transform(targets.cbegin(), targets.cend(), target_names.begin(),
+                 [](int64_t target) { return hwy::TargetName(target); });
+  return target_names;
+}
 
-}  // namespace distance
+HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
+                                    hwy::float16_t* HWY_RESTRICT out,
+                                    size_t num_elements) {
+  HWY_DYNAMIC_DISPATCH(QuantizeF32ToF16Impl)(in, out, num_elements);
+}
+
+HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in,
+                                     hwy::bfloat16_t* HWY_RESTRICT out,
+                                     size_t num_elements) {
+  HWY_DYNAMIC_DISPATCH(QuantizeF32ToBF16Impl)(in, out, num_elements);
+}
+
+}  // namespace ops
 }  // namespace vectorlite
 
-#endif // HWY_ONCE
+#endif  // HWY_ONCE

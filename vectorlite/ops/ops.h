@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string_view>
+#include <vector>
 
 #include "hwy/base.h"
 
@@ -36,8 +36,13 @@ HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t num_elements);
 HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout,
                                     size_t num_elements);
 
-// Detect best available SIMD target to ensure future dynamic dispatch avoids
-// the overhead of CPU detection. HWY_DLLEXPORT std::string_view DetectTarget();
+// Get supported SIMD target name strings.
+HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
 
-}  // namespace distance
+// in and out should not be nullptr and points to valid memory of required size.
+HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in, hwy::float16_t* HWY_RESTRICT out, size_t num_elements);
+HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in, hwy::bfloat16_t* HWY_RESTRICT out, size_t num_elements);
+
+
+}  // namespace ops
 }  // namespace vectorlite
