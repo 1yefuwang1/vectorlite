@@ -33,8 +33,9 @@ namespace HWY_NAMESPACE {
 // Highway ops reside here; ADL does not find templates nor builtins.
 namespace hn = hwy::HWY_NAMESPACE;
 
-static float SquaredSumVectorized(const float* v, size_t num_elements) {
-  const hn::ScalableTag<float> d;
+template <class D, typename T = hn::TFromD<D>>
+static float SquaredSumVectorized(const D d, const T* v, size_t num_elements) {
+  static_assert(hwy::IsFloat<T>(), "MulAdd requires float type");
   using V = hn::Vec<decltype(d)>;
   const size_t N = hn::Lanes(d);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
@@ -75,9 +76,9 @@ static float SquaredSumVectorized(const float* v, size_t num_elements) {
   return hn::ReduceSum(d, sum0);
 }
 
-static float InnerProductImplVectorized(const float* v1, const float* v2,
+template <class D, typename T = hn::TFromD<D>>
+static float InnerProductImplVectorized(const D d, const T* v1, const float* v2,
                                         size_t num_elements) {
-  const hn::ScalableTag<float> d;
   const size_t N = hn::Lanes(d);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
 
@@ -86,13 +87,14 @@ static float InnerProductImplVectorized(const float* v1, const float* v2,
   if (v1 != v2) {
     return hn::Dot::Compute<assumption>(d, v1, v2, num_elements);
   } else {
-    return SquaredSumVectorized(v1, num_elements);
+    return SquaredSumVectorized(d, v1, num_elements);
   }
 }
 
-static float InnerProductImpl(const float* v1, const float* v2,
+template <class D, typename T = hn::TFromD<D>>
+static float InnerProductImpl(const D d, const T* v1, const T* v2,
                               size_t num_elements) {
-  const hn::ScalableTag<float> d;
+  static_assert(hwy::IsFloat<T>(), "MulAdd requires float type");
   const size_t N = hn::Lanes(d);
 
   const size_t leftover = num_elements % N;
@@ -100,7 +102,7 @@ static float InnerProductImpl(const float* v1, const float* v2,
   float result = 0;
 
   if (num_elements >= N) {
-    result = InnerProductImplVectorized(v1, v2, num_elements - leftover);
+    result = InnerProductImplVectorized(d, v1, v2, num_elements - leftover);
   }
 
   if (leftover > 0) {
@@ -109,8 +111,8 @@ static float InnerProductImpl(const float* v1, const float* v2,
     float sum1 = 0;
     size_t i = num_elements - leftover;
     for (; i + 2 <= num_elements; i += 2) {
-      sum0 += v1[i] * v2[i];
-      sum1 += v1[i + 1] * v2[i + 1];
+      sum0 += hwy::ConvertScalarTo<float>(v1[i]) * hwy::ConvertScalarTo(v2[i]);
+      sum1 += hwy::ConvertScalarTo(v1[i + 1]) * hwy::ConvertScalarTo(v2[i + 1]);
     }
 
     if (i < num_elements) {
@@ -122,10 +124,12 @@ static float InnerProductImpl(const float* v1, const float* v2,
   }
 }
 
-static float L2DistanceSquaredImplVectorized(const float* HWY_RESTRICT v1,
-                                             const float* HWY_RESTRICT v2,
+template <class D, typename T = hn::TFromD<D>>
+static float L2DistanceSquaredImplVectorized(const D d,
+                                             const T* HWY_RESTRICT v1,
+                                             const T* HWY_RESTRICT v2,
                                              size_t num_elements) {
-  const hn::ScalableTag<float> d;
+  static_assert(hwy::IsFloat<T>(), "MulAdd requires float type");
   const size_t N = hn::Lanes(d);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
   using V = hn::Vec<decltype(d)>;
@@ -162,19 +166,20 @@ static float L2DistanceSquaredImplVectorized(const float* HWY_RESTRICT v1,
   sum2 = Add(sum2, sum3);
   sum0 = Add(sum0, sum2);
 
-  return hn::ReduceSum(d, sum0);
+  return hwy::ConvertScalarTo<float>(hn::ReduceSum(d, sum0));
 }
 
-static float L2DistanceSquaredImpl(const float* HWY_RESTRICT v1,
-                                   const float* HWY_RESTRICT v2,
+template <class D, typename T = hn::TFromD<D>>
+static float L2DistanceSquaredImpl(const D d, const T* HWY_RESTRICT v1,
+                                   const T* HWY_RESTRICT v2,
                                    size_t num_elements) {
-  const hn::ScalableTag<float> d;
   const size_t N = hn::Lanes(d);
 
   const size_t leftover = num_elements % N;
   float result = 0;
   if (num_elements >= N) {
-    result = L2DistanceSquaredImplVectorized(v1, v2, num_elements - leftover);
+    result =
+        L2DistanceSquaredImplVectorized(d, v1, v2, num_elements - leftover);
   }
 
   if (leftover > 0) {
@@ -183,14 +188,17 @@ static float L2DistanceSquaredImpl(const float* HWY_RESTRICT v1,
     float sum1 = 0;
     size_t i = num_elements - leftover;
     for (; i + 2 <= num_elements; i += 2) {
-      float diff0 = v1[i] - v2[i];
+      float diff0 = hwy::ConvertScalarTo<float>(v1[i]) -
+                    hwy::ConvertScalarTo<float>(v2[i]);
       sum0 += diff0 * diff0;
-      float diff1 = v1[i + 1] - v2[i + 1];
+      float diff1 = hwy::ConvertScalarTo<float>(v1[i + 1]) -
+                    hwy::ConvertScalarTo<float>(v2[i + 1]);
       sum1 += diff1 * diff1;
     }
 
     if (i < num_elements) {
-      float diff = v1[i] - v2[i];
+      float diff = hwy::ConvertScalarTo<float>(v1[i]) -
+                   hwy::ConvertScalarTo<float>(v2[i]);
       sum0 += diff * diff;
     }
 
@@ -202,11 +210,10 @@ static float L2DistanceSquaredImpl(const float* HWY_RESTRICT v1,
 
 // A vectorized implementation following
 // https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
-static void NormalizeImpl(float* HWY_RESTRICT inout, size_t num_elements) {
-  using D = hn::ScalableTag<float>;
-  const D d;
-  const float squared_sum = InnerProductImpl(inout, inout, num_elements);
-  const float norm = 1.0f / (sqrtf(squared_sum) + 1e-30f);
+template <class D, typename T = hn::TFromD<D>>
+static void NormalizeImpl(const D d, T* HWY_RESTRICT inout, size_t num_elements) {
+  const float squared_sum = InnerProductImpl(d, inout, inout, num_elements);
+  const T norm = hwy::ConvertScalarTo<T>(1.0f / (sqrtf(squared_sum) + 1e-30f));
   hn::Transform(d, inout, num_elements, [norm](D d, hn::Vec<D> v) HWY_ATTR {
     return hn::Mul(v, hn::Set(d, norm));
   });
@@ -272,6 +279,20 @@ static void QuantizeF32ToF16Impl(const float* HWY_RESTRICT in,
   QuantizeF32ToHalf(in, out, size);
 }
 
+static float InnerProductImplF32(const float* v1, const float* v2,
+                              size_t num_elements) {
+  return InnerProductImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
+}
+
+static float L2DistanceSquaredImplF32(const float* v1, const float* v2,
+                              size_t num_elements) {
+  return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
+}
+
+static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
+  return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
+}
+
 }  // namespace HWY_NAMESPACE
 
 HWY_AFTER_NAMESPACE();
@@ -286,15 +307,15 @@ namespace ops {
 
 // This macro declares a static array used for dynamic dispatch; it resides in
 // the same outer namespace that contains FloorLog2.
-HWY_EXPORT(InnerProductImpl);
-HWY_EXPORT(NormalizeImpl);
-HWY_EXPORT(L2DistanceSquaredImpl);
+HWY_EXPORT(InnerProductImplF32);
+HWY_EXPORT(NormalizeImplF32);
+HWY_EXPORT(L2DistanceSquaredImplF32);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
 
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements) {
-  return HWY_DYNAMIC_DISPATCH(InnerProductImpl)(v1, v2, num_elements);
+  return HWY_DYNAMIC_DISPATCH(InnerProductImplF32)(v1, v2, num_elements);
 }
 
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
@@ -303,7 +324,7 @@ HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
 }
 
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t size) {
-  HWY_DYNAMIC_DISPATCH(NormalizeImpl)(inout, size);
+  HWY_DYNAMIC_DISPATCH(NormalizeImplF32)(inout, size);
   return;
 }
 
@@ -313,7 +334,7 @@ HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
     return 0.0f;
   }
 
-  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImpl)(v1, v2, num_elements);
+  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplF32)(v1, v2, num_elements);
 }
 
 // Implementation follows
