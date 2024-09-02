@@ -211,7 +211,8 @@ static float L2DistanceSquaredImpl(const D d, const T* HWY_RESTRICT v1,
 // A vectorized implementation following
 // https://github.com/nmslib/hnswlib/blob/v0.8.0/python_bindings/bindings.cpp#L241
 template <class D, typename T = hn::TFromD<D>>
-static void NormalizeImpl(const D d, T* HWY_RESTRICT inout, size_t num_elements) {
+static void NormalizeImpl(const D d, T* HWY_RESTRICT inout,
+                          size_t num_elements) {
   const float squared_sum = InnerProductImpl(d, inout, inout, num_elements);
   const T norm = hwy::ConvertScalarTo<T>(1.0f / (sqrtf(squared_sum) + 1e-30f));
   hn::Transform(d, inout, num_elements, [norm](D d, hn::Vec<D> v) HWY_ATTR {
@@ -267,6 +268,35 @@ static void QuantizeF32ToHalf(const float* HWY_RESTRICT in,
   }
 }
 
+template <class HalfFloat, HWY_IF_SPECIAL_FLOAT(HalfFloat)>
+static void HalfFloatToF32(const HalfFloat* HWY_RESTRICT in,
+                           float* HWY_RESTRICT out, size_t size) {
+  static_assert(sizeof(float) / sizeof(HalfFloat) == 2,
+                "HalfFloat must be 16-bit");
+  const hn::ScalableTag<float> df32;
+  // f16 here refers to the 16-bit floating point type, including float16_t and
+  // bfloat16_t
+  const hn::Repartition<HalfFloat, decltype(df32)> df16;
+  const size_t NF = hn::Lanes(df32);
+  using VF = hn::Vec<decltype(df32)>;
+  using VBF = hn::Vec<decltype(df16)>;
+  const hn::Half<decltype(df16)> df16h;
+
+  size_t i = 0;
+  if (size >= NF) {
+    for (; i <= size - NF; i += NF) {
+      const auto v = hn::LoadU(df16h, in + i);
+      hn::StoreU(hn::PromoteTo(df32, v), df32, out + i);
+    }
+  }
+
+  if (i != size) {
+    const size_t remaining = size - i;
+    const auto v = hn::LoadN(df16h, in + i, remaining);
+    hn::StoreN(hn::PromoteTo(df32, v), df32, out + i, remaining);
+  }
+}
+
 static void QuantizeF32ToBF16Impl(const float* HWY_RESTRICT in,
                                   hwy::bfloat16_t* HWY_RESTRICT out,
                                   size_t size) {
@@ -280,17 +310,26 @@ static void QuantizeF32ToF16Impl(const float* HWY_RESTRICT in,
 }
 
 static float InnerProductImplF32(const float* v1, const float* v2,
-                              size_t num_elements) {
+                                 size_t num_elements) {
   return InnerProductImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
 }
 
 static float L2DistanceSquaredImplF32(const float* v1, const float* v2,
-                              size_t num_elements) {
+                                      size_t num_elements) {
   return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
 }
 
 static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
   return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
+}
+
+static void F16ToF32Impl(const hwy::float16_t* HWY_RESTRICT in,
+                         float* HWY_RESTRICT out, size_t num_elements) {
+  HalfFloatToF32(in, out, num_elements);
+}
+static void BF16ToF32Impl(const hwy::bfloat16_t* HWY_RESTRICT in,
+                          float* HWY_RESTRICT out, size_t num_elements) {
+  HalfFloatToF32(in, out, num_elements);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -312,6 +351,8 @@ HWY_EXPORT(NormalizeImplF32);
 HWY_EXPORT(L2DistanceSquaredImplF32);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
+HWY_EXPORT(F16ToF32Impl);
+HWY_EXPORT(BF16ToF32Impl);
 
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements) {
@@ -371,6 +412,15 @@ HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in,
                                      hwy::bfloat16_t* HWY_RESTRICT out,
                                      size_t num_elements) {
   HWY_DYNAMIC_DISPATCH(QuantizeF32ToBF16Impl)(in, out, num_elements);
+}
+
+HWY_DLLEXPORT void F16ToF32(const hwy::float16_t* HWY_RESTRICT in,
+                            float* HWY_RESTRICT out, size_t num_elements) {
+  HWY_DYNAMIC_DISPATCH(F16ToF32Impl)(in, out, num_elements);
+}
+HWY_DLLEXPORT void BF16ToF32(const hwy::bfloat16_t* HWY_RESTRICT in,
+                             float* HWY_RESTRICT out, size_t num_elements) {
+  HWY_DYNAMIC_DISPATCH(BF16ToF32Impl)(in, out, num_elements);
 }
 
 }  // namespace ops

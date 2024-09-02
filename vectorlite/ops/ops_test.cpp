@@ -173,3 +173,45 @@ TEST(QuantizeF32ToF16, ShouldReturnCorrectResult) {
     }
   }
 }
+
+TEST(F16ToF32, ShouldReturnCorrectResult) {
+  for (int dim = 0; dim <= 100; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::float16_t> f16(size);
+      for (int j = 0; j < size; ++j) {
+        f16[j] = hwy::F16FromF32(v[j]);
+      }
+      std::vector<float> out(size);
+      vectorlite::ops::F16ToF32(f16.data(), out.data(), size);
+
+      for (int j = 0; j < size; ++j) {
+        EXPECT_NEAR(hwy::F32FromF16(f16[j]), out[j], 1e-6)
+            << "v[" << j << "] = " << v[j] << " dim = " << dim;
+      }
+    }
+  }
+}
+
+TEST(BF16ToF32, ShouldReturnCorrectResult) {
+  for (int dim = 0; dim <= 100; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::bfloat16_t> bf16(size);
+      for (int j = 0; j < size; ++j) {
+        bf16[j] = hwy::BF16FromF32(v[j]);
+      }
+      std::vector<float> out(size);
+      vectorlite::ops::BF16ToF32(bf16.data(), out.data(), size);
+
+      for (int j = 0; j < size; ++j) {
+        EXPECT_NEAR(hwy::F32FromBF16(bf16[j]), out[j], 1e-6)
+            << "v[" << j << "] = " << v[j] << " dim = " << dim;
+      }
+    }
+  }
+}

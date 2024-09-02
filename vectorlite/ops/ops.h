@@ -43,6 +43,10 @@ HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in, hwy::float16_t* HWY_RESTRICT out, size_t num_elements);
 HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in, hwy::bfloat16_t* HWY_RESTRICT out, size_t num_elements);
 
+// Convert fp16/bf16 to fp32, useful for json serde
+HWY_DLLEXPORT void F16ToF32(const hwy::float16_t* HWY_RESTRICT in, float* HWY_RESTRICT out, size_t num_elements);
+HWY_DLLEXPORT void BF16ToF32(const hwy::bfloat16_t* HWY_RESTRICT in, float* HWY_RESTRICT out, size_t num_elements);
+
 
 }  // namespace ops
 }  // namespace vectorlite
