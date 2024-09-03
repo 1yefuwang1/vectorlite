@@ -30,23 +30,37 @@ HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
 
 // Nornalize the input vector in place.
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t num_elements);
+// HWY_DLLEXPORT void Normalize(hwy::float16_t* HWY_RESTRICT inout, size_t
+// num_elements);
+HWY_DLLEXPORT void Normalize(hwy::bfloat16_t* HWY_RESTRICT inout,
+                             size_t num_elements);
 
 // Normalize the input vector in place. Implemented using non-SIMD code for
 // testing and benchmarking purposes.
 HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout,
                                     size_t num_elements);
 
+// Normalize the input vector in place. Implemented using non-SIMD code for
+// testing and benchmarking purposes.
+HWY_DLLEXPORT void Normalize_Scalar(hwy::bfloat16_t* HWY_RESTRICT inout,
+                                    size_t num_elements);
+
 // Get supported SIMD target name strings.
 HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
 
 // in and out should not be nullptr and points to valid memory of required size.
-HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in, hwy::float16_t* HWY_RESTRICT out, size_t num_elements);
-HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in, hwy::bfloat16_t* HWY_RESTRICT out, size_t num_elements);
+HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
+                                    hwy::float16_t* HWY_RESTRICT out,
+                                    size_t num_elements);
+HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in,
+                                     hwy::bfloat16_t* HWY_RESTRICT out,
+                                     size_t num_elements);
 
 // Convert fp16/bf16 to fp32, useful for json serde
-HWY_DLLEXPORT void F16ToF32(const hwy::float16_t* HWY_RESTRICT in, float* HWY_RESTRICT out, size_t num_elements);
-HWY_DLLEXPORT void BF16ToF32(const hwy::bfloat16_t* HWY_RESTRICT in, float* HWY_RESTRICT out, size_t num_elements);
-
+HWY_DLLEXPORT void F16ToF32(const hwy::float16_t* HWY_RESTRICT in,
+                            float* HWY_RESTRICT out, size_t num_elements);
+HWY_DLLEXPORT void BF16ToF32(const hwy::bfloat16_t* HWY_RESTRICT in,
+                             float* HWY_RESTRICT out, size_t num_elements);
 
 }  // namespace ops
 }  // namespace vectorlite

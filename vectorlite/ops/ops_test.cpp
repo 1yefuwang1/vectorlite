@@ -138,6 +138,36 @@ TEST(Normalize, ShouldReturnCorrectResult) {
   }
 }
 
+TEST(Normalize_F32ToBF16, ShouldReturnCorrectResult) {
+  for (int dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(1, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::bfloat16_t> v_bf16(size);
+      vectorlite::ops::QuantizeF32ToBF16(v.data(), v_bf16.data(), size);
+      std::vector<hwy::bfloat16_t> v_bf16_scalar = v_bf16;
+
+      vectorlite::ops::Normalize(v_bf16.data(), size);
+      vectorlite::ops::Normalize_Scalar(v_bf16_scalar.data(), size);
+
+      float sum = 0;
+      float sum_scalar = 0;
+      for (int j = 0; j < size; ++j) {
+        sum += hwy::F32FromBF16(v_bf16[j]) * hwy::F32FromBF16(v_bf16[j]);
+        sum_scalar += hwy::F32FromBF16(v_bf16_scalar[j]) *
+                      hwy::F32FromBF16(v_bf16_scalar[j]);
+        EXPECT_NEAR(hwy::F32FromBF16(v_bf16[i]),
+                    hwy::F32FromBF16(v_bf16_scalar[i]), 1e-3)
+            << " dim = " << dim;
+      }
+
+      EXPECT_NEAR(sum, 1.0, 1e-2);
+      EXPECT_NEAR(sum, sum_scalar, 1e-2);
+    }
+  }
+}
+
 TEST(QuantizeF32ToBF16, ShouldReturnCorrectResult) {
   for (int dim = 0; dim <= 100; dim++) {
     auto vectors = GenerateRandomVectors(10, dim);
