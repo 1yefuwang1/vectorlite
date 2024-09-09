@@ -1,4 +1,3 @@
-import json
 import time
 from typing import Literal, Optional, List
 import numpy as np
@@ -139,7 +138,6 @@ class PlotData:
     time_taken_us: float
     column: str
 
-benchmark_milvus_results = []
 benchmark_results = []
 plot_data_for_insertion = defaultdict(list)
 plot_data_for_query = defaultdict(list)
@@ -490,7 +488,7 @@ def milvus_create_table(client, collection_name, distance_type, dim):
     # print(client.describe_index(collection_name,"id"))
 
 console.print("Bencharmk milvuslite.")
-
+benchmark_milvus_results = []
 def benchmark_milvus(distance_type, dim):
     result = BenchmarkResult(distance_type=distance_type, dim=dim, insert_time_us=0, search_time_us=0, recall_rate=0, product="milvusLite", ef_construction=None, M=None, ef_search=None)
     collection_name = f"collection_{distance_type}_{dim}"
