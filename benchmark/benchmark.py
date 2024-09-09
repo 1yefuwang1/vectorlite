@@ -47,7 +47,7 @@ data_bytes = {dim: [data[dim][i].tobytes() for i in range(NUM_ELEMENTS)] for dim
 
 query_data = {dim: np.float32(np.random.random((NUM_QUERIES, dim))) for dim in DIMS}
 query_data_bytes = {dim: [query_data[dim][i].tobytes() for i in range(NUM_QUERIES)] for dim in DIMS}
-query_data_for_milvus = {dim: [data[dim][i].tolist() for i in range(NUM_ELEMENTS)] for dim in DIMS}
+query_data_for_milvus = {dim: [query_data[dim][i].tolist() for i in range(NUM_QUERIES)] for dim in DIMS}
 
 # search for k nearest neighbors in this benchmark
 k = 10
@@ -89,7 +89,7 @@ class BenchmarkResult:
     insert_time_us: float  # in micro seconds, per vector
     search_time_us: float  # in micro seconds, per query
     recall_rate: float
-    product: str
+    product: Optional[str]
 
 
 @dataclasses.dataclass
@@ -178,14 +178,12 @@ def benchmark(distance_type, dim, ef_constructoin, M):
         def search():
             result = []
             for i in range(NUM_QUERIES):
-                print(query_data_bytes[dim][i])
                 result.append(
                     cursor.execute(
                         f"select rowid from {table_name} where knn_search(embedding, knn_param(?, ?, ?))",
                         (query_data_bytes[dim][i], k, ef),
                     ).fetchall()
                 )
-            print(result)
             return result
 
         search_time_us, results = timeit(search)
@@ -221,27 +219,24 @@ from pymilvus import (
 import numpy as np
 
 client = MilvusClient("./milvus_demo6.db")
-# connections.connect(uri="./local_test.db")
-# embedding_fn = model.DefaultEmbeddingFunction()
+
 def milvus_insert(client, collection_name, data):
     client.insert(collection_name=collection_name, data=data)
 
 def milvus_insert_many(client, collection_name, dim):
-    insert_data = [{"id": i, "embedding": data[dim][i]} for i in range(NUM_ELEMENTS)]
+    insert_data = [{"id": i, "embedding": data[dim][i].tolist()} for i in range(NUM_ELEMENTS)]
     client.insert(collection_name=collection_name, data=insert_data)
 
-def milvus_search(client, collection_name, distance_type, search_data, limit, ef):
+def milvus_search(client, collection_name, distance_type, search_data):
     res = client.search(
         collection_name=collection_name,
         data=[search_data],
-        limit=limit,
-        search_params={"metric_type": distance_type.upper(), "params": {"ef": ef}}, # Search parameters
+        search_params={"metric_type": distance_type.upper()}, # Search parameters
     )
     rowids = [result['id'] for result in res[0]]
     return rowids
 
-def milvus_create_table(client, collection_name, distance_type, ef_construction, M, dim):
-    from pymilvus import CollectionSchema, FieldSchema
+def milvus_create_table(client, collection_name, distance_type, dim):
     from pymilvus import DataType
 
     schema = client.create_schema(enable_dynamic_field=True)
@@ -251,9 +246,7 @@ def milvus_create_table(client, collection_name, distance_type, ef_construction,
 
     index_params.add_index(
         field_name="embedding", 
-        # index_type="HNSW",
         metric_type=distance_type.upper(),
-        # params={ "M": M, "efConstruction": ef_construction}
     )
     client.create_collection(
         collection_name=collection_name,
@@ -265,15 +258,14 @@ def milvus_create_table(client, collection_name, distance_type, ef_construction,
     res = client.get_load_state(
         collection_name=collection_name
     )
-    print("--------------------------------")
-    print(client.describe_index(collection_name,"embedding"))
-    print(client.describe_index(collection_name,"id"))
+    # print(client.describe_index(collection_name,"embedding"))
+    # print(client.describe_index(collection_name,"id"))
 
-def benchmark_milvus(distance_type, dim, ef_constructoin, M):
-    result = BenchmarkResult(distance_type, dim, ef_constructoin, M, 0, 0, 0, 0, "milvusLite")
-    collection_name = f"collection_{distance_type}_{dim}_{ef_constructoin}_{M}"
+def benchmark_milvus(distance_type, dim):
+    result = BenchmarkResult(distance_type=distance_type, dim=dim, insert_time_us=0, search_time_us=0, recall_rate=0, product="milvusLite", ef_construction=0, M=0, ef_search=0)
+    collection_name = f"collection_{distance_type}_{dim}"
 
-    milvus_create_table(client=client, collection_name=collection_name, distance_type=distance_type, ef_construction=ef_construction, M=M, dim=dim)
+    milvus_create_table(client=client, collection_name=collection_name, distance_type=distance_type, dim=dim)
     
     # measure insert time
     insert_time_us, _ = timeit(
@@ -284,34 +276,31 @@ def benchmark_milvus(distance_type, dim, ef_constructoin, M):
     plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"milvuslite_{distance_type}"))
 
 
-    for ef in efs:
+    def search():
+        result = []
+        for i in range(NUM_QUERIES):
+            result.append(
+                milvus_search(client=client, collection_name=collection_name, distance_type=distance_type, search_data=query_data_for_milvus[dim][i])
+            )
+        return result
 
-        def search():
-            result = []
-            for i in range(NUM_QUERIES):
-                result.append(
-                    milvus_search(client=client, collection_name=collection_name, distance_type=distance_type, search_data=query_data_for_milvus[dim][i], limit=k, ef=ef)
-                )
-            # print(result)
-            return result
+    search_time_us, results = timeit(search)
+    # console.log(results)
+    recall_rate = np.mean(
+        [
+            np.intersect1d(results[i], correct_labels[distance_type][dim][i]).size
+            / k
+            for i in range(NUM_QUERIES)
+        ]
+    )
+    result = dataclasses.replace(
+        result,
+        search_time_us=search_time_us / NUM_QUERIES,
+        recall_rate=recall_rate,
+    )
 
-        search_time_us, results = timeit(search)
-        # console.log(results)
-        recall_rate = np.mean(
-            [
-                np.intersect1d(results[i], correct_labels[distance_type][dim][i]).size
-                / k
-                for i in range(NUM_QUERIES)
-            ]
-        )
-        result = dataclasses.replace(
-            result,
-            ef_search=ef,
-            search_time_us=search_time_us / NUM_QUERIES,
-            recall_rate=recall_rate,
-        )
-        benchmark_results.append(result)
-        plot_data_for_query[dim].append(PlotData(result.search_time_us, f"milvuslite_{distance_type}_ef_{ef}"))
+    benchmark_results.append(result)
+    plot_data_for_query[dim].append(PlotData(result.search_time_us, f"milvuslite_{distance_type}"))
     client.drop_collection(collection_name=collection_name)
     result_table = ResultTable(benchmark_results)
     console.print(result_table)
@@ -320,9 +309,9 @@ def benchmark_milvus(distance_type, dim, ef_constructoin, M):
 
 for distance_type in distance_types:
     for dim in DIMS:
+        benchmark_milvus(distance_type, dim)
         for ef_construction, M in hnsw_params:
-            benchmark_milvus(distance_type, dim, ef_construction, M)
-            # benchmark(distance_type, dim, ef_construction, M)
+            benchmark(distance_type, dim, ef_construction, M)
 
 
 result_table = ResultTable(benchmark_results)
