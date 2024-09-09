@@ -216,7 +216,7 @@ console.print(result_table)
 hnswlib_benchmark_results = []
 console.print("Bencharmk hnswlib as comparison.")
 def benchmark_hnswlib(distance_type, dim, ef_construction, M):
-    result = BenchmarkResult(distance_type, dim, ef_construction, M, 0, 0, 0, 0, "vectorLite")
+    result = BenchmarkResult(distance_type, dim, ef_construction, M, 0, 0, 0, 0, "hnswlib")
     hnswlib_index = hnswlib.Index(space=distance_type, dim=dim)
     hnswlib_index.init_index(max_elements=NUM_ELEMENTS, ef_construction=ef_construction, M=M)
 
@@ -267,7 +267,7 @@ brute_force_benchmark_results = []
 console.print("Bencharmk vectorlite brute force(select rowid from my_table order by vector_distance(query_vector, embedding, 'l2')) as comparison.")
 
 def benchmark_brute_force(dim: int):
-    benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "vectorLite")
+    benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "vectorLite_brute_force")
     table_name = f"table_vectorlite_bf_{dim}"
     cursor.execute(
         f"create table {table_name}(rowid integer primary key, embedding blob)"
