@@ -373,10 +373,24 @@ static float InnerProductImplF32(const float* v1, const float* v2,
   return InnerProductImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
 }
 
+static float InnerProductImplBF16(const hwy::bfloat16_t* v1,
+                                  const hwy::bfloat16_t* v2,
+                                  size_t num_elements) {
+  return InnerProductImpl(hn::ScalableTag<hwy::bfloat16_t>(), v1, v2,
+                          num_elements);
+}
+
 static float L2DistanceSquaredImplF32(const float* v1, const float* v2,
                                       size_t num_elements) {
   return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
 }
+
+// static float L2DistanceSquaredImplBF16(const hwy::bfloat16_t* v1, const
+// hwy::bfloat16_t* v2,
+//                                       size_t num_elements) {
+//   return L2DistanceSquaredImpl(hn::ScalableTag<hwy::bfloat16_t>(), v1, v2,
+//   num_elements);
+// }
 
 static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
   return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
@@ -417,7 +431,9 @@ namespace ops {
 // This macro declares a static array used for dynamic dispatch; it resides in
 // the same outer namespace that contains FloorLog2.
 HWY_EXPORT(InnerProductImplF32);
+HWY_EXPORT(InnerProductImplBF16);
 HWY_EXPORT(L2DistanceSquaredImplF32);
+// HWY_EXPORT(L2DistanceSquaredImplBF16);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
 HWY_EXPORT(F16ToF32Impl);
@@ -432,7 +448,17 @@ HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
   return HWY_DYNAMIC_DISPATCH(InnerProductImplF32)(v1, v2, num_elements);
 }
 
+HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+                                 size_t num_elements) {
+  return HWY_DYNAMIC_DISPATCH(InnerProductImplBF16)(v1, v2, num_elements);
+}
+
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
+                                         size_t num_elements) {
+  return 1.0f - InnerProduct(v1, v2, num_elements);
+}
+
+HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
                                          size_t num_elements) {
   return 1.0f - InnerProduct(v1, v2, num_elements);
 }

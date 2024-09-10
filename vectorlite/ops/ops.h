@@ -21,7 +21,11 @@ using DistanceFunc = float (*)(const float*, const float*, size_t);
 // v1 and v2 MUST not be nullptr but can point to the same array.
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements);
+HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+                                 size_t num_elements);
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
+                                         size_t num_elements);
+HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
                                          size_t num_elements);
 
 // v1 and v2 MUST not be nullptr but can point to the same array.
