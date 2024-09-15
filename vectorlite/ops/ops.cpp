@@ -167,6 +167,72 @@ static float InnerProductImpl(const D d, const T* v1, const T* v2,
   }
 }
 
+template <class D, HWY_IF_BF16_D(D)>
+static float L2DistanceSquaredImplVectorized(
+    const D d, const hwy::bfloat16_t* HWY_RESTRICT v1,
+    const hwy::bfloat16_t* HWY_RESTRICT v2, size_t num_elements) {
+  const hn::Repartition<float, D> df32;
+
+  using V = decltype(Zero(df32));
+  const size_t N = Lanes(d);
+  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
+
+  size_t i = 0;
+
+  V sum0 = Zero(df32);
+  V sum1 = Zero(df32);
+  V sum2 = Zero(df32);
+  V sum3 = Zero(df32);
+
+  // Main loop: unrolled
+  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
+    const auto a0 = LoadU(d, v1 + i);
+    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
+    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
+    const auto a1 = LoadU(d, v2 + i);
+    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
+    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
+    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
+    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
+    i += N;
+    sum0 = MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = MulAdd(diff_a_upper, diff_a_upper, sum1);
+
+    const auto b0 = LoadU(d, v1 + i);
+    const auto b0_lower = hn::PromoteLowerTo(df32, b0);
+    const auto b0_upper = hn::PromoteUpperTo(df32, b0);
+    const auto b1 = LoadU(d, v2 + i);
+    const auto b1_lower = hn::PromoteLowerTo(df32, b1);
+    const auto b1_upper = hn::PromoteUpperTo(df32, b1);
+    const auto diff_b_lower = hn::Sub(b0_lower, b1_lower);
+    const auto diff_b_upper = hn::Sub(b0_upper, b1_upper);
+    i += N;
+    sum2 = MulAdd(diff_b_lower, diff_b_lower, sum2);
+    sum3 = MulAdd(diff_b_upper, diff_b_upper, sum3);
+  }
+
+  // Up to 1 iterations of whole vectors
+  for (; i + N <= num_elements; i += N) {
+    const auto a0 = LoadU(d, v1 + i);
+    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
+    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
+    const auto a1 = LoadU(d, v2 + i);
+    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
+    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
+    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
+    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
+    i += N;
+    sum0 = MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = MulAdd(diff_a_upper, diff_a_upper, sum1);
+  }
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = Add(sum0, sum1);
+  sum2 = Add(sum2, sum3);
+  sum0 = Add(sum0, sum2);
+
+  return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
+}
+
 template <class D, typename T = hn::TFromD<D>>
 static float L2DistanceSquaredImplVectorized(const D d,
                                              const T* HWY_RESTRICT v1,
@@ -385,12 +451,12 @@ static float L2DistanceSquaredImplF32(const float* v1, const float* v2,
   return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
 }
 
-// static float L2DistanceSquaredImplBF16(const hwy::bfloat16_t* v1, const
-// hwy::bfloat16_t* v2,
-//                                       size_t num_elements) {
-//   return L2DistanceSquaredImpl(hn::ScalableTag<hwy::bfloat16_t>(), v1, v2,
-//   num_elements);
-// }
+static float L2DistanceSquaredImplBF16(const hwy::bfloat16_t* v1,
+                                       const hwy::bfloat16_t* v2,
+                                       size_t num_elements) {
+  return L2DistanceSquaredImpl(hn::ScalableTag<hwy::bfloat16_t>(), v1, v2,
+                               num_elements);
+}
 
 static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
   return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
@@ -433,7 +499,7 @@ namespace ops {
 HWY_EXPORT(InnerProductImplF32);
 HWY_EXPORT(InnerProductImplBF16);
 HWY_EXPORT(L2DistanceSquaredImplF32);
-// HWY_EXPORT(L2DistanceSquaredImplBF16);
+HWY_EXPORT(L2DistanceSquaredImplBF16);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
 HWY_EXPORT(F16ToF32Impl);
@@ -448,7 +514,8 @@ HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
   return HWY_DYNAMIC_DISPATCH(InnerProductImplF32)(v1, v2, num_elements);
 }
 
-HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1,
+                                 const hwy::bfloat16_t* v2,
                                  size_t num_elements) {
   return HWY_DYNAMIC_DISPATCH(InnerProductImplBF16)(v1, v2, num_elements);
 }
@@ -458,7 +525,8 @@ HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
   return 1.0f - InnerProduct(v1, v2, num_elements);
 }
 
-HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1,
+                                         const hwy::bfloat16_t* v2,
                                          size_t num_elements) {
   return 1.0f - InnerProduct(v1, v2, num_elements);
 }
@@ -486,6 +554,16 @@ HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
   }
 
   return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplF32)(v1, v2, num_elements);
+}
+
+HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1,
+                                      const hwy::bfloat16_t* v2,
+                                      size_t num_elements) {
+  if (HWY_UNLIKELY(v1 == v2)) {
+    return 0.0f;
+  }
+
+  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplBF16)(v1, v2, num_elements);
 }
 
 // Implementation follows

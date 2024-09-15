@@ -60,6 +60,35 @@ TEST(InnerProduct, ShouldWorkWithRandomVectors) {
   }
 }
 
+TEST(InnerProduct_BF16, ShouldWorkWithRandomVectors) {
+  for (int dim = 1; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        auto v1 = vectors[i].data();
+        auto v2 = vectors[j].data();
+        auto size = dim;
+        std::vector<hwy::bfloat16_t> v1_bf16(size);
+        vectorlite::ops::QuantizeF32ToBF16(v1, v1_bf16.data(), size);
+
+        std::vector<hwy::bfloat16_t> v2_bf16(size);
+        vectorlite::ops::QuantizeF32ToBF16(v2, v2_bf16.data(), size);
+
+        float ip = vectorlite::ops::InnerProduct(v1_bf16.data(), v2_bf16.data(), size);
+
+        float expected = 0.0f;
+        for (int k = 0; k < size; ++k) {
+          expected += hwy::F32FromBF16(hwy::BF16FromF32(v1[k])) * hwy::F32FromBF16(hwy::BF16FromF32(v2[k]));
+        }
+        // Note: floating point operations are not associative. SIMD version and
+        // scalar version traverse elements in different order. So the result
+        // should be different but close enough
+        EXPECT_NEAR(ip, expected, kEpsilon) << " dim = " << dim;
+      }
+    }
+  }
+}
+
 TEST(InnerProductDistance, ShouldReturnOneForEmptyVectors) {
   // Fixes C2466: cannot allocate an array of constant size 0 on MSVC
   float v1[] = {1};
@@ -115,6 +144,31 @@ TEST(L2DistanceSquared, ShouldWorkWithRandomVectors) {
           expected += diff * diff;
         }
         EXPECT_NEAR(result, hnswlib_result, 1e-2);
+        EXPECT_NEAR(result, expected, 1e-2);
+      }
+    }
+  }
+}
+
+TEST(L2DistanceSquared_BF16, ShouldWorkWithRandomVectors) {
+  for (size_t dim = 1; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        auto v1 = vectors[i].data();
+        auto v2 = vectors[j].data();
+        std::vector<hwy::bfloat16_t> v1_bf16(dim);
+        vectorlite::ops::QuantizeF32ToBF16(v1, v1_bf16.data(), dim);
+
+        std::vector<hwy::bfloat16_t> v2_bf16(dim);
+        vectorlite::ops::QuantizeF32ToBF16(v2, v2_bf16.data(), dim);
+
+        float result = vectorlite::ops::L2DistanceSquared(v1_bf16.data(), v2_bf16.data(), dim);
+        float expected = 0;
+        for (int k = 0; k < dim; ++k) {
+          float diff = hwy::F32FromBF16(v1_bf16[k]) - hwy::F32FromBF16(v2_bf16[k]);
+          expected += diff * diff;
+        }
         EXPECT_NEAR(result, expected, 1e-2);
       }
     }

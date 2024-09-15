@@ -32,6 +32,10 @@ HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1, const hwy::b
 HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
                                       size_t num_elements);
 
+// v1 and v2 MUST not be nullptr but can point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+                                      size_t num_elements);
+
 // Nornalize the input vector in place.
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t num_elements);
 // HWY_DLLEXPORT void Normalize(hwy::float16_t* HWY_RESTRICT inout, size_t
