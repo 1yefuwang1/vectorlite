@@ -21,11 +21,13 @@ using DistanceFunc = float (*)(const float*, const float*, size_t);
 // v1 and v2 MUST not be nullptr but can point to the same array.
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements);
-HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1,
+                                 const hwy::bfloat16_t* v2,
                                  size_t num_elements);
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
                                          size_t num_elements);
-HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1,
+                                         const hwy::bfloat16_t* v2,
                                          size_t num_elements);
 
 // v1 and v2 MUST not be nullptr but can point to the same array.
@@ -33,7 +35,13 @@ HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
                                       size_t num_elements);
 
 // v1 and v2 MUST not be nullptr but can point to the same array.
-HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1, const hwy::bfloat16_t* v2,
+HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1,
+                                      const hwy::bfloat16_t* v2,
+                                      size_t num_elements);
+
+// v1 and v2 MUST not be nullptr and MUST not point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const float* HWY_RESTRICT v1,
+                                      const hwy::bfloat16_t* HWY_RESTRICT v2,
                                       size_t num_elements);
 
 // Nornalize the input vector in place.

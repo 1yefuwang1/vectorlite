@@ -65,14 +65,14 @@ TEST(InnerProduct_BF16, ShouldWorkWithRandomVectors) {
     auto vectors = GenerateRandomVectors(10, dim);
     for (int i = 0; i < vectors.size(); ++i) {
       for (int j = 0; j < vectors.size(); ++j) {
-        auto v1 = vectors[i].data();
-        auto v2 = vectors[j].data();
+        auto v1 = vectors[i];
+        auto v2 = vectors[j];
         auto size = dim;
         std::vector<hwy::bfloat16_t> v1_bf16(size);
-        vectorlite::ops::QuantizeF32ToBF16(v1, v1_bf16.data(), size);
+        vectorlite::ops::QuantizeF32ToBF16(v1.data(), v1_bf16.data(), size);
 
         std::vector<hwy::bfloat16_t> v2_bf16(size);
-        vectorlite::ops::QuantizeF32ToBF16(v2, v2_bf16.data(), size);
+        vectorlite::ops::QuantizeF32ToBF16(v2.data(), v2_bf16.data(), size);
 
         float ip = vectorlite::ops::InnerProduct(v1_bf16.data(), v2_bf16.data(), size);
 
@@ -155,13 +155,13 @@ TEST(L2DistanceSquared_BF16, ShouldWorkWithRandomVectors) {
     auto vectors = GenerateRandomVectors(10, dim);
     for (int i = 0; i < vectors.size(); ++i) {
       for (int j = 0; j < vectors.size(); ++j) {
-        auto v1 = vectors[i].data();
-        auto v2 = vectors[j].data();
+        const auto& v1 = vectors[i];
+        const auto& v2 = vectors[j];
         std::vector<hwy::bfloat16_t> v1_bf16(dim);
-        vectorlite::ops::QuantizeF32ToBF16(v1, v1_bf16.data(), dim);
+        vectorlite::ops::QuantizeF32ToBF16(v1.data(), v1_bf16.data(), dim);
 
         std::vector<hwy::bfloat16_t> v2_bf16(dim);
-        vectorlite::ops::QuantizeF32ToBF16(v2, v2_bf16.data(), dim);
+        vectorlite::ops::QuantizeF32ToBF16(v2.data(), v2_bf16.data(), dim);
 
         float result = vectorlite::ops::L2DistanceSquared(v1_bf16.data(), v2_bf16.data(), dim);
         float expected = 0;
@@ -170,6 +170,29 @@ TEST(L2DistanceSquared_BF16, ShouldWorkWithRandomVectors) {
           expected += diff * diff;
         }
         EXPECT_NEAR(result, expected, 1e-2);
+      }
+    }
+  }
+}
+
+TEST(L2DistanceSquared_F32_BF16, ShouldWorkWithRandomVectors) {
+  for (size_t dim = 1; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(2, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        const auto& v1 = vectors[i];
+        const auto& v2 = vectors[j];
+
+        std::vector<hwy::bfloat16_t> v2_bf16(dim);
+        vectorlite::ops::QuantizeF32ToBF16(v2.data(), v2_bf16.data(), dim);
+
+        float result = vectorlite::ops::L2DistanceSquared(v1.data(), v2_bf16.data(), dim);
+        float expected = 0;
+        for (int k = 0; k < dim; ++k) {
+          float diff = v1[k] - hwy::F32FromBF16(v2_bf16[k]);
+          expected += diff * diff;
+        }
+        EXPECT_NEAR(result, expected, 1e-2) << " dim = " << dim;
       }
     }
   }

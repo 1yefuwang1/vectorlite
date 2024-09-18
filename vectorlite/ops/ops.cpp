@@ -233,6 +233,69 @@ static float L2DistanceSquaredImplVectorized(
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
 }
 
+template <class D, HWY_IF_F32_D(D)>
+static float L2DistanceSquaredImplVectorized(
+    const D df, const float* HWY_RESTRICT v1,
+    const hwy::bfloat16_t* HWY_RESTRICT v2, size_t num_elements) {
+  const hn::Repartition<hwy::bfloat16_t, D> dbf;
+  using VBF = decltype(Zero(dbf));
+  const hn::Half<decltype(dbf)> dbfh;
+  using VF = decltype(Zero(df));
+
+  const size_t NF = Lanes(df);
+  HWY_DASSERT(num_elements >= NF && num_elements % NF == 0);
+
+  size_t i = 0;
+
+  VF sum0 = Zero(df);
+  VF sum1 = Zero(df);
+  VF sum2 = Zero(df);
+  VF sum3 = Zero(df);
+
+  // Main loop: unrolled
+  for (; i + 4 * NF <= num_elements; /* i += 4 * NF */) {
+    const VF a0 = LoadU(df, v1 + i);
+    const VBF b0 = LoadU(dbf, v2 + i);
+    i += NF;
+    const VF b0_lower = hn::PromoteLowerTo(df, b0);
+    const VF diff0 = hn::Sub(a0, b0_lower);
+    sum0 = MulAdd(diff0, diff0, sum0);
+
+    const VF a1 = LoadU(df, v1 + i);
+    i += NF;
+    const VF b0_upper = hn::PromoteUpperTo(df, b0);
+    const VF diff1 = hn::Sub(a1, b0_upper);
+    sum1 = MulAdd(diff1, diff1, sum1);
+
+    const VF a2 = LoadU(df, v1 + i);
+    const VBF b2 = LoadU(dbf, v2 + i);
+    i += NF;
+    const VF b2_lower = hn::PromoteLowerTo(df, b2);
+    const VF diff2 = hn::Sub(a2, b2_lower);
+    sum2 = MulAdd(diff2, diff2, sum2);
+
+    const VF a3 = LoadU(df, v1 + i);
+    i += NF;
+    const VF b2_upper = hn::PromoteUpperTo(df, b2);
+    const VF diff3 = hn::Sub(a3, b2_upper);
+    sum3 = MulAdd(diff3, diff3, sum3);
+  }
+
+  // Up to 3 iterations of whole vectors
+  for (; i + NF <= num_elements; i += NF) {
+    const VF a = LoadU(df, v1 + i);
+    const VF b = PromoteTo(df, LoadU(dbfh, v2 + i));
+    const VF diff = Sub(a, b);
+    sum0 = MulAdd(diff, diff, sum0);
+  }
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = Add(sum0, sum1);
+  sum2 = Add(sum2, sum3);
+  sum0 = Add(sum0, sum2);
+
+  return hwy::ConvertScalarTo<float>(hn::ReduceSum(df, sum0));
+}
+
 template <class D, typename T = hn::TFromD<D>>
 static float L2DistanceSquaredImplVectorized(const D d,
                                              const T* HWY_RESTRICT v1,
@@ -278,9 +341,9 @@ static float L2DistanceSquaredImplVectorized(const D d,
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(d, sum0));
 }
 
-template <class D, typename T = hn::TFromD<D>>
-static float L2DistanceSquaredImpl(const D d, const T* HWY_RESTRICT v1,
-                                   const T* HWY_RESTRICT v2,
+template <class D, typename T1 = hn::TFromD<D>, typename T2 = T1>
+static float L2DistanceSquaredImpl(const D d, const T1* HWY_RESTRICT v1,
+                                   const T2* HWY_RESTRICT v2,
                                    size_t num_elements) {
   const size_t N = hn::Lanes(d);
 
@@ -458,6 +521,12 @@ static float L2DistanceSquaredImplBF16(const hwy::bfloat16_t* v1,
                                num_elements);
 }
 
+static float L2DistanceSquaredImplF32BF16(const float* v1,
+                                          const hwy::bfloat16_t* v2,
+                                          size_t num_elements) {
+  return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
+}
+
 static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
   return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
 }
@@ -500,6 +569,7 @@ HWY_EXPORT(InnerProductImplF32);
 HWY_EXPORT(InnerProductImplBF16);
 HWY_EXPORT(L2DistanceSquaredImplF32);
 HWY_EXPORT(L2DistanceSquaredImplBF16);
+HWY_EXPORT(L2DistanceSquaredImplF32BF16);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
 HWY_EXPORT(F16ToF32Impl);
@@ -564,6 +634,14 @@ HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1,
   }
 
   return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplBF16)(v1, v2, num_elements);
+}
+
+// v1 and v2 MUST not be nullptr but **cannot** point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const float* v1,
+                                      const hwy::bfloat16_t* v2,
+                                      size_t num_elements) {
+  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplF32BF16)(v1, v2,
+                                                            num_elements);
 }
 
 // Implementation follows
