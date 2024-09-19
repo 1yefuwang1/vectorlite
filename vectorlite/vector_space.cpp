@@ -1,8 +1,12 @@
 #include "vector_space.h"
 
+#include <hnswlib/hnswlib.h>
+
+#include <memory>
 #include <optional>
 #include <string_view>
 
+#include "absl/base/optimization.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "distance.h"
@@ -27,7 +31,40 @@ std::optional<VectorType> ParseVectorType(std::string_view vector_type) {
   if (vector_type == "float32") {
     return VectorType::Float32;
   }
+
+  if (vector_type == "bfloat16") {
+    return VectorType::BFloat16;
+  }
+
   return std::nullopt;
+}
+
+static std::unique_ptr<hnswlib::SpaceInterface<float>> CreateL2Space(
+    size_t dim, VectorType vector_type) {
+  switch (vector_type) {
+    case VectorType::Float32:
+      return std::make_unique<vectorlite::L2Space>(dim);
+    case VectorType::BFloat16:
+      return std::make_unique<vectorlite::L2SpaceBF16>(dim);
+    default:
+      // This should never happen, but we include it for completeness
+      ABSL_UNREACHABLE();
+      return nullptr;
+  }
+}
+
+static std::unique_ptr<hnswlib::SpaceInterface<float>> CreateInnerProductSpace(
+    size_t dim, VectorType vector_type) {
+  switch (vector_type) {
+    case VectorType::Float32:
+      return std::make_unique<vectorlite::InnerProductSpace>(dim);
+    case VectorType::BFloat16:
+      return std::make_unique<vectorlite::InnerProductSpaceBF16>(dim);
+    default:
+      // This should never happen, but we include it for completeness
+      ABSL_UNREACHABLE();
+      return nullptr;
+  }
 }
 
 absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim,
@@ -43,13 +80,13 @@ absl::StatusOr<VectorSpace> VectorSpace::Create(size_t dim,
   result.vector_type = vector_type;
   switch (distance_type) {
     case DistanceType::L2:
-      result.space = std::make_unique<vectorlite::L2Space>(dim);
+      result.space = CreateL2Space(dim, vector_type);
       break;
     case DistanceType::InnerProduct:
-      result.space = std::make_unique<vectorlite::InnerProductSpace>(dim);
+      result.space = CreateInnerProductSpace(dim, vector_type);
       break;
     case DistanceType::Cosine:
-      result.space = std::make_unique<vectorlite::InnerProductSpace>(dim);
+      result.space = CreateInnerProductSpace(dim, vector_type);
       break;
     default:
       std::string err_msg =

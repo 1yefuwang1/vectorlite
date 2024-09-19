@@ -17,9 +17,6 @@
 
 namespace vectorlite {
 
-// Note there shouldn't be any virtual functions in this class.
-// Because VirtualTable* is expected to be static_cast-ed to sqlite3_vtab*.
-// vptr could cause UB.
 class VirtualTable : public sqlite3_vtab {
  public:
   // No virtual function
@@ -102,6 +99,7 @@ class VirtualTable : public sqlite3_vtab {
 
  private:
   absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
+  int InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid);
 
   NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;

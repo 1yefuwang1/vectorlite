@@ -21,6 +21,9 @@ TEST(VectorViewTest, Reversible_ToBinary_FromBinary) {
 TEST(VectorViewTest, FromBinaryShouldFailWithInvalidInput) {
   auto v1 = vectorlite::VectorView::FromBlob(std::string_view("aaa"));
   EXPECT_FALSE(v1.ok());
+
+  auto v2 = vectorlite::BF16VectorView::FromBlob(std::string_view("aaa"));
+  EXPECT_FALSE(v2.ok());
 }
 
 TEST(VectorViewTest, ToJSON) {

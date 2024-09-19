@@ -13,6 +13,7 @@
 #include "absl/strings/str_join.h"
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
+#include "quantization.h"
 #include "sqlite3ext.h"
 #include "util.h"
 #include "vector.h"
@@ -195,19 +196,38 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
       index_.setEf(*knn_param->ef_search);
     }
     try {
-      if (!space_.normalize) {
-        return index_.searchKnnCloserFirst(
-            knn_param->query_vector.data().data(), knn_param->k,
-            rowid_filter.get());
+      if (space_.vector_type == VectorType::Float32) {
+        if (!space_.normalize) {
+          return index_.searchKnnCloserFirst(
+              knn_param->query_vector.data().data(), knn_param->k,
+              rowid_filter.get());
+        }
+
+        VECTORLITE_ASSERT(space_.normalize);
+        // Copy the query vector and normalize it.
+        Vector normalized_vector = Vector::Normalize(knn_param->query_vector);
+
+        auto result = index_.searchKnnCloserFirst(
+            normalized_vector.data().data(), knn_param->k, rowid_filter.get());
+        return result;
+      } else if (space_.vector_type == VectorType::BFloat16) {
+        BF16Vector quantized_vector = Quantize(knn_param->query_vector);
+
+        if (!space_.normalize) {
+          return index_.searchKnnCloserFirst(quantized_vector.data().data(),
+                                             knn_param->k, rowid_filter.get());
+        }
+
+        VECTORLITE_ASSERT(space_.normalize);
+        BF16Vector normalized_vector = quantized_vector.Normalize();
+
+        auto result = index_.searchKnnCloserFirst(
+            normalized_vector.data().data(), knn_param->k, rowid_filter.get());
+        return result;
+      } else {
+        return absl::InternalError(
+            absl::StrFormat("Unknown vector type: %d", space_.vector_type));
       }
-
-      VECTORLITE_ASSERT(space_.normalize);
-      // Copy the query vector and normalize it.
-      Vector normalized_vector = Vector::Normalize(knn_param->query_vector);
-
-      auto result = index_.searchKnnCloserFirst(
-          normalized_vector.data().data(), knn_param->k, rowid_filter.get());
-      return result;
 
     } catch (const std::runtime_error& e) {
       return absl::InternalError(e.what());

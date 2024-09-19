@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 #include "vector_space.h"
+#include "vector_view.h"
 
 TEST(VectorTest, FromJSON) {
   // Test valid JSON input
@@ -69,15 +70,19 @@ TEST(VectorDistance, ShouldWork) {
   // Test valid input
   vectorlite::Vector v1({1.0, 2.0, 3.0});
   vectorlite::Vector v2({4.0, 5.0, 6.0});
-  auto distance = Distance(v1, v2, vectorlite::DistanceType::L2);
+
+  vectorlite::VectorView v1_view(v1);
+  vectorlite::VectorView v2_view(v2);
+
+  auto distance = Distance(v1_view, v2_view, vectorlite::DistanceType::L2);
   EXPECT_TRUE(distance.ok());
   EXPECT_FLOAT_EQ(*distance, 27);
 
-  distance = Distance(v2, v1, vectorlite::DistanceType::InnerProduct);
+  distance = Distance(v2_view, v1_view, vectorlite::DistanceType::InnerProduct);
   EXPECT_TRUE(distance.ok());
   EXPECT_FLOAT_EQ(*distance, -31);
 
-  distance = Distance(v1, v2, vectorlite::DistanceType::Cosine);
+  distance = Distance(v1_view, v2_view, vectorlite::DistanceType::Cosine);
   EXPECT_TRUE(distance.ok());
   // On osx arm64, no vectoration is used and the following test fails.
   // EXPECT_FLOAT_EQ(*distance, 0.025368214);
@@ -87,9 +92,12 @@ TEST(VectorDistance, ShouldWork) {
   // Test 0 dimension
   vectorlite::Vector v3;
   vectorlite::Vector v4;
+
+  vectorlite::VectorView v3_view(v3);
+  vectorlite::VectorView v4_view(v4);
   for (auto space :
        {vectorlite::DistanceType::L2, vectorlite::DistanceType::InnerProduct}) {
-    distance = Distance(v3, v4, space);
+    distance = Distance(v3_view, v4_view, space);
     EXPECT_TRUE(distance.ok());
   }
 }

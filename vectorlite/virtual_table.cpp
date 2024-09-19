@@ -20,8 +20,10 @@
 #include "hnswlib/hnswlib.h"
 #include "index_options.h"
 #include "macros.h"
+#include "quantization.h"
 #include "sqlite3ext.h"
 #include "util.h"
+#include "vector.h"
 #include "vector_space.h"
 #include "vector_view.h"
 
@@ -599,7 +601,42 @@ constexpr bool IsRowidOutOfRange(sqlite3_int64 rowid) {
                      std::numeric_limits<VirtualTable::Cursor::Rowid>::max());
 }
 
-// Only insert is supported for now
+int VirtualTable::InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid) {
+  try {
+    if (space_.vector_type == vectorlite::VectorType::Float32) {
+      if (!space_.normalize) {
+        index_->addPoint(vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      } else {
+        Vector normalized_vector = Vector::Normalize(vector);
+        index_->addPoint(normalized_vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      }
+    } else if (space_.vector_type == vectorlite::VectorType::BFloat16) {
+      BF16Vector bf16_vector = Quantize(vector);
+      if (!space_.normalize) {
+        index_->addPoint(bf16_vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      } else {
+        BF16Vector normalized_vector = bf16_vector.Normalize();
+        index_->addPoint(normalized_vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      }
+
+    } else {
+      SetZErrMsg(&this->zErrMsg, "Unrecognized vector type %d",
+                 space_.vector_type);
+      return SQLITE_ERROR;
+    }
+
+  } catch (const std::runtime_error& e) {
+    SetZErrMsg(&this->zErrMsg, "Failed to insert row %lld due to: %s", rowid,
+               e.what());
+    return SQLITE_ERROR;
+  }
+  return SQLITE_OK;
+}
+
 int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                          sqlite_int64* pRowid) {
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
@@ -646,20 +683,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
         return SQLITE_ERROR;
       }
 
-      try {
-        if (!vtab->space_.normalize) {
-          vtab->index_->addPoint(vector->data().data(), rowid, true);
-        } else {
-          Vector normalized_vector = Vector::Normalize(*vector);
-          vtab->index_->addPoint(normalized_vector.data().data(), rowid, true);
-        }
-
-      } catch (const std::runtime_error& e) {
-        SetZErrMsg(&vtab->zErrMsg, "Failed to insert row %lld due to: %s",
-                   rowid, e.what());
-        return SQLITE_ERROR;
-      }
-      return SQLITE_OK;
+      return vtab->InsertOrUpdateVector(*vector, rowid);
     } else {
       SetZErrMsg(&vtab->zErrMsg, "Failed to perform insertion due to: %s",
                  absl::StatusMessageAsCStr(vector.status()));
@@ -729,23 +753,7 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
         return SQLITE_ERROR;
       }
 
-      try {
-        if (!vtab->space_.normalize) {
-          vtab->index_->addPoint(vector->data().data(), rowid,
-                                 vtab->index_->allow_replace_deleted_);
-        } else {
-          Vector normalized_vector = Vector::Normalize(*vector);
-          vtab->index_->addPoint(normalized_vector.data().data(), rowid,
-                                 vtab->index_->allow_replace_deleted_);
-        }
-
-      } catch (const std::runtime_error& e) {
-        SetZErrMsg(&vtab->zErrMsg, "Failed to update row %lld due to: %s",
-                   rowid, e.what());
-        return SQLITE_ERROR;
-      }
-
-      return SQLITE_OK;
+      return vtab->InsertOrUpdateVector(*vector, rowid);
     } else {
       SetZErrMsg(&vtab->zErrMsg, "Failed to perform row %lld due to: %s", rowid,
                  absl::StatusMessageAsCStr(vector.status()));

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "hnswlib/hnswlib.h"
+#include "hwy/base.h"
+#include "macros.h"
 #include "ops/ops.h"
 
 // This file implements hnswlib::SpaceInterface<float> using vectorlite
@@ -9,12 +11,13 @@
 // PC(i5-12600KF with AVX2 support)
 namespace vectorlite {
 
-class InnerProductSpace : public hnswlib::SpaceInterface<float> {
+template <class T, VECTORLITE_IF_FLOAT_SUPPORTED(T)>
+class GenericInnerProductSpace : public hnswlib::SpaceInterface<float> {
  public:
-  explicit InnerProductSpace(size_t dim)
-      : dim_(dim), func_(InnerProductSpace::InnerProductDistanceFunc) {}
+  explicit GenericInnerProductSpace(size_t dim)
+      : dim_(dim), func_(GenericInnerProductSpace::InnerProductDistanceFunc) {}
 
-  size_t get_data_size() override { return dim_ * sizeof(float); }
+  size_t get_data_size() override { return dim_ * sizeof(T); }
 
   void* get_dist_func_param() override { return &dim_; }
 
@@ -26,18 +29,22 @@ class InnerProductSpace : public hnswlib::SpaceInterface<float> {
 
   static float InnerProductDistanceFunc(const void* v1, const void* v2,
                                         const void* dim) {
-    return ops::InnerProductDistance(static_cast<const float*>(v1),
-                                     static_cast<const float*>(v2),
+    return ops::InnerProductDistance(static_cast<const T*>(v1),
+                                     static_cast<const T*>(v2),
                                      *reinterpret_cast<const size_t*>(dim));
   }
 };
 
-class L2Space : public hnswlib::SpaceInterface<float> {
- public:
-  explicit L2Space(size_t dim)
-      : dim_(dim), func_(L2Space::L2DistanceSquaredFunc) {}
+using InnerProductSpace = GenericInnerProductSpace<float>;
+using InnerProductSpaceBF16 = GenericInnerProductSpace<hwy::bfloat16_t>;
 
-  size_t get_data_size() override { return dim_ * sizeof(float); }
+template <class T, VECTORLITE_IF_FLOAT_SUPPORTED(T)>
+class GenericL2Space : public hnswlib::SpaceInterface<float> {
+ public:
+  explicit GenericL2Space(size_t dim)
+      : dim_(dim), func_(GenericL2Space::L2DistanceSquaredFunc) {}
+
+  size_t get_data_size() override { return dim_ * sizeof(T); }
 
   void* get_dist_func_param() override { return &dim_; }
 
@@ -49,10 +56,13 @@ class L2Space : public hnswlib::SpaceInterface<float> {
 
   static float L2DistanceSquaredFunc(const void* v1, const void* v2,
                                      const void* dim) {
-    return ops::L2DistanceSquared(static_cast<const float*>(v1),
-                                  static_cast<const float*>(v2),
+    return ops::L2DistanceSquared(static_cast<const T*>(v1),
+                                  static_cast<const T*>(v2),
                                   *reinterpret_cast<const size_t*>(dim));
   }
 };
+
+using L2Space = GenericL2Space<float>;
+using L2SpaceBF16 = GenericL2Space<hwy::bfloat16_t>;
 
 }  // namespace vectorlite

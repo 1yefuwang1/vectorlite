@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string_view>
+#include <vector>
 
 #include "hwy/base.h"
 
@@ -16,28 +16,65 @@
 namespace vectorlite {
 namespace ops {
 
-using DistanceFunc = float (*)(const float*, const float*, size_t);
-
 // v1 and v2 MUST not be nullptr but can point to the same array.
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
                                  size_t num_elements);
+HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1,
+                                 const hwy::bfloat16_t* v2,
+                                 size_t num_elements);
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
+                                         size_t num_elements);
+HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1,
+                                         const hwy::bfloat16_t* v2,
                                          size_t num_elements);
 
 // v1 and v2 MUST not be nullptr but can point to the same array.
 HWY_DLLEXPORT float L2DistanceSquared(const float* v1, const float* v2,
                                       size_t num_elements);
 
+// v1 and v2 MUST not be nullptr but can point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1,
+                                      const hwy::bfloat16_t* v2,
+                                      size_t num_elements);
+
+// v1 and v2 MUST not be nullptr and MUST not point to the same array.
+HWY_DLLEXPORT float L2DistanceSquared(const float* HWY_RESTRICT v1,
+                                      const hwy::bfloat16_t* HWY_RESTRICT v2,
+                                      size_t num_elements);
+
 // Nornalize the input vector in place.
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t num_elements);
+// HWY_DLLEXPORT void Normalize(hwy::float16_t* HWY_RESTRICT inout, size_t
+// num_elements);
+HWY_DLLEXPORT void Normalize(hwy::bfloat16_t* HWY_RESTRICT inout,
+                             size_t num_elements);
 
 // Normalize the input vector in place. Implemented using non-SIMD code for
 // testing and benchmarking purposes.
 HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout,
                                     size_t num_elements);
 
-// Detect best available SIMD target to ensure future dynamic dispatch avoids
-// the overhead of CPU detection. HWY_DLLEXPORT std::string_view DetectTarget();
+// Normalize the input vector in place. Implemented using non-SIMD code for
+// testing and benchmarking purposes.
+HWY_DLLEXPORT void Normalize_Scalar(hwy::bfloat16_t* HWY_RESTRICT inout,
+                                    size_t num_elements);
 
-}  // namespace distance
+// Get supported SIMD target name strings.
+HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
+
+// in and out should not be nullptr and points to valid memory of required size.
+HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
+                                    hwy::float16_t* HWY_RESTRICT out,
+                                    size_t num_elements);
+HWY_DLLEXPORT void QuantizeF32ToBF16(const float* HWY_RESTRICT in,
+                                     hwy::bfloat16_t* HWY_RESTRICT out,
+                                     size_t num_elements);
+
+// Convert fp16/bf16 to fp32, useful for json serde
+HWY_DLLEXPORT void F16ToF32(const hwy::float16_t* HWY_RESTRICT in,
+                            float* HWY_RESTRICT out, size_t num_elements);
+HWY_DLLEXPORT void BF16ToF32(const hwy::bfloat16_t* HWY_RESTRICT in,
+                             float* HWY_RESTRICT out, size_t num_elements);
+
+}  // namespace ops
 }  // namespace vectorlite
