@@ -19,6 +19,7 @@ std::optional<DistanceType> ParseDistanceType(std::string_view distance_type);
 
 enum class VectorType {
   Float32,
+  BFloat16,
 };
 
 std::optional<VectorType> ParseVectorType(std::string_view vector_type);

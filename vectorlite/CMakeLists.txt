@@ -10,7 +10,7 @@ message(STATUS "Compiling on ${CMAKE_SYSTEM_PROCESSOR}")
 
 add_subdirectory(ops)
 
-add_library(vectorlite SHARED vectorlite.cpp virtual_table.cpp vector.cpp vector_view.cpp util.cpp vector_space.cpp index_options.cpp sqlite_functions.cpp constraint.cpp)
+add_library(vectorlite SHARED vectorlite.cpp virtual_table.cpp util.cpp vector_space.cpp index_options.cpp sqlite_functions.cpp constraint.cpp quantization.cpp)
 # remove the lib prefix to make the shared library name consistent on all platforms.
 set_target_properties(vectorlite PROPERTIES PREFIX "")
 target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})

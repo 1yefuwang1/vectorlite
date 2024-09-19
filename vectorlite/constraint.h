@@ -12,8 +12,8 @@
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3.h"
-#include "vector_view.h"
 #include "vector_space.h"
+#include "vector_view.h"
 
 namespace vectorlite {
 

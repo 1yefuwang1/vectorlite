@@ -1,1 +1,1 @@
-clang-format -style=file -i src/*.h src/*.cpp
+clang-format -style=file -i vectorlite/*.h vectorlite/*.cpp

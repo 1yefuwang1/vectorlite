@@ -121,59 +121,60 @@ def test_index_file(random_vectors):
         file_path = os.path.join(tempdir, 'index.bin')
         file_paths = [f'\"{file_path}\"', f'\'{file_path}\'']
 
-        for index_file_path in file_paths:
-            assert not os.path.exists(remove_quote(index_file_path))
+        for vector_type in ['float32', 'bfloat16']:
+            for index_file_path in file_paths:
+                assert not os.path.exists(remove_quote(index_file_path))
 
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(f'create virtual table my_table using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(f'create virtual table my_table using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
 
-            for i in range(NUM_ELEMENTS):
-                cur.execute('insert into my_table (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+                for i in range(NUM_ELEMENTS):
+                    cur.execute('insert into my_table (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
 
-            result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-            assert len(result) == 10
+                result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+                assert len(result) == 10
 
-            conn.close()
-            # The index file should be created
-            index_file_size = os.path.getsize(remove_quote(index_file_path))
-            assert os.path.exists(remove_quote(index_file_path)) and index_file_size > 0
+                conn.close()
+                # The index file should be created
+                index_file_size = os.path.getsize(remove_quote(index_file_path))
+                assert os.path.exists(remove_quote(index_file_path)) and index_file_size > 0
 
-            # test if the index file could be loaded with the same parameters without inserting data again
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(f'create virtual table my_table using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
-            result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-            assert len(result) == 10
-            conn.close()
-            # The index file should be created
-            assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
+                # test if the index file could be loaded with the same parameters without inserting data again
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(f'create virtual table my_table using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
+                result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+                assert len(result) == 10
+                conn.close()
+                # The index file should be created
+                assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
 
-            # test if the index file could be loaded with different hnsw parameters and distance type without inserting data again
-            # But hnsw parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file
-            # todo: test whether hnsw parameters are overwritten after more functions are introduced to provide runtime stats.
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=32,M=32), {index_file_path})')
-            result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-            assert len(result) == 10
+                # test if the index file could be loaded with different hnsw parameters and distance type without inserting data again
+                # But hnsw parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file
+                # todo: test whether hnsw parameters are overwritten after more functions are introduced to provide runtime stats.
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding {vector_type}[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=32,M=32), {index_file_path})')
+                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+                assert len(result) == 10
 
-            # test searching with ef_search = 30, which defaults to 10
-            result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?, ?))', (random_vectors[0].tobytes(), 10, 30)).fetchall()
-            assert len(result) == 10
-            conn.close()
-            assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
+                # test searching with ef_search = 30, which defaults to 10
+                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?, ?))', (random_vectors[0].tobytes(), 10, 30)).fetchall()
+                assert len(result) == 10
+                conn.close()
+                assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
 
 
-            # test if `drop table` deletes the index file
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=64,M=32), {index_file_path})')
-            result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-            assert len(result) == 10
+                # test if `drop table` deletes the index file
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding {vector_type}[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=64,M=32), {index_file_path})')
+                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+                assert len(result) == 10
 
-            cur.execute(f'drop table my_table2')
-            assert not os.path.exists(remove_quote(index_file_path))
-            conn.close()
+                cur.execute(f'drop table my_table2')
+                assert not os.path.exists(remove_quote(index_file_path))
+                conn.close()
 
-            
+                
