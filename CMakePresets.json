@@ -20,6 +20,17 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "1"
             }
+        },
+        {
+            "name": "linux_arm64_release",
+            "toolchainFile": "vcpkg/scripts/buildsystems/vcpkg.cmake",
+            "binaryDir": "${sourceDir}/build/release",
+            "generator": "Unix Makefiles",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "1",
+                "VCPKG_TARGET_TRIPLET": "arm64-linux-release"
+            }
         }
     ]
 }

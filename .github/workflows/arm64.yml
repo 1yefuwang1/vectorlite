@@ -86,7 +86,6 @@ jobs:
       - name: Bootstrap vcpkg
         run: |
           git submodule update --init --recursive
-          python bootstrap_vcpkg.py
 
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse

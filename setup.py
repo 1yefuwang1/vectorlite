@@ -47,7 +47,12 @@ class CMakeBuild(build_ext):
         extra_args = []
         # if system.lower() == 'windows':
             # extra_args = ['-DCMAKE_CXX_COMPILER=cl', '-DCMAKE_C_COMPILER=cl']
-        configure = subprocess.run([cmake_path, '--preset', 'release', *extra_args])
+        preset = 'release'
+        if system.lower() == 'linux' and machine.lower() == 'aarch64':
+            preset = 'linux_arm64_release'
+        configure = subprocess.run([cmake_path, '--preset', preset, *extra_args])
+        with open('/project/build/release/vcpkg-manifest-install.log', 'r') as f:
+            print(f'!!!vcpkg-manifest-install.log: {f.read()}')
         configure.check_returncode()
 
         subprocess.run([cmake_path, '--build', os.path.join('build', 'release'), '-j8'], check=True)

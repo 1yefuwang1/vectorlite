@@ -17,12 +17,6 @@ environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"} # 10.15 is the minimum versio
 before-build = "yum install -y ninja-build"
 
 [[tool.cibuildwheel.overrides]]
-select = "*aarch64*"
-environment = {VCPKG_FORCE_SYSTEM_BINARIES="1"}
-before-build = [ 
-    "yum update",
-    "yum install -y curl zip unzip tar",
-    "git clone https://github.com/ninja-build/ninja.git",
-    "cd ninja && python3 configure.py --bootstrap",
-    "mv ninja /usr/bin/ && cd .. && rm -rf ninja"
-    ]
+select = "*manylinux_aarch64*"
+# ninja-build is not installable via yum on aarch64
+before-build = "yum install -y curl zip unzip tar; python bootstrap_vcpkg.py"
