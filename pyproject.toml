@@ -7,10 +7,20 @@ build-backend = "setuptools.build_meta"
 test-requires = ["pytest", "numpy", "apsw>=3.46"]
 # --import-mode=importlib forces pytest to use installed packages instead of the local source code
 test-command = "pytest --import-mode=importlib {project}/bindings/python/vectorlite_py/test"
-skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp36*", "cp37*", "cp38*", "cp39*"]
+skip = [
+  "*-win32",
+  "*-win_arm64",
+  "*-manylinux_i686",
+  "*musllinux*",
+  "pp*",
+  "cp36*",
+  "cp37*",
+  "cp38*",
+  "cp39*",
+]
 
 [tool.cibuildwheel.macos]
-environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"} # 10.15 is the minimum version that fully supports c++17
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" } # 10.15 is the minimum version that fully supports c++17
 
 # todo: support musllinux
 [tool.cibuildwheel.linux]
@@ -18,5 +28,20 @@ before-build = "yum install -y ninja-build"
 
 [[tool.cibuildwheel.overrides]]
 select = "*manylinux_aarch64*"
+environment = { VCPKG_FORCE_SYSTEM_BINARIES = "1" }
 # ninja-build is not installable via yum on aarch64
-before-build = "yum install -y curl zip unzip tar; python bootstrap_vcpkg.py"
+# before-build = [
+#   "yum install -y wget curl zip unzip tar",
+#   "wget https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux-aarch64.zip",
+#   "unzip -q ninja-linux-aarch64.zip", 
+#   "mv ninja /usr/bin/ninja",
+#   "python bootstrap_vcpkg.py"]
+
+before-build = [
+  "yum update",
+  "yum install -y curl zip unzip tar",
+  "git clone https://github.com/ninja-build/ninja.git",
+  "cd ninja && python3 configure.py --bootstrap",
+  "mv ninja /usr/bin/ && cd .. && rm -rf ninja",
+  "python bootstrap_vcpkg.py",
+]
