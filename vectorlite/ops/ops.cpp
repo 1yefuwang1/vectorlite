@@ -41,38 +41,38 @@ static float SquaredSumVectorized(const D d, const T* v, size_t num_elements) {
   const size_t N = hn::Lanes(d);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
 
-  V sum0 = Zero(d);
-  V sum1 = Zero(d);
-  V sum2 = Zero(d);
-  V sum3 = Zero(d);
+  V sum0 = hn::Zero(d);
+  V sum1 = hn::Zero(d);
+  V sum2 = hn::Zero(d);
+  V sum3 = hn::Zero(d);
 
   size_t i = 0;
   // Main loop: unrolled
   for (; i + 4 * N <= num_elements; /* i += 4 * N */) {  // incr in loop
-    const auto a0 = LoadU(d, v + i);
+    const auto a0 = hn::LoadU(d, v + i);
     i += N;
-    sum0 = MulAdd(a0, a0, sum0);
-    const auto a1 = LoadU(d, v + i);
+    sum0 = hn::MulAdd(a0, a0, sum0);
+    const auto a1 = hn::LoadU(d, v + i);
     i += N;
-    sum1 = MulAdd(a1, a1, sum1);
-    const auto a2 = LoadU(d, v + i);
+    sum1 = hn::MulAdd(a1, a1, sum1);
+    const auto a2 = hn::LoadU(d, v + i);
     i += N;
-    sum2 = MulAdd(a2, a2, sum2);
-    const auto a3 = LoadU(d, v + i);
+    sum2 = hn::MulAdd(a2, a2, sum2);
+    const auto a3 = hn::LoadU(d, v + i);
     i += N;
-    sum3 = MulAdd(a3, a3, sum3);
+    sum3 = hn::MulAdd(a3, a3, sum3);
   }
 
   // Up to 3 iterations of whole vectors
   for (; i + N <= num_elements; i += N) {
-    const auto a = LoadU(d, v + i);
-    sum0 = MulAdd(a, a, sum0);
+    const auto a = hn::LoadU(d, v + i);
+    sum0 = hn::MulAdd(a, a, sum0);
   }
 
   // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = Add(sum0, sum1);
-  sum2 = Add(sum2, sum3);
-  sum0 = Add(sum0, sum2);
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
 
   return hn::ReduceSum(d, sum0);
 }
@@ -82,39 +82,39 @@ static float SquaredSumVectorized(const D d, const hwy::bfloat16_t* v,
                                   size_t num_elements) {
   const hn::Repartition<float, D> df32;
 
-  using V = decltype(Zero(df32));
-  const size_t N = Lanes(d);
+  using V = decltype(hn::Zero(df32));
+  const size_t N = hn::Lanes(d);
 
   size_t i = 0;
   // See comment in the hwy::Dot::Compute() overload. Unroll 2x, but we need
   // twice as many sums for ReorderWidenMulAccumulate.
-  V sum0 = Zero(df32);
-  V sum1 = Zero(df32);
-  V sum2 = Zero(df32);
-  V sum3 = Zero(df32);
+  V sum0 = hn::Zero(df32);
+  V sum1 = hn::Zero(df32);
+  V sum2 = hn::Zero(df32);
+  V sum3 = hn::Zero(df32);
 
   // Main loop: unrolled
   for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
-    const auto a0 = LoadU(d, v + i);
+    const auto a0 = hn::LoadU(d, v + i);
     i += N;
-    sum0 = ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
-    const auto a1 = LoadU(d, v + i);
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
+    const auto a1 = hn::LoadU(d, v + i);
     i += N;
-    sum2 = ReorderWidenMulAccumulate(df32, a1, a1, sum2, sum3);
+    sum2 = hn::ReorderWidenMulAccumulate(df32, a1, a1, sum2, sum3);
   }
 
   // Possibly one more iteration of whole vectors
   if (i + N <= num_elements) {
-    const auto a0 = LoadU(d, v + i);
+    const auto a0 = hn::LoadU(d, v + i);
     i += N;
-    sum0 = ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
   }
 
   // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = Add(sum0, sum1);
-  sum2 = Add(sum2, sum3);
-  sum0 = Add(sum0, sum2);
-  return ReduceSum(df32, sum0);
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
+  return hn::ReduceSum(df32, sum0);
 }
 
 template <class D, typename T = hn::TFromD<D>>
@@ -173,62 +173,62 @@ static float L2DistanceSquaredImplVectorized(
     const hwy::bfloat16_t* HWY_RESTRICT v2, size_t num_elements) {
   const hn::Repartition<float, D> df32;
 
-  using V = decltype(Zero(df32));
-  const size_t N = Lanes(d);
+  using V = decltype(hn::Zero(df32));
+  const size_t N = hn::Lanes(d);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
 
   size_t i = 0;
 
-  V sum0 = Zero(df32);
-  V sum1 = Zero(df32);
-  V sum2 = Zero(df32);
-  V sum3 = Zero(df32);
+  V sum0 = hn::Zero(df32);
+  V sum1 = hn::Zero(df32);
+  V sum2 = hn::Zero(df32);
+  V sum3 = hn::Zero(df32);
 
   // Main loop: unrolled
   for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
-    const auto a0 = LoadU(d, v1 + i);
+    const auto a0 = hn::LoadU(d, v1 + i);
     const auto a0_lower = hn::PromoteLowerTo(df32, a0);
     const auto a0_upper = hn::PromoteUpperTo(df32, a0);
-    const auto a1 = LoadU(d, v2 + i);
+    const auto a1 = hn::LoadU(d, v2 + i);
     const auto a1_lower = hn::PromoteLowerTo(df32, a1);
     const auto a1_upper = hn::PromoteUpperTo(df32, a1);
     const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
     const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
     i += N;
-    sum0 = MulAdd(diff_a_lower, diff_a_lower, sum0);
-    sum1 = MulAdd(diff_a_upper, diff_a_upper, sum1);
+    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
 
-    const auto b0 = LoadU(d, v1 + i);
+    const auto b0 = hn::LoadU(d, v1 + i);
     const auto b0_lower = hn::PromoteLowerTo(df32, b0);
     const auto b0_upper = hn::PromoteUpperTo(df32, b0);
-    const auto b1 = LoadU(d, v2 + i);
+    const auto b1 = hn::LoadU(d, v2 + i);
     const auto b1_lower = hn::PromoteLowerTo(df32, b1);
     const auto b1_upper = hn::PromoteUpperTo(df32, b1);
     const auto diff_b_lower = hn::Sub(b0_lower, b1_lower);
     const auto diff_b_upper = hn::Sub(b0_upper, b1_upper);
     i += N;
-    sum2 = MulAdd(diff_b_lower, diff_b_lower, sum2);
-    sum3 = MulAdd(diff_b_upper, diff_b_upper, sum3);
+    sum2 = hn::MulAdd(diff_b_lower, diff_b_lower, sum2);
+    sum3 = hn::MulAdd(diff_b_upper, diff_b_upper, sum3);
   }
 
   // Up to 1 iterations of whole vectors
   for (; i + N <= num_elements; i += N) {
-    const auto a0 = LoadU(d, v1 + i);
+    const auto a0 = hn::LoadU(d, v1 + i);
     const auto a0_lower = hn::PromoteLowerTo(df32, a0);
     const auto a0_upper = hn::PromoteUpperTo(df32, a0);
-    const auto a1 = LoadU(d, v2 + i);
+    const auto a1 = hn::LoadU(d, v2 + i);
     const auto a1_lower = hn::PromoteLowerTo(df32, a1);
     const auto a1_upper = hn::PromoteUpperTo(df32, a1);
     const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
     const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
     i += N;
-    sum0 = MulAdd(diff_a_lower, diff_a_lower, sum0);
-    sum1 = MulAdd(diff_a_upper, diff_a_upper, sum1);
+    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
   }
   // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = Add(sum0, sum1);
-  sum2 = Add(sum2, sum3);
-  sum0 = Add(sum0, sum2);
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
 
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
 }
@@ -238,60 +238,60 @@ static float L2DistanceSquaredImplVectorized(
     const D df, const float* HWY_RESTRICT v1,
     const hwy::bfloat16_t* HWY_RESTRICT v2, size_t num_elements) {
   const hn::Repartition<hwy::bfloat16_t, D> dbf;
-  using VBF = decltype(Zero(dbf));
+  using VBF = decltype(hn::Zero(dbf));
   const hn::Half<decltype(dbf)> dbfh;
-  using VF = decltype(Zero(df));
+  using VF = decltype(hn::Zero(df));
 
-  const size_t NF = Lanes(df);
+  const size_t NF = hn::Lanes(df);
   HWY_DASSERT(num_elements >= NF && num_elements % NF == 0);
 
   size_t i = 0;
 
-  VF sum0 = Zero(df);
-  VF sum1 = Zero(df);
-  VF sum2 = Zero(df);
-  VF sum3 = Zero(df);
+  VF sum0 = hn::Zero(df);
+  VF sum1 = hn::Zero(df);
+  VF sum2 = hn::Zero(df);
+  VF sum3 = hn::Zero(df);
 
   // Main loop: unrolled
   for (; i + 4 * NF <= num_elements; /* i += 4 * NF */) {
-    const VF a0 = LoadU(df, v1 + i);
-    const VBF b0 = LoadU(dbf, v2 + i);
+    const VF a0 = hn::LoadU(df, v1 + i);
+    const VBF b0 = hn::LoadU(dbf, v2 + i);
     i += NF;
     const VF b0_lower = hn::PromoteLowerTo(df, b0);
     const VF diff0 = hn::Sub(a0, b0_lower);
-    sum0 = MulAdd(diff0, diff0, sum0);
+    sum0 = hn::MulAdd(diff0, diff0, sum0);
 
-    const VF a1 = LoadU(df, v1 + i);
+    const VF a1 = hn::LoadU(df, v1 + i);
     i += NF;
     const VF b0_upper = hn::PromoteUpperTo(df, b0);
     const VF diff1 = hn::Sub(a1, b0_upper);
-    sum1 = MulAdd(diff1, diff1, sum1);
+    sum1 = hn::MulAdd(diff1, diff1, sum1);
 
-    const VF a2 = LoadU(df, v1 + i);
-    const VBF b2 = LoadU(dbf, v2 + i);
+    const VF a2 = hn::LoadU(df, v1 + i);
+    const VBF b2 = hn::LoadU(dbf, v2 + i);
     i += NF;
     const VF b2_lower = hn::PromoteLowerTo(df, b2);
     const VF diff2 = hn::Sub(a2, b2_lower);
-    sum2 = MulAdd(diff2, diff2, sum2);
+    sum2 = hn::MulAdd(diff2, diff2, sum2);
 
-    const VF a3 = LoadU(df, v1 + i);
+    const VF a3 = hn::LoadU(df, v1 + i);
     i += NF;
     const VF b2_upper = hn::PromoteUpperTo(df, b2);
     const VF diff3 = hn::Sub(a3, b2_upper);
-    sum3 = MulAdd(diff3, diff3, sum3);
+    sum3 = hn::MulAdd(diff3, diff3, sum3);
   }
 
   // Up to 3 iterations of whole vectors
   for (; i + NF <= num_elements; i += NF) {
-    const VF a = LoadU(df, v1 + i);
-    const VF b = PromoteTo(df, LoadU(dbfh, v2 + i));
-    const VF diff = Sub(a, b);
-    sum0 = MulAdd(diff, diff, sum0);
+    const VF a = hn::LoadU(df, v1 + i);
+    const VF b = hn::PromoteTo(df, hn::LoadU(dbfh, v2 + i));
+    const VF diff = hn::Sub(a, b);
+    sum0 = hn::MulAdd(diff, diff, sum0);
   }
   // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = Add(sum0, sum1);
-  sum2 = Add(sum2, sum3);
-  sum0 = Add(sum0, sum2);
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
 
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df, sum0));
 }
@@ -306,37 +306,37 @@ static float L2DistanceSquaredImplVectorized(const D d,
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
   using V = hn::Vec<decltype(d)>;
 
-  V sum0 = Zero(d);
-  V sum1 = Zero(d);
-  V sum2 = Zero(d);
-  V sum3 = Zero(d);
+  V sum0 = hn::Zero(d);
+  V sum1 = hn::Zero(d);
+  V sum2 = hn::Zero(d);
+  V sum3 = hn::Zero(d);
 
   size_t i = 0;
   // Main loop: unrolled
   for (; i + 4 * N <= num_elements; /* i += 4 * N */) {  // incr in loop
-    const auto diff0 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    const auto diff0 = hn::Sub(hn::LoadU(d, v1 + i), hn::LoadU(d, v2 + i));
     i += N;
-    sum0 = MulAdd(diff0, diff0, sum0);
-    const auto diff1 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    sum0 = hn::MulAdd(diff0, diff0, sum0);
+    const auto diff1 = hn::Sub(hn::LoadU(d, v1 + i), hn::LoadU(d, v2 + i));
     i += N;
-    sum1 = MulAdd(diff1, diff1, sum1);
-    const auto diff2 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    sum1 = hn::MulAdd(diff1, diff1, sum1);
+    const auto diff2 = hn::Sub(hn::LoadU(d, v1 + i), hn::LoadU(d, v2 + i));
     i += N;
-    sum2 = MulAdd(diff2, diff2, sum2);
-    const auto diff3 = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
+    sum2 = hn::MulAdd(diff2, diff2, sum2);
+    const auto diff3 = hn::Sub(hn::LoadU(d, v1 + i), hn::LoadU(d, v2 + i));
     i += N;
-    sum3 = MulAdd(diff3, diff3, sum3);
+    sum3 = hn::MulAdd(diff3, diff3, sum3);
   }
 
   // Up to 3 iterations of whole vectors
   for (; i + N <= num_elements; i += N) {
-    const auto diff = hn::Sub(LoadU(d, v1 + i), LoadU(d, v2 + i));
-    sum0 = MulAdd(diff, diff, sum0);
+    const auto diff = hn::Sub(hn::LoadU(d, v1 + i), hn::LoadU(d, v2 + i));
+    sum0 = hn::MulAdd(diff, diff, sum0);
   }
   // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = Add(sum0, sum1);
-  sum2 = Add(sum2, sum3);
-  sum0 = Add(sum0, sum2);
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
 
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(d, sum0));
 }
