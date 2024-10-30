@@ -155,11 +155,11 @@ def transactional(func):
 
 
 
-def benchmark(distance_type, dim, ef_constructoin, M):
-    result = BenchmarkResult(distance_type, dim, ef_constructoin, M, 0, 0, 0, 0, "vectorLite")
+def benchmark(distance_type, dim, ef_constructoin, M, benchmark_results, float_type="float32"):
+    result = BenchmarkResult(distance_type, dim, ef_constructoin, M, 0, 0, 0, 0, f"vectorlite_{float_type}")
     table_name = f"table_{distance_type}_{dim}_{ef_constructoin}_{M}"
     cursor.execute(
-        f"create virtual table {table_name} using vectorlite(embedding float32[{dim}] {distance_type}, hnsw(max_elements={NUM_ELEMENTS}, ef_construction={ef_constructoin}, M={M}))"
+        f"create virtual table {table_name} using vectorlite(embedding {float_type}[{dim}] {distance_type}, hnsw(max_elements={NUM_ELEMENTS}, ef_construction={ef_constructoin}, M={M}))"
     )
 
     # measure insert time
@@ -170,7 +170,7 @@ def benchmark(distance_type, dim, ef_constructoin, M):
         ))
     )
     result.insert_time_us = insert_time_us / NUM_ELEMENTS
-    plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"vectorlite_{distance_type}"))
+    plot_data_for_insertion[dim].append(PlotData(result.insert_time_us, f"vectorlite_{float_type}_{distance_type}"))
 
     for ef in efs:
 
@@ -201,17 +201,27 @@ def benchmark(distance_type, dim, ef_constructoin, M):
             recall_rate=recall_rate,
         )
         benchmark_results.append(result)
-        plot_data_for_query[dim].append(PlotData(result.search_time_us, f"vectorlite_{distance_type}_ef_{ef}"))
+        plot_data_for_query[dim].append(PlotData(result.search_time_us, f"vectorlite_{float_type}_{distance_type}_ef_{ef}"))
     cursor.execute(f"drop table {table_name}")
 
 for distance_type in distance_types:
     for dim in DIMS:
         for ef_construction, M in hnsw_params:
-            benchmark(distance_type, dim, ef_construction, M)
+            benchmark(distance_type, dim, ef_construction, M, benchmark_results, "float32")
 
 
 result_table = ResultTable(benchmark_results)
 console.print(result_table)
+
+
+bf16_benchmark_results = []
+console.print("Bencharmk vectorlite with bf16 quantization as comparison.")
+for distance_type in distance_types:
+    for dim in DIMS:
+        for ef_construction, M in hnsw_params:
+            benchmark(distance_type, dim, ef_construction, M, bf16_benchmark_results, "bfloat16")
+bf16_result_table = ResultTable(bf16_benchmark_results)
+console.print(bf16_result_table)
 
 hnswlib_benchmark_results = []
 console.print("Bencharmk hnswlib as comparison.")
@@ -267,7 +277,7 @@ brute_force_benchmark_results = []
 console.print("Bencharmk vectorlite brute force(select rowid from my_table order by vector_distance(query_vector, embedding, 'l2')) as comparison.")
 
 def benchmark_brute_force(dim: int):
-    benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "vectorLite_brute_force")
+    benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "vectorlite_brute_force")
     table_name = f"table_vectorlite_bf_{dim}"
     cursor.execute(
         f"create table {table_name}(rowid integer primary key, embedding blob)"
@@ -390,7 +400,7 @@ if benchmark_sqlite_vec and (platform.system().lower() == "linux" or platform.sy
     conn.load_extension(sqlite_vec.loadable_path())
 
     def benchmark_sqlite_vec(dim: int):
-        benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "vectorLite")
+        benchmark_result = BenchmarkResult("l2", dim, None, None, None, 0, 0, 0, "sqlite-vec")
         table_name = f"table_vec_{dim}"
         cursor.execute(
             f"create virtual table {table_name} using vec0(rowid integer primary key, embedding float[{dim}])"
@@ -447,9 +457,6 @@ if benchmark_milvus_lite and (platform.system().lower() == "linux" or platform.s
 
     client = MilvusClient("./milvus_lite_demo.db")
 
-    def milvus_insert(client, collection_name, data):
-        client.insert(collection_name=collection_name, data=data)
-
     def milvus_insert_many(client, collection_name, dim):
         insert_data = [{"id": i, "embedding": data[dim][i].tolist()} for i in range(NUM_ELEMENTS)]
         client.insert(collection_name=collection_name, data=insert_data)
@@ -482,16 +489,10 @@ if benchmark_milvus_lite and (platform.system().lower() == "linux" or platform.s
             dimension=dim  # The vectors we will use in this demo has 384 dimensions
         )
         
-        res = client.get_load_state(
-            collection_name=collection_name
-        )
-        # print(client.describe_index(collection_name,"embedding"))
-        # print(client.describe_index(collection_name,"id"))
-
     console.print("Bencharmk milvuslite.")
     benchmark_milvus_results = []
     def benchmark_milvus(distance_type, dim):
-        result = BenchmarkResult(distance_type=distance_type, dim=dim, insert_time_us=0, search_time_us=0, recall_rate=0, product="milvusLite", ef_construction=None, M=None, ef_search=None)
+        result = BenchmarkResult(distance_type=distance_type, dim=dim, insert_time_us=0, search_time_us=0, recall_rate=0, product="milvuslite", ef_construction=None, M=None, ef_search=None)
         collection_name = f"collection_{distance_type}_{dim}"
 
         milvus_create_table(client=client, collection_name=collection_name, distance_type=distance_type, dim=dim)
