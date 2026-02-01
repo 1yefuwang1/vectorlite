@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
         # os: [ubuntu-latest, macos-13, macos-14]
         # os: [windows-latest]
 
@@ -40,10 +40,10 @@ jobs:
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10' 
+          python-version: '3.11'
 
       - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==2.19.2 pytest apsw numpy
+        run: python -m pip install cibuildwheel==3.3.1 pytest apsw numpy
 
       - uses: ilammy/msvc-dev-cmd@v1 
 
@@ -62,6 +62,9 @@ jobs:
           git submodule update --init --recursive
           python bootstrap_vcpkg.py
 
+      # Build wheels using cibuildwheel
+      # The build system uses scikit-build-core (configured in pyproject.toml)
+      # which handles CMake integration and wheel packaging
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
 

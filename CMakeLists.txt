@@ -24,4 +24,10 @@ message(STATUS "RapidJSON include dir: ${RAPIDJSON_INCLUDE_DIRS}")
 find_path(HNSWLIB_INCLUDE_DIRS hnswlib/hnswlib.h)
 message(STATUS "HNSWLIB include dir: ${HNSWLIB_INCLUDE_DIRS}")
 
+# Set up install directory for scikit-build-core
+if(SKBUILD)
+    # Don't override CMAKE_INSTALL_PREFIX - let scikit-build-core manage it
+    # We'll install to vectorlite_py subdirectory in the vectorlite/CMakeLists.txt
+endif()
+
 add_subdirectory(vectorlite)

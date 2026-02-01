@@ -3,18 +3,15 @@
   "version-string": "0.1.0",
   "description": "SQLite extension for fast vector search",
   "license": "MIT",
-  "builtin-baseline": "67cc1677c3bf5c23ea14b9d2416c7422fdeac492",
+  "builtin-baseline": "6d7bf7ef2193e2d1c5798a5ff8811d533104c861",
   "dependencies": [
     {
       "name": "abseil",
-      "features": [
-        "cxx17"
-      ],
-      "version>=": "20240116.2"
+      "version>=": "20250814.1"
     },
     {
       "name": "gtest",
-      "version>=": "1.14.0"
+      "version>=": "1.17.0"
     },
     {
       "name": "hnswlib",
@@ -22,26 +19,26 @@
     },
     {
       "name": "rapidjson",
-      "version>=": "2023-07-17"
+      "version>=": "2025-02-26"
     },
     {
       "name": "re2",
-      "version>=": "2023-07-01"
+      "version>=": "2025-11-05"
     },
     {
       "name": "sqlite3",
-      "version>=": "3.43.1"
+      "version>=": "3.51.2"
     },
     {
       "name": "highway",
       "features": [
         "contrib"
       ],
-      "version>=": "1.2.0"
+      "version>=": "1.3.0"
     },
     {
       "name": "benchmark",
-      "version>=": "1.8.5"
+      "version>=": "1.9.5"
     }
   ]
 }
