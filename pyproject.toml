@@ -1,7 +1,55 @@
 [build-system]
-requires = ["setuptools>=59", "wheel"]
+requires = ["scikit-build-core>=0.8.0", "ninja"]
+build-backend = "scikit_build_core.build"
 
-build-backend = "setuptools.build_meta"
+[project]
+name = "vectorlite_py"
+version = "0.2.0"
+description = "Fast vector search for sqlite3"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Yefu Wang", email = "1yefuwang1@gmail.com"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/1yefuwang1/vectorlite"
+Repository = "https://github.com/1yefuwang1/vectorlite"
+
+[tool.scikit-build]
+# Specify where the Python package is located
+wheel.packages = ["bindings/python/vectorlite_py"]
+# Minimum version of CMake
+cmake.minimum-version = "3.22"
+# Build configuration
+cmake.build-type = "Release"
+# Use Ninja generator and vcpkg toolchain
+cmake.args = [
+    "-G", "Ninja",
+    "-DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake"
+]
+# Set wheel platform tags (py3-none-{platform})
+wheel.py-api = "py3"
+
+[tool.scikit-build.cmake.define]
+# These will be passed to CMake as -D flags
+SKBUILD = "1"
+CMAKE_BUILD_TYPE = "Release"
 
 [tool.cibuildwheel]
 test-requires = ["pytest", "numpy", "apsw>=3.46"]

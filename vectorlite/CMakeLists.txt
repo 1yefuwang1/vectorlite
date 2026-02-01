@@ -18,6 +18,13 @@ target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::stat
 # copy the shared library to the python package to make running integration tests easier
 add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/bindings/python/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
 
+# Install the vectorlite library for Python package (used by scikit-build-core)
+if(SKBUILD)
+    install(TARGETS vectorlite
+            LIBRARY DESTINATION vectorlite_py
+            RUNTIME DESTINATION vectorlite_py)
+endif()
+
 include(GoogleTest)
 enable_testing()
 file(GLOB TEST_SOURCES *.cpp)
