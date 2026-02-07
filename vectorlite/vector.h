@@ -11,8 +11,6 @@
 #include "ops/ops.h"
 #include "rapidjson/document.h"
 #include "rapidjson/error/en.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/writer.h"
 #include "util.h"
 #include "vector_space.h"
 #include "vector_view.h"

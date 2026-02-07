@@ -8,7 +8,6 @@
 #include "hwy/base.h"
 #include "macros.h"
 #include "rapidjson/document.h"
-#include "rapidjson/error/en.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 #include "util.h"
