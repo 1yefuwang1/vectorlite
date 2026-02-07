@@ -13,7 +13,20 @@
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "ops.cpp"
 // Generates code for each enabled target by re-including this source file.
+// VECTORLITE_CLANGD is defined via .clangd config. foreach_target.h re-includes
+// the main file, which breaks clangd's preamble builder.
+#ifdef VECTORLITE_CLANGD
+#include "hwy/detect_targets.h"
+#undef HWY_ONCE
+#define HWY_ONCE 1
+#undef HWY_TARGET
+#define HWY_TARGET HWY_STATIC_TARGET
+// Force HWY_IDE so highway.h uses simplified single-target HWY_EXPORT/DISPATCH.
+#undef HWY_IDE
+#define HWY_IDE 1
+#else
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
+#endif
 
 // <<<< end of dynamic dispatch
 

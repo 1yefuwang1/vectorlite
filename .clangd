@@ -1,0 +1,3 @@
+CompileFlags:
+  CompilationDatabase: build/dev
+  Add: [-DVECTORLITE_CLANGD=1]
