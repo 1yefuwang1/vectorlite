@@ -46,7 +46,7 @@ static void BM_InnerProduct_Vectorlite_BF16(benchmark::State& state) {
 
   for (auto _ : state) {
     benchmark::DoNotOptimize(
-        vectorlite::ops::InnerProductDistance(v1.data(), v2.data(), dim));
+        vectorlite::ops::InnerProductDistance(v1_bf16.data(), v2_bf16.data(), dim));
     benchmark::ClobberMemory();
   }
 }
@@ -138,6 +138,7 @@ static void BM_Normalize_Vectorlite(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize(v1.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 
@@ -149,6 +150,7 @@ static void BM_Normalize_Vectorlite_BF16(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize(v1_bf16.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 
@@ -158,6 +160,7 @@ static void BM_Normalize_Scalar(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize_Scalar(v1.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 

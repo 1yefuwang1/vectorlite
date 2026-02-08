@@ -399,11 +399,37 @@ template <class D, typename T = hn::TFromD<D>>
 static void NormalizeImpl(const D d, T* HWY_RESTRICT inout,
                           size_t num_elements) {
   const float squared_sum = InnerProductImpl(d, inout, inout, num_elements);
-  const float norm =
-      hwy::ConvertScalarTo<float>(1.0f / (sqrtf(squared_sum) + 1e-30f));
-  hn::Transform(d, inout, num_elements, [norm](D d, hn::Vec<D> v) HWY_ATTR {
-    return hn::Mul(v, hn::Set(d, norm));
-  });
+  const T norm =
+      hwy::ConvertScalarTo<T>(1.0f / (sqrtf(squared_sum) + 1e-30f));
+
+  using V = hn::Vec<D>;
+  const size_t N = hn::Lanes(d);
+  const V norm_vec = hn::Set(d, norm);
+
+  size_t i = 0;
+  // Main loop: 4x unrolled
+  for (; i + 4 * N <= num_elements; i += 4 * N) {
+    const V v0 = hn::Mul(hn::LoadU(d, inout + i), norm_vec);
+    const V v1 = hn::Mul(hn::LoadU(d, inout + i + N), norm_vec);
+    const V v2 = hn::Mul(hn::LoadU(d, inout + i + 2 * N), norm_vec);
+    const V v3 = hn::Mul(hn::LoadU(d, inout + i + 3 * N), norm_vec);
+    hn::StoreU(v0, d, inout + i);
+    hn::StoreU(v1, d, inout + i + N);
+    hn::StoreU(v2, d, inout + i + 2 * N);
+    hn::StoreU(v3, d, inout + i + 3 * N);
+  }
+
+  // Up to 3 remaining whole vectors
+  for (; i + N <= num_elements; i += N) {
+    hn::StoreU(hn::Mul(hn::LoadU(d, inout + i), norm_vec), d, inout + i);
+  }
+
+  // Remaining elements
+  if (i != num_elements) {
+    const size_t remaining = num_elements - i;
+    const V v = hn::LoadN(d, inout + i, remaining);
+    hn::StoreN(hn::Mul(v, norm_vec), d, inout + i, remaining);
+  }
 }
 
 template <class D, HWY_IF_BF16_D(D)>
