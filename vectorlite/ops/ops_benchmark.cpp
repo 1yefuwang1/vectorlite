@@ -161,6 +161,54 @@ static void BM_Normalize_Scalar(benchmark::State& state) {
   }
 }
 
+static void BM_QuantizeF32ToF16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::float16_t> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::QuantizeF32ToF16(v1.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_QuantizeF32ToBF16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::bfloat16_t> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::QuantizeF32ToBF16(v1.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_F16ToF32(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::float16_t> in(dim);
+  vectorlite::ops::QuantizeF32ToF16(v1.data(), in.data(), dim);
+  std::vector<float> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::F16ToF32(in.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_BF16ToF32(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::bfloat16_t> in(dim);
+  vectorlite::ops::QuantizeF32ToBF16(v1.data(), in.data(), dim);
+  std::vector<float> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::BF16ToF32(in.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
 BENCHMARK(BM_InnerProduct_Scalar)
     ->ArgsProduct({
         benchmark::CreateRange(128, 8 << 11, 2), {0, 1}  // self product
@@ -189,3 +237,7 @@ BENCHMARK(BM_L2DistanceSquared_Vectorlite_BF16)
 BENCHMARK(BM_L2DistanceSquared_HNSWLIB)
     ->RangeMultiplier(2)
     ->Range(128, 8 << 11);
+BENCHMARK(BM_QuantizeF32ToF16)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_QuantizeF32ToBF16)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_F16ToF32)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_BF16ToF32)->RangeMultiplier(2)->Range(128, 8 << 11);

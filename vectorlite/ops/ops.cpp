@@ -484,11 +484,18 @@ static void HalfFloatToF32(const HalfFloat* HWY_RESTRICT in,
   const hn::Half<decltype(df16)> df16h;
 
   size_t i = 0;
-  if (size >= NF) {
-    for (; i <= size - NF; i += NF) {
-      const auto v = hn::LoadU(df16h, in + i);
-      hn::StoreU(hn::PromoteTo(df32, v), df32, out + i);
+  if (size >= 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
+      const auto v0 = hn::LoadU(df16h, in + i);
+      const auto v1 = hn::LoadU(df16h, in + i + NF);
+      hn::StoreU(hn::PromoteTo(df32, v0), df32, out + i);
+      hn::StoreU(hn::PromoteTo(df32, v1), df32, out + i + NF);
     }
+  }
+  if (size - i >= NF) {
+    const auto v = hn::LoadU(df16h, in + i);
+    hn::StoreU(hn::PromoteTo(df32, v), df32, out + i);
+    i += NF;
   }
 
   if (i != size) {
