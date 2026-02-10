@@ -121,7 +121,7 @@ def test_index_file(random_vectors):
         file_path = os.path.join(tempdir, 'index.bin')
         file_paths = [f'\"{file_path}\"', f'\'{file_path}\'']
 
-        for vector_type in ['float32', 'bfloat16']:
+        for vector_type in ['float32', 'bfloat16', 'float16']:
             for index_file_path in file_paths:
                 assert not os.path.exists(remove_quote(index_file_path))
 

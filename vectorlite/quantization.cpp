@@ -16,4 +16,11 @@ BF16Vector Quantize(VectorView v) {
   return BF16Vector(std::move(quantized));
 }
 
+F16Vector QuantizeToF16(VectorView v) {
+  std::vector<hwy::float16_t> quantized(v.dim());
+  ops::QuantizeF32ToF16(v.data().data(), quantized.data(), v.dim());
+
+  return F16Vector(std::move(quantized));
+}
+
 }  // namespace vectorlite

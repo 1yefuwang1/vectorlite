@@ -46,7 +46,25 @@ static void BM_InnerProduct_Vectorlite_BF16(benchmark::State& state) {
 
   for (auto _ : state) {
     benchmark::DoNotOptimize(
-        vectorlite::ops::InnerProductDistance(v1.data(), v2.data(), dim));
+        vectorlite::ops::InnerProductDistance(v1_bf16.data(), v2_bf16.data(), dim));
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_InnerProduct_Vectorlite_F16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  auto v2 = GenerateOneRandomVector(dim);
+
+  std::vector<hwy::float16_t> v1_f16(dim);
+  vectorlite::ops::QuantizeF32ToF16(v1.data(), v1_f16.data(), dim);
+
+  std::vector<hwy::float16_t> v2_f16(dim);
+  vectorlite::ops::QuantizeF32ToF16(v2.data(), v2_f16.data(), dim);
+
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(
+        vectorlite::ops::InnerProductDistance(v1_f16.data(), v2_f16.data(), dim));
     benchmark::ClobberMemory();
   }
 }
@@ -108,6 +126,23 @@ static void BM_L2DistanceSquared_Vectorlite_BF16(benchmark::State& state) {
   }
 }
 
+static void BM_L2DistanceSquared_Vectorlite_F16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  auto v2 = GenerateOneRandomVector(dim);
+
+  std::vector<hwy::float16_t> v1_f16(dim);
+  std::vector<hwy::float16_t> v2_f16(dim);
+  vectorlite::ops::QuantizeF32ToF16(v1.data(), v1_f16.data(), dim);
+  vectorlite::ops::QuantizeF32ToF16(v2.data(), v2_f16.data(), dim);
+
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(
+        vectorlite::ops::L2DistanceSquared(v1_f16.data(), v2_f16.data(), dim));
+    benchmark::ClobberMemory();
+  }
+}
+
 static void BM_L2DistanceSquared_Scalar(benchmark::State& state) {
   size_t dim = state.range(0);
   auto v1 = GenerateOneRandomVector(dim);
@@ -138,6 +173,7 @@ static void BM_Normalize_Vectorlite(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize(v1.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 
@@ -149,6 +185,19 @@ static void BM_Normalize_Vectorlite_BF16(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize(v1_bf16.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_Normalize_Vectorlite_F16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::float16_t> v1_f16(dim);
+  vectorlite::ops::QuantizeF32ToF16(v1.data(), v1_f16.data(), dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::Normalize(v1_f16.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 
@@ -158,6 +207,55 @@ static void BM_Normalize_Scalar(benchmark::State& state) {
 
   for (auto _ : state) {
     vectorlite::ops::Normalize_Scalar(v1.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_QuantizeF32ToF16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::float16_t> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::QuantizeF32ToF16(v1.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_QuantizeF32ToBF16(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::bfloat16_t> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::QuantizeF32ToBF16(v1.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_F16ToF32(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::float16_t> in(dim);
+  vectorlite::ops::QuantizeF32ToF16(v1.data(), in.data(), dim);
+  std::vector<float> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::F16ToF32(in.data(), out.data(), dim);
+    benchmark::ClobberMemory();
+  }
+}
+
+static void BM_BF16ToF32(benchmark::State& state) {
+  size_t dim = state.range(0);
+  auto v1 = GenerateOneRandomVector(dim);
+  std::vector<hwy::bfloat16_t> in(dim);
+  vectorlite::ops::QuantizeF32ToBF16(v1.data(), in.data(), dim);
+  std::vector<float> out(dim);
+
+  for (auto _ : state) {
+    vectorlite::ops::BF16ToF32(in.data(), out.data(), dim);
+    benchmark::ClobberMemory();
   }
 }
 
@@ -176,8 +274,12 @@ BENCHMARK(BM_InnerProduct_Vectorlite)
 BENCHMARK(BM_InnerProduct_Vectorlite_BF16)
     ->RangeMultiplier(2)
     ->Range(128, 8 << 11);
+BENCHMARK(BM_InnerProduct_Vectorlite_F16)
+    ->RangeMultiplier(2)
+    ->Range(128, 8 << 11);
 BENCHMARK(BM_Normalize_Vectorlite)->RangeMultiplier(2)->Range(128, 8 << 11);
 BENCHMARK(BM_Normalize_Vectorlite_BF16)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_Normalize_Vectorlite_F16)->RangeMultiplier(2)->Range(128, 8 << 11);
 BENCHMARK(BM_Normalize_Scalar)->RangeMultiplier(2)->Range(128, 8 << 11);
 BENCHMARK(BM_L2DistanceSquared_Scalar)->RangeMultiplier(2)->Range(128, 8 << 11);
 BENCHMARK(BM_L2DistanceSquared_Vectorlite)
@@ -186,6 +288,13 @@ BENCHMARK(BM_L2DistanceSquared_Vectorlite)
 BENCHMARK(BM_L2DistanceSquared_Vectorlite_BF16)
     ->RangeMultiplier(2)
     ->Range(128, 8 << 11);
+BENCHMARK(BM_L2DistanceSquared_Vectorlite_F16)
+    ->RangeMultiplier(2)
+    ->Range(128, 8 << 11);
 BENCHMARK(BM_L2DistanceSquared_HNSWLIB)
     ->RangeMultiplier(2)
     ->Range(128, 8 << 11);
+BENCHMARK(BM_QuantizeF32ToF16)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_QuantizeF32ToBF16)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_F16ToF32)->RangeMultiplier(2)->Range(128, 8 << 11);
+BENCHMARK(BM_BF16ToF32)->RangeMultiplier(2)->Range(128, 8 << 11);
