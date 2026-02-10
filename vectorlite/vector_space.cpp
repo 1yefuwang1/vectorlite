@@ -36,6 +36,10 @@ std::optional<VectorType> ParseVectorType(std::string_view vector_type) {
     return VectorType::BFloat16;
   }
 
+  if (vector_type == "float16") {
+    return VectorType::Float16;
+  }
+
   return std::nullopt;
 }
 
@@ -46,6 +50,8 @@ static std::unique_ptr<hnswlib::SpaceInterface<float>> CreateL2Space(
       return std::make_unique<vectorlite::L2Space>(dim);
     case VectorType::BFloat16:
       return std::make_unique<vectorlite::L2SpaceBF16>(dim);
+    case VectorType::Float16:
+      return std::make_unique<vectorlite::L2SpaceF16>(dim);
     default:
       // This should never happen, but we include it for completeness
       ABSL_UNREACHABLE();
@@ -60,6 +66,8 @@ static std::unique_ptr<hnswlib::SpaceInterface<float>> CreateInnerProductSpace(
       return std::make_unique<vectorlite::InnerProductSpace>(dim);
     case VectorType::BFloat16:
       return std::make_unique<vectorlite::InnerProductSpaceBF16>(dim);
+    case VectorType::Float16:
+      return std::make_unique<vectorlite::InnerProductSpaceF16>(dim);
     default:
       // This should never happen, but we include it for completeness
       ABSL_UNREACHABLE();

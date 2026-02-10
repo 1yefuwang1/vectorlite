@@ -130,6 +130,44 @@ static float SquaredSumVectorized(const D d, const hwy::bfloat16_t* v,
   return hn::ReduceSum(df32, sum0);
 }
 
+template <class D, HWY_IF_F16_D(D)>
+static float SquaredSumVectorized(const D d, const hwy::float16_t* v,
+                                  size_t num_elements) {
+  const hn::Repartition<float, D> df32;
+
+  using V = decltype(hn::Zero(df32));
+  const size_t N = hn::Lanes(d);
+
+  size_t i = 0;
+  V sum0 = hn::Zero(df32);
+  V sum1 = hn::Zero(df32);
+  V sum2 = hn::Zero(df32);
+  V sum3 = hn::Zero(df32);
+
+  // Main loop: unrolled
+  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
+    const auto a0 = hn::LoadU(d, v + i);
+    i += N;
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
+    const auto a1 = hn::LoadU(d, v + i);
+    i += N;
+    sum2 = hn::ReorderWidenMulAccumulate(df32, a1, a1, sum2, sum3);
+  }
+
+  // Possibly one more iteration of whole vectors
+  if (i + N <= num_elements) {
+    const auto a0 = hn::LoadU(d, v + i);
+    i += N;
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
+  }
+
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
+  return hn::ReduceSum(df32, sum0);
+}
+
 template <class D, typename T = hn::TFromD<D>>
 static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
                                         size_t num_elements) {
@@ -143,6 +181,53 @@ static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
   } else {
     return SquaredSumVectorized(d, v1, num_elements);
   }
+}
+
+template <class D, HWY_IF_F16_D(D)>
+static float InnerProductImplVectorized(const D d, const hwy::float16_t* v1,
+                                        const hwy::float16_t* v2,
+                                        size_t num_elements) {
+  if (v1 == v2) {
+    return SquaredSumVectorized(d, v1, num_elements);
+  }
+
+  const hn::Repartition<float, D> df32;
+
+  using V = decltype(hn::Zero(df32));
+  const size_t N = hn::Lanes(d);
+  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
+
+  size_t i = 0;
+  V sum0 = hn::Zero(df32);
+  V sum1 = hn::Zero(df32);
+  V sum2 = hn::Zero(df32);
+  V sum3 = hn::Zero(df32);
+
+  // Main loop: unrolled
+  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {
+    const auto a0 = hn::LoadU(d, v1 + i);
+    const auto b0 = hn::LoadU(d, v2 + i);
+    i += N;
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, b0, sum0, sum1);
+    const auto a1 = hn::LoadU(d, v1 + i);
+    const auto b1 = hn::LoadU(d, v2 + i);
+    i += N;
+    sum2 = hn::ReorderWidenMulAccumulate(df32, a1, b1, sum2, sum3);
+  }
+
+  // Possibly one more iteration of whole vectors
+  if (i + N <= num_elements) {
+    const auto a0 = hn::LoadU(d, v1 + i);
+    const auto b0 = hn::LoadU(d, v2 + i);
+    i += N;
+    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, b0, sum0, sum1);
+  }
+
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
+  return hn::ReduceSum(df32, sum0);
 }
 
 template <class D, typename T = hn::TFromD<D>>
@@ -184,6 +269,72 @@ template <class D, HWY_IF_BF16_D(D)>
 static float L2DistanceSquaredImplVectorized(
     const D d, const hwy::bfloat16_t* HWY_RESTRICT v1,
     const hwy::bfloat16_t* HWY_RESTRICT v2, size_t num_elements) {
+  const hn::Repartition<float, D> df32;
+
+  using V = decltype(hn::Zero(df32));
+  const size_t N = hn::Lanes(d);
+  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
+
+  size_t i = 0;
+
+  V sum0 = hn::Zero(df32);
+  V sum1 = hn::Zero(df32);
+  V sum2 = hn::Zero(df32);
+  V sum3 = hn::Zero(df32);
+
+  // Main loop: unrolled
+  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
+    const auto a0 = hn::LoadU(d, v1 + i);
+    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
+    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
+    const auto a1 = hn::LoadU(d, v2 + i);
+    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
+    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
+    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
+    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
+    i += N;
+    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
+
+    const auto b0 = hn::LoadU(d, v1 + i);
+    const auto b0_lower = hn::PromoteLowerTo(df32, b0);
+    const auto b0_upper = hn::PromoteUpperTo(df32, b0);
+    const auto b1 = hn::LoadU(d, v2 + i);
+    const auto b1_lower = hn::PromoteLowerTo(df32, b1);
+    const auto b1_upper = hn::PromoteUpperTo(df32, b1);
+    const auto diff_b_lower = hn::Sub(b0_lower, b1_lower);
+    const auto diff_b_upper = hn::Sub(b0_upper, b1_upper);
+    i += N;
+    sum2 = hn::MulAdd(diff_b_lower, diff_b_lower, sum2);
+    sum3 = hn::MulAdd(diff_b_upper, diff_b_upper, sum3);
+  }
+
+  // Up to 1 iterations of whole vectors
+  for (; i + N <= num_elements; i += N) {
+    const auto a0 = hn::LoadU(d, v1 + i);
+    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
+    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
+    const auto a1 = hn::LoadU(d, v2 + i);
+    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
+    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
+    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
+    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
+    i += N;
+    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
+    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
+  }
+  // Reduction tree: sum of all accumulators by pairs, then across lanes.
+  sum0 = hn::Add(sum0, sum1);
+  sum2 = hn::Add(sum2, sum3);
+  sum0 = hn::Add(sum0, sum2);
+
+  return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
+}
+
+template <class D, HWY_IF_F16_D(D)>
+static float L2DistanceSquaredImplVectorized(
+    const D d, const hwy::float16_t* HWY_RESTRICT v1,
+    const hwy::float16_t* HWY_RESTRICT v2, size_t num_elements) {
   const hn::Repartition<float, D> df32;
 
   using V = decltype(hn::Zero(df32));
@@ -447,6 +598,22 @@ static void NormalizeImpl(const D d, hwy::bfloat16_t* HWY_RESTRICT inout,
   });
 }
 
+template <class D, HWY_IF_F16_D(D)>
+static void NormalizeImpl(const D d, hwy::float16_t* HWY_RESTRICT inout,
+                          size_t num_elements) {
+  const float squared_sum = InnerProductImpl(d, inout, inout, num_elements);
+  const float norm =
+      hwy::ConvertScalarTo<float>(1.0f / (sqrtf(squared_sum) + 1e-30f));
+  hn::Transform(d, inout, num_elements, [norm](D d, hn::Vec<D> v) HWY_ATTR {
+    const hn::RepartitionToWide<D> df32;
+    const hn::Half<D> dfh;
+    const auto norm_vector = hn::Set(df32, norm);
+    const auto lower = hn::Mul(hn::PromoteLowerTo(df32, v), norm_vector);
+    const auto upper = hn::Mul(hn::PromoteUpperTo(df32, v), norm_vector);
+    return hn::Combine(d, hn::DemoteTo(dfh, upper), hn::DemoteTo(dfh, lower));
+  });
+}
+
 template <class HalfFloat, HWY_IF_SPECIAL_FLOAT(HalfFloat)>
 static void QuantizeF32ToHalf(const float* HWY_RESTRICT in,
                               HalfFloat* HWY_RESTRICT out, size_t size) {
@@ -555,6 +722,13 @@ static float InnerProductImplBF16(const hwy::bfloat16_t* v1,
                           num_elements);
 }
 
+static float InnerProductImplF16(const hwy::float16_t* v1,
+                                 const hwy::float16_t* v2,
+                                 size_t num_elements) {
+  return InnerProductImpl(hn::ScalableTag<hwy::float16_t>(), v1, v2,
+                          num_elements);
+}
+
 static float L2DistanceSquaredImplF32(const float* v1, const float* v2,
                                       size_t num_elements) {
   return L2DistanceSquaredImpl(hn::ScalableTag<float>(), v1, v2, num_elements);
@@ -564,6 +738,13 @@ static float L2DistanceSquaredImplBF16(const hwy::bfloat16_t* v1,
                                        const hwy::bfloat16_t* v2,
                                        size_t num_elements) {
   return L2DistanceSquaredImpl(hn::ScalableTag<hwy::bfloat16_t>(), v1, v2,
+                               num_elements);
+}
+
+static float L2DistanceSquaredImplF16(const hwy::float16_t* v1,
+                                      const hwy::float16_t* v2,
+                                      size_t num_elements) {
+  return L2DistanceSquaredImpl(hn::ScalableTag<hwy::float16_t>(), v1, v2,
                                num_elements);
 }
 
@@ -577,11 +758,10 @@ static void NormalizeImplF32(float* HWY_RESTRICT inout, size_t num_elements) {
   return NormalizeImpl(hn::ScalableTag<float>(), inout, num_elements);
 }
 
-// static void NormalizeImplF16(hwy::float16_t* HWY_RESTRICT inout, size_t
-// num_elements) {
-//   return NormalizeImpl(hn::Half<hn::ScalableTag<hwy::float16_t>>(), inout,
-//   num_elements);
-// }
+static void NormalizeImplF16(hwy::float16_t* HWY_RESTRICT inout,
+                            size_t num_elements) {
+  return NormalizeImpl(hn::ScalableTag<hwy::float16_t>(), inout, num_elements);
+}
 
 static void NormalizeImplBF16(hwy::bfloat16_t* HWY_RESTRICT inout,
                               size_t num_elements) {
@@ -613,8 +793,10 @@ namespace ops {
 // the same outer namespace that contains FloorLog2.
 HWY_EXPORT(InnerProductImplF32);
 HWY_EXPORT(InnerProductImplBF16);
+HWY_EXPORT(InnerProductImplF16);
 HWY_EXPORT(L2DistanceSquaredImplF32);
 HWY_EXPORT(L2DistanceSquaredImplBF16);
+HWY_EXPORT(L2DistanceSquaredImplF16);
 HWY_EXPORT(L2DistanceSquaredImplF32BF16);
 HWY_EXPORT(QuantizeF32ToF16Impl);
 HWY_EXPORT(QuantizeF32ToBF16Impl);
@@ -622,7 +804,7 @@ HWY_EXPORT(F16ToF32Impl);
 HWY_EXPORT(BF16ToF32Impl);
 
 HWY_EXPORT(NormalizeImplF32);
-// HWY_EXPORT(NormalizeImplF16);
+HWY_EXPORT(NormalizeImplF16);
 HWY_EXPORT(NormalizeImplBF16);
 
 HWY_DLLEXPORT float InnerProduct(const float* v1, const float* v2,
@@ -636,6 +818,12 @@ HWY_DLLEXPORT float InnerProduct(const hwy::bfloat16_t* v1,
   return HWY_DYNAMIC_DISPATCH(InnerProductImplBF16)(v1, v2, num_elements);
 }
 
+HWY_DLLEXPORT float InnerProduct(const hwy::float16_t* v1,
+                                 const hwy::float16_t* v2,
+                                 size_t num_elements) {
+  return HWY_DYNAMIC_DISPATCH(InnerProductImplF16)(v1, v2, num_elements);
+}
+
 HWY_DLLEXPORT float InnerProductDistance(const float* v1, const float* v2,
                                          size_t num_elements) {
   return 1.0f - InnerProduct(v1, v2, num_elements);
@@ -647,16 +835,21 @@ HWY_DLLEXPORT float InnerProductDistance(const hwy::bfloat16_t* v1,
   return 1.0f - InnerProduct(v1, v2, num_elements);
 }
 
+HWY_DLLEXPORT float InnerProductDistance(const hwy::float16_t* v1,
+                                         const hwy::float16_t* v2,
+                                         size_t num_elements) {
+  return 1.0f - InnerProduct(v1, v2, num_elements);
+}
+
 HWY_DLLEXPORT void Normalize(float* HWY_RESTRICT inout, size_t size) {
   HWY_DYNAMIC_DISPATCH(NormalizeImplF32)(inout, size);
   return;
 }
 
-// HWY_DLLEXPORT void Normalize(hwy::float16_t* HWY_RESTRICT inout, size_t size)
-// {
-//   HWY_DYNAMIC_DISPATCH(NormalizeImplF16)(inout, size);
-//   return;
-// }
+HWY_DLLEXPORT void Normalize(hwy::float16_t* HWY_RESTRICT inout, size_t size) {
+  HWY_DYNAMIC_DISPATCH(NormalizeImplF16)(inout, size);
+  return;
+}
 
 HWY_DLLEXPORT void Normalize(hwy::bfloat16_t* HWY_RESTRICT inout, size_t size) {
   HWY_DYNAMIC_DISPATCH(NormalizeImplBF16)(inout, size);
@@ -680,6 +873,16 @@ HWY_DLLEXPORT float L2DistanceSquared(const hwy::bfloat16_t* v1,
   }
 
   return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplBF16)(v1, v2, num_elements);
+}
+
+HWY_DLLEXPORT float L2DistanceSquared(const hwy::float16_t* v1,
+                                      const hwy::float16_t* v2,
+                                      size_t num_elements) {
+  if (HWY_UNLIKELY(v1 == v2)) {
+    return 0.0f;
+  }
+
+  return HWY_DYNAMIC_DISPATCH(L2DistanceSquaredImplF16)(v1, v2, num_elements);
 }
 
 // v1 and v2 MUST not be nullptr but **cannot** point to the same array.
@@ -716,6 +919,20 @@ HWY_DLLEXPORT void Normalize_Scalar(hwy::bfloat16_t* HWY_RESTRICT inout,
   norm = 1.0f / (sqrtf(norm) + 1e-30f);
   for (int i = 0; i < size; i++) {
     inout[i] = hwy::BF16FromF32(hwy::F32FromBF16(inout[i]) * norm);
+  }
+  return;
+}
+
+HWY_DLLEXPORT void Normalize_Scalar(hwy::float16_t* HWY_RESTRICT inout,
+                                    size_t size) {
+  float norm = 0.0f;
+  for (int i = 0; i < size; i++) {
+    float data = hwy::F32FromF16(inout[i]);
+    norm += data * data;
+  }
+  norm = 1.0f / (sqrtf(norm) + 1e-30f);
+  for (int i = 0; i < size; i++) {
+    inout[i] = hwy::F16FromF32(hwy::F32FromF16(inout[i]) * norm);
   }
   return;
 }

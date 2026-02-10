@@ -29,21 +29,25 @@ TEST(ParseVectorType, ShouldSupportFloat32) {
 }
 
 TEST(ParseVectorType, ShouldReturnNullOptForInvalidVectorType) {
-  auto float16 = vectorlite::ParseVectorType("float16");
-  EXPECT_FALSE(float16);
-
   auto uint8 = vectorlite::ParseVectorType("uint8");
   EXPECT_FALSE(uint8);
 }
 
 TEST(ParseVectorType, ShouldSupportBFloat16) {
-  auto float16 = vectorlite::ParseVectorType("bfloat16");
-  EXPECT_TRUE(float16);
+  auto bfloat16 = vectorlite::ParseVectorType("bfloat16");
+  EXPECT_TRUE(bfloat16);
+}
+
+TEST(ParseVectorType, ShouldSupportFloat16) {
+  auto float16 = vectorlite::ParseVectorType("float16");
+  ASSERT_TRUE(float16);
+  EXPECT_TRUE(*float16 == vectorlite::VectorType::Float16);
 }
 
 TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
   for (auto vector_type :
-       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16}) {
+       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16,
+        vectorlite::VectorType::Float16}) {
     auto l2 = vectorlite::CreateNamedVectorSpace(
         3, vectorlite::DistanceType::L2, "my_vector", vector_type);
     ASSERT_TRUE(l2.ok());
@@ -75,7 +79,8 @@ TEST(CreateVectorSpace, ShouldWorkWithValidInput) {
 
 TEST(CreateNamedVectorSpace, ShouldReturnErrorForDimOfZero) {
   for (auto vector_type :
-       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16}) {
+       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16,
+        vectorlite::VectorType::Float16}) {
     auto l2 = vectorlite::CreateNamedVectorSpace(
         0, vectorlite::DistanceType::L2, "my_vector", vector_type);
     EXPECT_FALSE(l2.ok());
@@ -96,6 +101,8 @@ static std::string VectorTypeToString(vectorlite::VectorType type) {
       return "float32";
     case vectorlite::VectorType::BFloat16:
       return "bfloat16";
+    case vectorlite::VectorType::Float16:
+      return "float16";
     default:
       return "unknown";
   }
@@ -103,7 +110,8 @@ static std::string VectorTypeToString(vectorlite::VectorType type) {
 
 TEST(NamedVectorSpace_FromString, ShouldWorkWithValidInput) {
   for (auto vector_type :
-       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16}) {
+       {vectorlite::VectorType::Float32, vectorlite::VectorType::BFloat16,
+        vectorlite::VectorType::Float16}) {
     // If distance type is not specifed, it should default to L2
     std::string vector_type_str = VectorTypeToString(vector_type);
     auto space = vectorlite::NamedVectorSpace::FromString(
