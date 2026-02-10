@@ -224,6 +224,20 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
         auto result = index_.searchKnnCloserFirst(
             normalized_vector.data().data(), knn_param->k, rowid_filter.get());
         return result;
+      } else if (space_.vector_type == VectorType::Float16) {
+        F16Vector quantized_vector = QuantizeToF16(knn_param->query_vector);
+
+        if (!space_.normalize) {
+          return index_.searchKnnCloserFirst(quantized_vector.data().data(),
+                                             knn_param->k, rowid_filter.get());
+        }
+
+        VECTORLITE_ASSERT(space_.normalize);
+        F16Vector normalized_vector = quantized_vector.Normalize();
+
+        auto result = index_.searchKnnCloserFirst(
+            normalized_vector.data().data(), knn_param->k, rowid_filter.get());
+        return result;
       } else {
         return absl::InternalError(
             absl::StrFormat("Unknown vector type: %d", space_.vector_type));
