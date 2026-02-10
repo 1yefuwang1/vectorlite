@@ -130,6 +130,10 @@ static float SquaredSumVectorized(const D d, const hwy::bfloat16_t* v,
   return hn::ReduceSum(df32, sum0);
 }
 
+// When float16 is not natively supported, we need to widen to f32 for
+// arithmetic. When HWY_HAVE_FLOAT16 is true (e.g. Apple Silicon M4), the
+// generic MulAdd-based SquaredSumVectorized above handles float16_t directly.
+#if !HWY_HAVE_FLOAT16
 template <class D, HWY_IF_F16_D(D)>
 static float SquaredSumVectorized(const D d, const hwy::float16_t* v,
                                   size_t num_elements) {
@@ -167,6 +171,7 @@ static float SquaredSumVectorized(const D d, const hwy::float16_t* v,
   sum0 = hn::Add(sum0, sum2);
   return hn::ReduceSum(df32, sum0);
 }
+#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, typename T = hn::TFromD<D>>
 static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
@@ -183,6 +188,10 @@ static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
   }
 }
 
+// When float16 is not natively supported, we need a custom inner product that
+// widens to f32. When HWY_HAVE_FLOAT16 is true, the generic
+// InnerProductImplVectorized above (which uses Dot::Compute/MulAdd) works.
+#if !HWY_HAVE_FLOAT16
 template <class D, HWY_IF_F16_D(D)>
 static float InnerProductImplVectorized(const D d, const hwy::float16_t* v1,
                                         const hwy::float16_t* v2,
@@ -229,6 +238,7 @@ static float InnerProductImplVectorized(const D d, const hwy::float16_t* v1,
   sum0 = hn::Add(sum0, sum2);
   return hn::ReduceSum(df32, sum0);
 }
+#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, typename T = hn::TFromD<D>>
 static float InnerProductImpl(const D d, const T* v1, const T* v2,
@@ -331,6 +341,11 @@ static float L2DistanceSquaredImplVectorized(
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
 }
 
+// When float16 is not natively supported, we need to promote to f32 for
+// Sub/MulAdd. When HWY_HAVE_FLOAT16 is true, the generic
+// L2DistanceSquaredImplVectorized above (which uses Sub+MulAdd on float16_t
+// directly) works.
+#if !HWY_HAVE_FLOAT16
 template <class D, HWY_IF_F16_D(D)>
 static float L2DistanceSquaredImplVectorized(
     const D d, const hwy::float16_t* HWY_RESTRICT v1,
@@ -396,6 +411,7 @@ static float L2DistanceSquaredImplVectorized(
 
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
 }
+#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, HWY_IF_F32_D(D)>
 static float L2DistanceSquaredImplVectorized(
@@ -598,6 +614,10 @@ static void NormalizeImpl(const D d, hwy::bfloat16_t* HWY_RESTRICT inout,
   });
 }
 
+// When float16 is not natively supported, we need to promote to f32 for Mul
+// and demote back. When HWY_HAVE_FLOAT16 is true, the generic NormalizeImpl
+// above (which uses Set/Mul on float16_t directly) works.
+#if !HWY_HAVE_FLOAT16
 template <class D, HWY_IF_F16_D(D)>
 static void NormalizeImpl(const D d, hwy::float16_t* HWY_RESTRICT inout,
                           size_t num_elements) {
@@ -613,6 +633,7 @@ static void NormalizeImpl(const D d, hwy::float16_t* HWY_RESTRICT inout,
     return hn::Combine(d, hn::DemoteTo(dfh, upper), hn::DemoteTo(dfh, lower));
   });
 }
+#endif  // !HWY_HAVE_FLOAT16
 
 template <class HalfFloat, HWY_IF_SPECIAL_FLOAT(HalfFloat)>
 static void QuantizeF32ToHalf(const float* HWY_RESTRICT in,
