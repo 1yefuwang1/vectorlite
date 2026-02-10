@@ -89,6 +89,32 @@ TEST(InnerProduct_BF16, ShouldWorkWithRandomVectors) {
   }
 }
 
+TEST(InnerProduct_F16, ShouldWorkWithRandomVectors) {
+  for (int dim = 1; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        auto v1 = vectors[i];
+        auto v2 = vectors[j];
+        auto size = dim;
+        std::vector<hwy::float16_t> v1_f16(size);
+        vectorlite::ops::QuantizeF32ToF16(v1.data(), v1_f16.data(), size);
+
+        std::vector<hwy::float16_t> v2_f16(size);
+        vectorlite::ops::QuantizeF32ToF16(v2.data(), v2_f16.data(), size);
+
+        float ip = vectorlite::ops::InnerProduct(v1_f16.data(), v2_f16.data(), size);
+
+        float expected = 0.0f;
+        for (int k = 0; k < size; ++k) {
+          expected += hwy::F32FromF16(hwy::F16FromF32(v1[k])) * hwy::F32FromF16(hwy::F16FromF32(v2[k]));
+        }
+        EXPECT_NEAR(ip, expected, kEpsilon) << " dim = " << dim;
+      }
+    }
+  }
+}
+
 TEST(InnerProductDistance, ShouldReturnOneForEmptyVectors) {
   // Fixes C2466: cannot allocate an array of constant size 0 on MSVC
   float v1[] = {1};
@@ -175,6 +201,31 @@ TEST(L2DistanceSquared_BF16, ShouldWorkWithRandomVectors) {
   }
 }
 
+TEST(L2DistanceSquared_F16, ShouldWorkWithRandomVectors) {
+  for (size_t dim = 1; dim <= 128; dim++) {
+    auto vectors = GenerateRandomVectors(10, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      for (int j = 0; j < vectors.size(); ++j) {
+        const auto& v1 = vectors[i];
+        const auto& v2 = vectors[j];
+        std::vector<hwy::float16_t> v1_f16(dim);
+        vectorlite::ops::QuantizeF32ToF16(v1.data(), v1_f16.data(), dim);
+
+        std::vector<hwy::float16_t> v2_f16(dim);
+        vectorlite::ops::QuantizeF32ToF16(v2.data(), v2_f16.data(), dim);
+
+        float result = vectorlite::ops::L2DistanceSquared(v1_f16.data(), v2_f16.data(), dim);
+        float expected = 0;
+        for (int k = 0; k < dim; ++k) {
+          float diff = hwy::F32FromF16(v1_f16[k]) - hwy::F32FromF16(v2_f16[k]);
+          expected += diff * diff;
+        }
+        EXPECT_NEAR(result, expected, 1e-2);
+      }
+    }
+  }
+}
+
 TEST(L2DistanceSquared_F32_BF16, ShouldWorkWithRandomVectors) {
   for (size_t dim = 1; dim <= 128; dim++) {
     auto vectors = GenerateRandomVectors(2, dim);
@@ -236,6 +287,36 @@ TEST(Normalize_F32ToBF16, ShouldReturnCorrectResult) {
                       hwy::F32FromBF16(v_bf16_scalar[j]);
         EXPECT_NEAR(hwy::F32FromBF16(v_bf16[i]),
                     hwy::F32FromBF16(v_bf16_scalar[i]), 1e-3)
+            << " dim = " << dim;
+      }
+
+      EXPECT_NEAR(sum, 1.0, 1e-2);
+      EXPECT_NEAR(sum, sum_scalar, 1e-2);
+    }
+  }
+}
+
+TEST(Normalize_F32ToF16, ShouldReturnCorrectResult) {
+  for (int dim = 1; dim <= 1000; dim++) {
+    auto vectors = GenerateRandomVectors(1, dim);
+    for (int i = 0; i < vectors.size(); ++i) {
+      std::vector<float> v = vectors[i];
+      auto size = dim;
+      std::vector<hwy::float16_t> v_f16(size);
+      vectorlite::ops::QuantizeF32ToF16(v.data(), v_f16.data(), size);
+      std::vector<hwy::float16_t> v_f16_scalar = v_f16;
+
+      vectorlite::ops::Normalize(v_f16.data(), size);
+      vectorlite::ops::Normalize_Scalar(v_f16_scalar.data(), size);
+
+      float sum = 0;
+      float sum_scalar = 0;
+      for (int j = 0; j < size; ++j) {
+        sum += hwy::F32FromF16(v_f16[j]) * hwy::F32FromF16(v_f16[j]);
+        sum_scalar += hwy::F32FromF16(v_f16_scalar[j]) *
+                      hwy::F32FromF16(v_f16_scalar[j]);
+        EXPECT_NEAR(hwy::F32FromF16(v_f16[j]),
+                    hwy::F32FromF16(v_f16_scalar[j]), 1e-3)
             << " dim = " << dim;
       }
 

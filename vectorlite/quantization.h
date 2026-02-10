@@ -6,5 +6,6 @@
 namespace vectorlite {
 
 BF16Vector Quantize(VectorView v);
+F16Vector QuantizeToF16(VectorView v);
 
 }  // namespace vectorlite

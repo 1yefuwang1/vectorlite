@@ -75,5 +75,6 @@ class GenericVectorView : private CopyAssignBase<T>,
 
 using VectorView = GenericVectorView<float>;
 using BF16VectorView = GenericVectorView<hwy::bfloat16_t>;
+using F16VectorView = GenericVectorView<hwy::float16_t>;
 
 }  // namespace vectorlite

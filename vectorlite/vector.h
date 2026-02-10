@@ -142,5 +142,6 @@ absl::StatusOr<float> Distance(GenericVectorView<T> v1, GenericVectorView<T> v2,
 
 using Vector = GenericVector<float>;
 using BF16Vector = GenericVector<hwy::bfloat16_t>;
+using F16Vector = GenericVector<hwy::float16_t>;
 
 }  // namespace vectorlite

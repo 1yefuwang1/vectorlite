@@ -37,6 +37,7 @@ class GenericInnerProductSpace : public hnswlib::SpaceInterface<float> {
 
 using InnerProductSpace = GenericInnerProductSpace<float>;
 using InnerProductSpaceBF16 = GenericInnerProductSpace<hwy::bfloat16_t>;
+using InnerProductSpaceF16 = GenericInnerProductSpace<hwy::float16_t>;
 
 template <class T, VECTORLITE_IF_FLOAT_SUPPORTED(T)>
 class GenericL2Space : public hnswlib::SpaceInterface<float> {
@@ -64,5 +65,6 @@ class GenericL2Space : public hnswlib::SpaceInterface<float> {
 
 using L2Space = GenericL2Space<float>;
 using L2SpaceBF16 = GenericL2Space<hwy::bfloat16_t>;
+using L2SpaceF16 = GenericL2Space<hwy::float16_t>;
 
 }  // namespace vectorlite

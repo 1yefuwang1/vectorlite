@@ -623,6 +623,17 @@ int VirtualTable::InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid) {
                          index_->allow_replace_deleted_);
       }
 
+    } else if (space_.vector_type == vectorlite::VectorType::Float16) {
+      F16Vector f16_vector = QuantizeToF16(vector);
+      if (!space_.normalize) {
+        index_->addPoint(f16_vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      } else {
+        F16Vector normalized_vector = f16_vector.Normalize();
+        index_->addPoint(normalized_vector.data().data(), rowid,
+                         index_->allow_replace_deleted_);
+      }
+
     } else {
       SetZErrMsg(&this->zErrMsg, "Unrecognized vector type %d",
                  space_.vector_type);
