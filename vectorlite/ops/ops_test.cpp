@@ -315,8 +315,8 @@ TEST(Normalize_F32ToF16, ShouldReturnCorrectResult) {
         sum += hwy::F32FromF16(v_f16[j]) * hwy::F32FromF16(v_f16[j]);
         sum_scalar += hwy::F32FromF16(v_f16_scalar[j]) *
                       hwy::F32FromF16(v_f16_scalar[j]);
-        EXPECT_NEAR(hwy::F32FromF16(v_f16[i]),
-                    hwy::F32FromF16(v_f16_scalar[i]), 1e-3)
+        EXPECT_NEAR(hwy::F32FromF16(v_f16[j]),
+                    hwy::F32FromF16(v_f16_scalar[j]), 1e-3)
             << " dim = " << dim;
       }
 
