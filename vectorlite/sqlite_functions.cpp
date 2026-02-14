@@ -6,8 +6,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "hwy/highway.h"
-#include "hwy/targets.h"
+#include "ops/ops.h"
 #include "util.h"
 #include "vector.h"
 #include "vector_space.h"
@@ -20,7 +19,7 @@ namespace vectorlite {
 
 void ShowInfo(sqlite3_context *ctx, int, sqlite3_value **) {
   auto simd = vectorlite::DetectSIMD().value_or("SIMD not enabled");
-  const char *runtime_simd = hwy::TargetName(hwy::SupportedTarget());
+  const char *runtime_simd = vectorlite::ops::GetRuntimeTarget();
   std::string info =
       absl::StrFormat(
           "vectorlite extension version %s, built with %s, runtime target %s",

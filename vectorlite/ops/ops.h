@@ -77,6 +77,7 @@ HWY_DLLEXPORT void Normalize_Scalar(hwy::float16_t* HWY_RESTRICT inout,
 
 // Get supported SIMD target name strings.
 HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
+HWY_DLLEXPORT const char* GetRuntimeTarget();
 
 // in and out should not be nullptr and points to valid memory of required size.
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,

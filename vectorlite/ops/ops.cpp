@@ -966,6 +966,10 @@ HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
   return target_names;
 }
 
+HWY_DLLEXPORT const char* GetRuntimeTarget() {
+  return hwy::TargetName(hwy::SupportedTarget());
+}
+
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
                                     hwy::float16_t* HWY_RESTRICT out,
                                     size_t num_elements) {
