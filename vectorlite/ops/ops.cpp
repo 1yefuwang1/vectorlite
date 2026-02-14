@@ -810,6 +810,20 @@ HWY_AFTER_NAMESPACE();
 namespace vectorlite {
 namespace ops {
 
+namespace {
+
+auto RuntimeTargetForName(int) -> decltype(hwy::SupportedTarget()) {
+  return hwy::SupportedTarget();
+}
+
+auto RuntimeTargetForName(long) -> decltype(hwy::DispatchedTarget()) {
+  return hwy::DispatchedTarget();
+}
+
+int64_t RuntimeTargetForName(...) { return hwy::SupportedTargets(); }
+
+}  // namespace
+
 // This macro declares a static array used for dynamic dispatch; it resides in
 // the same outer namespace that contains FloorLog2.
 HWY_EXPORT(InnerProductImplF32);
@@ -967,7 +981,7 @@ HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
 }
 
 HWY_DLLEXPORT const char* GetRuntimeTarget() {
-  return hwy::TargetName(hwy::SupportedTarget());
+  return hwy::TargetName(RuntimeTargetForName(0));
 }
 
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
