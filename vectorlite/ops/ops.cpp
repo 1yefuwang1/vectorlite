@@ -810,6 +810,22 @@ HWY_AFTER_NAMESPACE();
 namespace vectorlite {
 namespace ops {
 
+namespace {
+
+auto DetectRuntimeTargetName(int)
+    -> decltype(hwy::SupportedTarget(), static_cast<const char*>(nullptr)) {
+  return hwy::TargetName(hwy::SupportedTarget());
+}
+
+auto DetectRuntimeTargetName(long)
+    -> decltype(hwy::DispatchedTarget(), static_cast<const char*>(nullptr)) {
+  return hwy::TargetName(hwy::DispatchedTarget());
+}
+
+const char* DetectRuntimeTargetName(...) { return "unknown"; }
+
+}  // namespace
+
 // This macro declares a static array used for dynamic dispatch; it resides in
 // the same outer namespace that contains FloorLog2.
 HWY_EXPORT(InnerProductImplF32);
@@ -964,6 +980,10 @@ HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
   std::transform(targets.cbegin(), targets.cend(), target_names.begin(),
                  [](int64_t target) { return hwy::TargetName(target); });
   return target_names;
+}
+
+HWY_DLLEXPORT const char* GetRuntimeTarget() {
+  return DetectRuntimeTargetName(0);
 }
 
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,

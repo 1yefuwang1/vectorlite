@@ -30,6 +30,7 @@ def test_vectorlite_info(conn):
     cur.execute('select vectorlite_info()')
     output = cur.fetchone()
     assert f'vectorlite extension version {vectorlite_py.__version__}' in output[0]
+    assert 'runtime target' in output[0]
 
 def test_virtual_table_happy_path(conn, random_vectors):
     # Note: if space is '', it will be treated as 'l2'
