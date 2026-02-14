@@ -812,15 +812,17 @@ namespace ops {
 
 namespace {
 
-auto RuntimeTargetForName(int) -> decltype(hwy::SupportedTarget()) {
-  return hwy::SupportedTarget();
+auto DetectRuntimeTargetName(int)
+    -> decltype(hwy::SupportedTarget(), static_cast<const char*>(nullptr)) {
+  return hwy::TargetName(hwy::SupportedTarget());
 }
 
-auto RuntimeTargetForName(long) -> decltype(hwy::DispatchedTarget()) {
-  return hwy::DispatchedTarget();
+auto DetectRuntimeTargetName(long)
+    -> decltype(hwy::DispatchedTarget(), static_cast<const char*>(nullptr)) {
+  return hwy::TargetName(hwy::DispatchedTarget());
 }
 
-int64_t RuntimeTargetForName(...) { return hwy::SupportedTargets(); }
+const char* DetectRuntimeTargetName(...) { return "unknown"; }
 
 }  // namespace
 
@@ -981,7 +983,7 @@ HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
 }
 
 HWY_DLLEXPORT const char* GetRuntimeTarget() {
-  return hwy::TargetName(RuntimeTargetForName(0));
+  return DetectRuntimeTargetName(0);
 }
 
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
