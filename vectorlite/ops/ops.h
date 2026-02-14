@@ -76,7 +76,7 @@ HWY_DLLEXPORT void Normalize_Scalar(hwy::float16_t* HWY_RESTRICT inout,
                                     size_t num_elements);
 
 // Get supported SIMD target name strings.
-HWY_DLLEXPORT std::vector<const char*> GetSuppportedTargets();
+HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets();
 
 // Get the best SIMD target chosen by Highway at runtime.
 HWY_DLLEXPORT const char* GetBestTarget();
