@@ -1,0 +1,178 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Getting started &mdash; vectorlite 0.2.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="News" href="news.html" />
+    <link rel="prev" title="API reference" href="api.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            vectorlite
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview of vectorlite</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API reference</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Getting started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="news.html">News</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">vectorlite</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Getting started</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/markdown/getting-started.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="getting-started">
+<h1>Getting started<a class="headerlink" href="#getting-started" title="Link to this heading"></a></h1>
+<p>The quickest way to get started is to install vectorlite using python.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="c1"># Note: vectorlite-py not vectorlite. vectorlite is another project.</span>
+pip<span class="w"> </span>install<span class="w"> </span>vectorlite-py<span class="w"> </span>apsw<span class="w"> </span>numpy
+</pre></div>
+</div>
+<p>Vectorlite’s metadata filter feature requires sqlite&gt;=3.38. Python’s builtin <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> module is usually built with old sqlite versions. So <code class="docutils literal notranslate"><span class="pre">apsw</span></code> is used here as sqlite driver, because it provides bindings to latest sqlite. Vectorlite still works with old sqlite versions if metadata filter support is not required.
+Below is a minimal example of using vectorlite. It can also be found in the <a class="reference external" href="https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples">examples folder</a>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">vectorlite_py</span>
+<span class="kn">import</span> <span class="nn">apsw</span>
+<span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Quick start of using vectorlite extension.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="n">conn</span> <span class="o">=</span> <span class="n">apsw</span><span class="o">.</span><span class="n">Connection</span><span class="p">(</span><span class="s1">&#39;:memory:&#39;</span><span class="p">)</span>
+<span class="n">conn</span><span class="o">.</span><span class="n">enable_load_extension</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span> <span class="c1"># enable extension loading</span>
+<span class="n">conn</span><span class="o">.</span><span class="n">load_extension</span><span class="p">(</span><span class="n">vectorlite_py</span><span class="o">.</span><span class="n">vectorlite_path</span><span class="p">())</span> <span class="c1"># load vectorlite</span>
+
+<span class="n">cursor</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+<span class="c1"># check if vectorlite is loaded</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s1">&#39;select vectorlite_info()&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">fetchall</span><span class="p">())</span>
+
+<span class="c1"># Vector distance calculation</span>
+<span class="k">for</span> <span class="n">distance_type</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;l2&#39;</span><span class="p">,</span> <span class="s1">&#39;cosine&#39;</span><span class="p">,</span> <span class="s1">&#39;ip&#39;</span><span class="p">]:</span>
+    <span class="n">v1</span> <span class="o">=</span> <span class="s2">&quot;[1, 2, 3]&quot;</span>
+    <span class="n">v2</span> <span class="o">=</span> <span class="s2">&quot;[4, 5, 6]&quot;</span>
+    <span class="c1"># Note vector_from_json can be used to convert a JSON string to a vector</span>
+    <span class="n">distance</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;select vector_distance(vector_from_json(?), vector_from_json(?), &quot;</span><span class="si">{</span><span class="n">distance_type</span><span class="si">}</span><span class="s1">&quot;)&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">v1</span><span class="p">,</span> <span class="n">v2</span><span class="p">))</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">distance_type</span><span class="si">}</span><span class="s1"> distance between </span><span class="si">{</span><span class="n">v1</span><span class="si">}</span><span class="s1"> and </span><span class="si">{</span><span class="n">v2</span><span class="si">}</span><span class="s1"> is </span><span class="si">{</span><span class="n">distance</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+<span class="c1"># generate some test data</span>
+<span class="n">DIM</span> <span class="o">=</span> <span class="mi">32</span> <span class="c1"># dimension of the vectors</span>
+<span class="n">NUM_ELEMENTS</span> <span class="o">=</span> <span class="mi">10000</span> <span class="c1"># number of vectors</span>
+<span class="n">data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">((</span><span class="n">NUM_ELEMENTS</span><span class="p">,</span> <span class="n">DIM</span><span class="p">)))</span> <span class="c1"># Only float32 vectors are supported by vectorlite for now</span>
+
+<span class="c1"># Create a virtual table using vectorlite using l2 distance (default distance type) and default HNSW parameters</span>
+<span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;create virtual table my_table using vectorlite(my_embedding float32[</span><span class="si">{</span><span class="n">DIM</span><span class="si">}</span><span class="s1">], hnsw(max_elements=</span><span class="si">{</span><span class="n">NUM_ELEMENTS</span><span class="si">}</span><span class="s1">))&#39;</span><span class="p">)</span>
+<span class="c1"># Vector distance type can be explicitly set to cosine using:</span>
+<span class="c1"># cursor.execute(f&#39;create virtual table my_table using vectorlite(my_embedding float32[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS}))&#39;)</span>
+
+<span class="c1"># Insert the test data into the virtual table. Note that the rowid MUST be explicitly set when inserting vectors and cannot be auto-generated.</span>
+<span class="c1"># The rowid is used to uniquely identify a vector and serve as a &quot;foreign key&quot; to relate to the vector&#39;s metadata.</span>
+<span class="c1"># Vectorlite takes vectors in raw bytes, so a numpy vector need to be converted to bytes before inserting into the table.</span>
+<span class="n">cursor</span><span class="o">.</span><span class="n">executemany</span><span class="p">(</span><span class="s1">&#39;insert into my_table(rowid, my_embedding) values (?, ?)&#39;</span><span class="p">,</span> <span class="p">[(</span><span class="n">i</span><span class="p">,</span> <span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">tobytes</span><span class="p">())</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_ELEMENTS</span><span class="p">)])</span>
+
+<span class="c1"># Query the virtual table to get the vector at rowid 12345. Note the vector needs to be converted back to json using vector_to_json() to be human-readable. </span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s1">&#39;select vector_to_json(my_embedding) from my_table where rowid = 1234&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;vector at rowid 1234: </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+<span class="c1"># Find 10 approximate nearest neighbors of data[0] and there distances from data[0].</span>
+<span class="c1"># knn_search() is used to tell vectorlite to do a vector search.</span>
+<span class="c1"># knn_param(V, K, ef) is used to pass the query vector V, the number of nearest neighbors K to find and an optional ef parameter to tune the performance of the search.</span>
+<span class="c1"># If ef is not specified, ef defaults to 10. For more info on ef, please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s1">&#39;select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10))&#39;</span><span class="p">,</span> <span class="p">[</span><span class="n">data</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()])</span><span class="o">.</span><span class="n">fetchall</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;10 nearest neighbors of row 0 is </span><span class="si">{</span><span class="n">result</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+<span class="c1"># Find 10 approximate nearest neighbors of the first embedding in vectors with rowid within [1000, 2000) using metadata(rowid) filtering.</span>
+<span class="n">rowids</span> <span class="o">=</span> <span class="s1">&#39;,&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="nb">str</span><span class="p">(</span><span class="n">rowid</span><span class="p">)</span> <span class="k">for</span> <span class="n">rowid</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">2000</span><span class="p">)])</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10)) and rowid in (</span><span class="si">{</span><span class="n">rowids</span><span class="si">}</span><span class="s1">)&#39;</span><span class="p">,</span> <span class="p">[</span><span class="n">data</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()])</span><span class="o">.</span><span class="n">fetchall</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;10 nearest neighbors of row 0 in vectors with rowid within [1000, 2000) is </span><span class="si">{</span><span class="n">result</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+<span class="n">conn</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+</pre></div>
+</div>
+<p>More examples can be found in <a class="reference external" href="https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples">examples</a> folder.</p>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="api.html" class="btn btn-neutral float-left" title="API reference" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="news.html" class="btn btn-neutral float-right" title="News" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright vectorlite contributors.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

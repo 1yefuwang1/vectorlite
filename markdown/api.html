@@ -1,0 +1,178 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API reference &mdash; vectorlite 0.2.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Getting started" href="getting-started.html" />
+    <link rel="prev" title="Overview of vectorlite" href="overview.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            vectorlite
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview of vectorlite</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">API reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#free-standing-application-defined-sql-functions">Free-standing Application Defined SQL functions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#virtual-table">Virtual Table</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="getting-started.html">Getting started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="news.html">News</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">vectorlite</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">API reference</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/markdown/api.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="api-reference">
+<h1>API reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h1>
+<p>Vectorlite provides the following APIs.
+Please note vectorlite is currently in beta. There could be breaking changes.</p>
+<section id="free-standing-application-defined-sql-functions">
+<h2>Free-standing Application Defined SQL functions<a class="headerlink" href="#free-standing-application-defined-sql-functions" title="Link to this heading"></a></h2>
+<p>The following functions can be used in any context.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">vectorlite_info</span><span class="p">()</span><span class="w"> </span><span class="c1">-- prints version info and the best SIMD target chosen by Highway at runtime.</span>
+<span class="n">vector_from_json</span><span class="p">(</span><span class="n">json_string</span><span class="p">)</span><span class="w"> </span><span class="c1">-- converts a json array of type TEXT into BLOB(a c-style float32 array)</span>
+<span class="n">vector_to_json</span><span class="p">(</span><span class="n">vector_blob</span><span class="p">)</span><span class="w"> </span><span class="c1">-- converts a vector of type BLOB(c-style float32 array) into a json array of type TEXT</span>
+<span class="n">vector_distance</span><span class="p">(</span><span class="n">vector_blob1</span><span class="p">,</span><span class="w"> </span><span class="n">vector_blob2</span><span class="p">,</span><span class="w"> </span><span class="n">distance_type_str</span><span class="p">)</span><span class="w"> </span><span class="c1">-- calculate vector distance between two vectors, distance_type_str could be &#39;l2&#39;, &#39;cosine&#39;, &#39;ip&#39; </span>
+</pre></div>
+</div>
+<p>In fact, one can easily implement brute force searching using <code class="docutils literal notranslate"><span class="pre">vector_distance</span></code>, which returns 100% accurate search results:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- use a normal sqlite table</span>
+<span class="k">create</span><span class="w"> </span><span class="k">table</span><span class="w"> </span><span class="n">my_table</span><span class="p">(</span><span class="n">rowid</span><span class="w"> </span><span class="nb">integer</span><span class="w"> </span><span class="k">primary</span><span class="w"> </span><span class="k">key</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="w"> </span><span class="nb">blob</span><span class="p">);</span>
+
+<span class="c1">-- insert </span>
+<span class="k">insert</span><span class="w"> </span><span class="k">into</span><span class="w"> </span><span class="n">my_table</span><span class="p">(</span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="p">)</span><span class="w"> </span><span class="k">values</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">your_embedding</span><span class="err">}</span><span class="p">);</span>
+<span class="c1">-- search for 10 nearest neighbors using l2 squared distance</span>
+<span class="k">select</span><span class="w"> </span><span class="n">rowid</span><span class="w"> </span><span class="k">from</span><span class="w"> </span><span class="n">my_table</span><span class="w"> </span><span class="k">order</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="n">vector_distance</span><span class="p">(</span><span class="err">{</span><span class="n">query_vector</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;l2&#39;</span><span class="p">)</span><span class="w"> </span><span class="k">asc</span><span class="w"> </span><span class="k">limit</span><span class="w"> </span><span class="mi">10</span>
+</pre></div>
+</div>
+</section>
+<section id="virtual-table">
+<h2>Virtual Table<a class="headerlink" href="#virtual-table" title="Link to this heading"></a></h2>
+<p>The core of vectorlite is the <a class="reference external" href="https://www.sqlite.org/vtab.html">virtual table</a> module, which is used to hold vector index and way faster than brute force approach at the cost of not being 100% accurate.
+A vectorlite table can be created using:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Required fields: table_name, vector_name, dimension, max_elements</span>
+<span class="c1">-- Optional fields:</span>
+<span class="c1">-- 1. distance_type: defaults to l2</span>
+<span class="c1">-- 2. ef_construction: defaults to 200</span>
+<span class="c1">-- 3. M: defaults to 16</span>
+<span class="c1">-- 4. random_seed: defaults to 100</span>
+<span class="c1">-- 5. allow_replace_deleted: defaults to true</span>
+<span class="c1">-- 6. index_file_path: no default value. If not provided, the table will be memory-only. If provided, vectorlite will try to load index from the file and save to it when db connection is closed.</span>
+<span class="k">create</span><span class="w"> </span><span class="n">virtual</span><span class="w"> </span><span class="k">table</span><span class="w"> </span><span class="err">{</span><span class="k">table_name</span><span class="err">}</span><span class="w"> </span><span class="k">using</span><span class="w"> </span><span class="n">vectorlite</span><span class="p">(</span><span class="err">{</span><span class="n">vector_name</span><span class="err">}</span><span class="w"> </span><span class="n">float32</span><span class="p">[</span><span class="err">{</span><span class="n">dimension</span><span class="err">}</span><span class="p">]</span><span class="w"> </span><span class="err">{</span><span class="n">distance_type</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="n">hnsw</span><span class="p">(</span><span class="n">max_elements</span><span class="o">=</span><span class="err">{</span><span class="n">max_elements</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">ef_construction</span><span class="o">=</span><span class="mi">200</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">M</span><span class="o">=</span><span class="mi">16</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">random_seed</span><span class="o">=</span><span class="mi">100</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">allow_replace_deleted</span><span class="o">=</span><span class="k">true</span><span class="err">}</span><span class="p">),</span><span class="w"> </span><span class="err">{</span><span class="n">index_file_path</span><span class="err">}</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>You can insert, update and delete a vectorlite table as if it’s a normal sqlite table.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- rowid is required during insertion, because rowid is used to connect the vector to its metadata stored elsewhere. Auto-generating rowid doesn&#39;t makes sense.</span>
+<span class="k">insert</span><span class="w"> </span><span class="k">into</span><span class="w"> </span><span class="n">my_vectorlite_table</span><span class="p">(</span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">vector_name</span><span class="p">)</span><span class="w"> </span><span class="k">values</span><span class="w"> </span><span class="p">(</span><span class="err">{</span><span class="n">your_rowid</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">vector_blob</span><span class="err">}</span><span class="p">);</span>
+<span class="c1">-- Note: update and delete statements that uses rowid filter require sqlite3_version &gt;= 3.38 to run.  </span>
+<span class="k">update</span><span class="w"> </span><span class="n">my_vectorlite_table</span><span class="w"> </span><span class="k">set</span><span class="w"> </span><span class="n">vector_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">{</span><span class="n">new_vector_blob</span><span class="err">}</span><span class="w"> </span><span class="k">where</span><span class="w"> </span><span class="n">rowid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">{</span><span class="n">your_rowid</span><span class="err">}</span><span class="p">;</span>
+<span class="k">delete</span><span class="w"> </span><span class="k">from</span><span class="w"> </span><span class="n">my_vectorlite_table</span><span class="w"> </span><span class="k">where</span><span class="w"> </span><span class="n">rowid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="err">{</span><span class="n">your_rowid</span><span class="err">}</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The following functions should be only used when querying a vectorlite table</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- returns knn_parameter that will be passed to knn_search(). </span>
+<span class="c1">-- vector_blob: vector to search</span>
+<span class="c1">-- k: how many nearest neighbors to search for</span>
+<span class="c1">-- ef: optional. A HNSW parameter that controls speed-accuracy trade-off. Defaults to 10 at first. If set to another value x, it will remain x if not specified again in another query within a single db connection.</span>
+<span class="n">knn_param</span><span class="p">(</span><span class="n">vector_blob</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="p">,</span><span class="w"> </span><span class="n">ef</span><span class="p">)</span>
+<span class="c1">-- Should only be used in the `where clause` in a `select` statement to tell vectorlite to speed up the query using HNSW index</span>
+<span class="c1">-- vector_name should match the vectorlite table&#39;s definition</span>
+<span class="c1">-- knn_parameter is usually constructed using knn_param()</span>
+<span class="n">knn_search</span><span class="p">(</span><span class="n">vector_name</span><span class="p">,</span><span class="w"> </span><span class="n">knn_parameter</span><span class="p">)</span>
+<span class="c1">-- An example of vector search query. `distance` is an implicit column of a vectorlite table.</span>
+<span class="k">select</span><span class="w"> </span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="k">from</span><span class="w"> </span><span class="n">my_vectorlite_table</span><span class="w"> </span><span class="k">where</span><span class="w"> </span><span class="n">knn_search</span><span class="p">(</span><span class="n">vector_name</span><span class="p">,</span><span class="w"> </span><span class="n">knn_param</span><span class="p">(</span><span class="err">{</span><span class="n">vector_blob</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">k</span><span class="err">}</span><span class="p">))</span>
+<span class="c1">-- An example of vector search query with pushed-down metadata(rowid) filter, requires sqlite_version &gt;= 3.38 to run.</span>
+<span class="k">select</span><span class="w"> </span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">distance</span><span class="w"> </span><span class="k">from</span><span class="w"> </span><span class="n">my_vectorlite_table</span><span class="w"> </span><span class="k">where</span><span class="w"> </span><span class="n">knn_search</span><span class="p">(</span><span class="n">vector_name</span><span class="p">,</span><span class="w"> </span><span class="n">knn_param</span><span class="p">(</span><span class="err">{</span><span class="n">vector_blob</span><span class="err">}</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="n">k</span><span class="err">}</span><span class="p">))</span><span class="w"> </span><span class="k">and</span><span class="w"> </span><span class="n">rowid</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="overview.html" class="btn btn-neutral float-left" title="Overview of vectorlite" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="getting-started.html" class="btn btn-neutral float-right" title="Getting started" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright vectorlite contributors.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
