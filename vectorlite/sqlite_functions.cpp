@@ -6,7 +6,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "util.h"
+#include "ops/ops.h"
 #include "vector.h"
 #include "vector_space.h"
 #include "vectorlite/version.h"
@@ -17,10 +17,11 @@ extern const sqlite3_api_routines *sqlite3_api;
 namespace vectorlite {
 
 void ShowInfo(sqlite3_context *ctx, int, sqlite3_value **) {
-  auto simd = vectorlite::DetectSIMD().value_or("SIMD not enabled");
+  const char *best_target = vectorlite::ops::GetBestTarget();
   std::string info =
-      absl::StrFormat("vectorlite extension version %s, built with %s",
-                      VECTORLITE_VERSION, simd);
+      absl::StrFormat("vectorlite extension version %s. "
+                      "Best SIMD target in use: %s",
+                      VECTORLITE_VERSION, best_target);
   DLOG(INFO) << "ShowInfo called: " << info;
   sqlite3_result_text(ctx, info.c_str(), -1, SQLITE_TRANSIENT);
 }

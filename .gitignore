@@ -44,4 +44,5 @@ dist/*
 *egg-info
 
 node_modules
-bindings/nodejs/vectorlite/package-lock.json_codeql_detected_source_root
+bindings/nodejs/vectorlite/package-lock.json
+_codeql_detected_source_root

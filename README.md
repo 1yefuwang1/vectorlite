@@ -56,7 +56,7 @@ Please note vectorlite is currently in beta. There could be breaking changes.
 ### Free-standing Application Defined SQL functions
 The following functions can be used in any context.
 ``` sql
-vectorlite_info() -- prints version info and some compile time info. e.g. Is SSE, AVX enabled.
+vectorlite_info() -- prints version info and the best SIMD target chosen by Highway at runtime.
 vector_from_json(json_string) -- converts a json array of type TEXT into BLOB(a c-style float32 array)
 vector_to_json(vector_blob) -- converts a vector of type BLOB(c-style float32 array) into a json array of type TEXT
 vector_distance(vector_blob1, vector_blob2, distance_type_str) -- calculate vector distance between two vectors, distance_type_str could be 'l2', 'cosine', 'ip' 

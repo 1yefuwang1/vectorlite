@@ -966,6 +966,14 @@ HWY_DLLEXPORT std::vector<const char*> GetSupportedTargets() {
   return target_names;
 }
 
+HWY_DLLEXPORT const char* GetBestTarget() {
+  std::vector<int64_t> targets = hwy::SupportedAndGeneratedTargets();
+  if (targets.empty()) {
+    return "Unknown";
+  }
+  return hwy::TargetName(targets[0]);
+}
+
 HWY_DLLEXPORT void QuantizeF32ToF16(const float* HWY_RESTRICT in,
                                     hwy::float16_t* HWY_RESTRICT out,
                                     size_t num_elements) {
