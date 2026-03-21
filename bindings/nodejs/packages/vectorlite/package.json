@@ -3,14 +3,20 @@
   "version": "0.2.0",
   "homepage": "https://github.com/1yefuwang1/vectorlite",
   "main": "src/index.js",
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "scripts": {
     "test": "node test/test.js"
   },
   "author": "1yefuwang1@gmail.com",
   "license": "Apache-2.0",
   "description": "A fast and tunable vector search extension for SQLite",
-  "keywords": ["sqlite3", "vector database", "vectordb"],
+  "keywords": [
+    "sqlite3",
+    "vector database",
+    "vectordb"
+  ],
   "devDependencies": {
     "better-sqlite3": "^11.1.2"
   },
