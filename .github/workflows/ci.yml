@@ -72,6 +72,13 @@ jobs:
           git submodule update --init --recursive
           python bootstrap_vcpkg.py
 
+      - name: Run C++ unit tests
+        shell: bash
+        run: |
+          cmake --preset release
+          cmake --build build/release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          ctest --test-dir build/release/vectorlite --output-on-failure
+
       # Build wheels using cibuildwheel
       # The build system uses scikit-build-core (configured in pyproject.toml)
       # which handles CMake integration and wheel packaging
