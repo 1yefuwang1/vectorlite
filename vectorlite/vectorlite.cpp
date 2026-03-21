@@ -31,7 +31,7 @@ static sqlite3_module vector_search_module = {
     /* xSavepoint  */ 0,
     /* xRelease    */ 0,
     /* xRollbackTo */ 0,
-    /* xShadowName */ 0};
+    /* xShadowName */ VirtualTable::ShadowName};
 
 #ifdef __cplusplus
 extern "C" {
