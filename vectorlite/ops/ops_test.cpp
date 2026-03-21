@@ -109,9 +109,9 @@ TEST(InnerProduct_F16, ShouldWorkWithRandomVectors) {
         for (int k = 0; k < size; ++k) {
           expected += hwy::F32FromF16(hwy::F16FromF32(v1[k])) * hwy::F32FromF16(hwy::F16FromF32(v2[k]));
         }
-        // F16 SIMD accumulation order differs from scalar, causing larger
-        // rounding errors that grow with dimension.
-        EXPECT_NEAR(ip, expected, 5e-2) << " dim = " << dim;
+        // F16 SIMD accumulation order differs from scalar. Error grows
+        // with number of accumulated terms, not result magnitude.
+        EXPECT_NEAR(ip, expected, size * 5e-4f) << " dim = " << dim;
       }
     }
   }
@@ -222,9 +222,9 @@ TEST(L2DistanceSquared_F16, ShouldWorkWithRandomVectors) {
           float diff = hwy::F32FromF16(v1_f16[k]) - hwy::F32FromF16(v2_f16[k]);
           expected += diff * diff;
         }
-        // F16 SIMD accumulation order differs from scalar, causing larger
-        // rounding errors that grow with dimension and result magnitude.
-        EXPECT_NEAR(result, expected, 1e-1);
+        // F16 SIMD accumulation order differs from scalar. Error grows
+        // with number of accumulated terms.
+        EXPECT_NEAR(result, expected, dim * 1.5e-3f);
       }
     }
   }
