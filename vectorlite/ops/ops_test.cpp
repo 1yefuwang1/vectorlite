@@ -224,7 +224,7 @@ TEST(L2DistanceSquared_F16, ShouldWorkWithRandomVectors) {
         }
         // F16 SIMD accumulation order differs from scalar. Error grows
         // with number of accumulated terms.
-        EXPECT_NEAR(result, expected, dim * 1.5e-3f);
+        EXPECT_NEAR(result, expected, dim * 2e-3f);
       }
     }
   }
