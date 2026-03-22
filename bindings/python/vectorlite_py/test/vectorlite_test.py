@@ -178,4 +178,164 @@ def test_index_file(random_vectors):
                 assert not os.path.exists(remove_quote(index_file_path))
                 conn.close()
 
-                
+
+def get_file_connection(db_path):
+    conn = apsw.Connection(db_path)
+    conn.enable_load_extension(True)
+    conn.load_extension(vectorlite_py.vectorlite_path())
+    return conn
+
+
+def test_shadow_table_basic(random_vectors):
+    """Test basic shadow table flow: insert, disconnect, reconnect, query."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'test.db')
+
+        # Create table and insert vectors (no file path = shadow table mode).
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(f'create virtual table sv using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+
+        for i in range(NUM_ELEMENTS):
+            cur.execute('insert into sv (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        # Verify search works before disconnect.
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+
+        conn.close()
+
+        # Reconnect: should load from shadow table + replay WAL.
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+
+        # Verify exact vector retrieval.
+        result = cur.execute('select my_embedding from sv where rowid = 0').fetchone()
+        assert result[0] == random_vectors[0].tobytes()
+
+        conn.close()
+
+
+def test_shadow_table_compact(random_vectors):
+    """Test that compact serializes index and clears WAL."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'test.db')
+
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(f'create virtual table sv using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+
+        for i in range(100):
+            cur.execute('insert into sv (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        # Compact.
+        cur.execute("insert into sv(command) values('compact')")
+
+        # WAL should be empty after compact.
+        wal_count = cur.execute('select count(*) from sv_wal').fetchone()[0]
+        assert wal_count == 0
+
+        # Index table should have data.
+        index_count = cur.execute('select count(*) from sv_index').fetchone()[0]
+        assert index_count > 0
+
+        # Search should still work.
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+
+        conn.close()
+
+        # Reconnect after compact: should load from snapshot (no WAL replay needed).
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+        conn.close()
+
+
+def test_shadow_table_rebuild(random_vectors):
+    """Test that rebuild removes deleted vectors and produces a clean index."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'test.db')
+
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(f'create virtual table sv using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+
+        for i in range(100):
+            cur.execute('insert into sv (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        # Delete some vectors.
+        for i in range(50):
+            cur.execute('delete from sv where rowid = ?', (i,))
+
+        # Rebuild: should remove deleted vectors entirely.
+        cur.execute("insert into sv(command) values('rebuild')")
+
+        # WAL should be empty.
+        wal_count = cur.execute('select count(*) from sv_wal').fetchone()[0]
+        assert wal_count == 0
+
+        # Deleted vectors should not be searchable.
+        result = cur.execute('select my_embedding from sv where rowid = 0').fetchone()
+        assert result is None
+
+        # Remaining vectors should be searchable.
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[50].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+        assert all(r[0] >= 50 for r in result)
+
+        conn.close()
+
+
+def test_shadow_table_delete_reconnect(random_vectors):
+    """Test that deletes persist across reconnect via WAL."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'test.db')
+
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(f'create virtual table sv using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+
+        for i in range(100):
+            cur.execute('insert into sv (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        cur.execute('delete from sv where rowid = 0')
+        conn.close()
+
+        # Reconnect: delete should be replayed from WAL.
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        result = cur.execute('select my_embedding from sv where rowid = 0').fetchone()
+        assert result is None
+
+        # Other vectors should still work.
+        result = cur.execute('select rowid, distance from sv where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[1].tobytes(), 10)).fetchall()
+        assert len(result) == 10
+
+        conn.close()
+
+
+def test_shadow_table_drop(random_vectors):
+    """Test that DROP TABLE removes shadow tables."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'test.db')
+
+        conn = get_file_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(f'create virtual table sv using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+
+        for i in range(10):
+            cur.execute('insert into sv (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        cur.execute('drop table sv')
+
+        # Shadow tables should be gone.
+        tables = cur.execute("select name from sqlite_master where type='table'").fetchall()
+        table_names = [t[0] for t in tables]
+        assert 'sv_index' not in table_names
+        assert 'sv_wal' not in table_names
+
+        conn.close()

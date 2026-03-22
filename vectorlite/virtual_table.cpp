@@ -2,11 +2,14 @@
 
 #include <sqlite3.h>
 
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -34,6 +37,7 @@ namespace vectorlite {
 enum ColumnIndexInTable {
   kColumnIndexVector,
   kColumnIndexDistance,
+  kColumnIndexCommand,
 };
 
 enum IndexConstraintUsage {
@@ -59,7 +63,7 @@ static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
 }
 
 // Shared by Create and Connect
-static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
+static int InitVirtualTable(bool is_create, sqlite3* db, void* pAux,
                             int argc, const char* const* argv,
                             sqlite3_vtab** ppVTab, char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
@@ -122,26 +126,27 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
     }
   }
 
-  std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
-                                    vector_space->vector_name);
+  std::string sql = absl::StrFormat(
+      "CREATE TABLE X(%s, distance REAL hidden, command TEXT hidden)",
+      vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
   DLOG(INFO) << "vtab declared: " << sql.c_str() << ", rc=" << rc;
   if (rc != SQLITE_OK) {
     return rc;
   }
 
+  std::string table_name(argv[2]);
+
   try {
     auto vtab = new VirtualTable(std::move(*vector_space), *index_options,
-                                 index_file_path);
+                                 index_file_path, db, table_name);
     *ppVTab = vtab;
 
-    if (load_from_file) {
-      auto status = vtab->LoadIndexFromFile();
-      if (!status.ok()) {
-        *pzErr = sqlite3_mprintf("Failed to load index from file: %s",
-                                 absl::StatusMessageAsCStr(status));
-        return SQLITE_ERROR;
-      }
+    auto status = vtab->InitStorage(is_create);
+    if (!status.ok()) {
+      *pzErr = sqlite3_mprintf("Failed to initialize storage: %s",
+                               absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
     }
 
   } catch (const std::exception& ex) {
@@ -191,6 +196,512 @@ absl::Status VirtualTable::SaveIndexToFile() {
   return absl::OkStatus();
 }
 
+// Maximum BLOB chunk size for shadow table storage (256 MB).
+static constexpr size_t kMaxChunkSize = 256 * 1024 * 1024;
+
+std::string VirtualTable::IndexTableName() const {
+  return table_name_ + "_index";
+}
+
+std::string VirtualTable::WalTableName() const {
+  return table_name_ + "_wal";
+}
+
+int VirtualTable::ShadowName(const char* name) {
+  if (std::strcmp(name, "index") == 0 || std::strcmp(name, "wal") == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+absl::Status VirtualTable::CreateShadowTables() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+  std::string sql = absl::StrFormat(
+      "CREATE TABLE IF NOT EXISTS \"%s\"(chunk_id INTEGER PRIMARY KEY, data "
+      "BLOB NOT NULL)",
+      IndexTableName());
+  char* err_msg = nullptr;
+  int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to create index shadow table: ", err));
+  }
+
+  sql = absl::StrFormat(
+      "CREATE TABLE IF NOT EXISTS \"%s\"(seq INTEGER PRIMARY KEY "
+      "AUTOINCREMENT, op INTEGER NOT NULL, label INTEGER NOT NULL, vector BLOB)",
+      WalTableName());
+  rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to create WAL shadow table: ", err));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::DropShadowTables() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+  std::string sql =
+      absl::StrFormat("DROP TABLE IF EXISTS \"%s\"", IndexTableName());
+  char* err_msg = nullptr;
+  int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to drop index shadow table: ", err));
+  }
+
+  sql = absl::StrFormat("DROP TABLE IF EXISTS \"%s\"", WalTableName());
+  rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to drop WAL shadow table: ", err));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::string> VirtualTable::SerializeIndex() const {
+  VECTORLITE_ASSERT(index_ != nullptr);
+  const auto& idx = *index_;
+
+  std::ostringstream output(std::ios::binary);
+  hnswlib::writeBinaryPOD(output, idx.offsetLevel0_);
+  hnswlib::writeBinaryPOD(output, idx.max_elements_);
+  hnswlib::writeBinaryPOD(output, idx.cur_element_count);
+  hnswlib::writeBinaryPOD(output, idx.size_data_per_element_);
+  hnswlib::writeBinaryPOD(output, idx.label_offset_);
+  hnswlib::writeBinaryPOD(output, idx.offsetData_);
+  hnswlib::writeBinaryPOD(output, idx.maxlevel_);
+  hnswlib::writeBinaryPOD(output, idx.enterpoint_node_);
+  hnswlib::writeBinaryPOD(output, idx.maxM_);
+  hnswlib::writeBinaryPOD(output, idx.maxM0_);
+  hnswlib::writeBinaryPOD(output, idx.M_);
+  hnswlib::writeBinaryPOD(output, idx.mult_);
+  hnswlib::writeBinaryPOD(output, idx.ef_construction_);
+
+  size_t count = idx.cur_element_count;
+  output.write(idx.data_level0_memory_,
+               count * idx.size_data_per_element_);
+
+  for (size_t i = 0; i < count; i++) {
+    unsigned int link_list_size =
+        idx.element_levels_[i] > 0
+            ? idx.size_links_per_element_ * idx.element_levels_[i]
+            : 0;
+    hnswlib::writeBinaryPOD(output, link_list_size);
+    if (link_list_size > 0) {
+      output.write(idx.linkLists_[i], link_list_size);
+    }
+  }
+
+  if (!output.good()) {
+    return absl::InternalError("Failed to serialize index to buffer");
+  }
+
+  return output.str();
+}
+
+absl::Status VirtualTable::DeserializeIndex(const std::string& data) {
+  VECTORLITE_ASSERT(index_ != nullptr);
+
+  std::istringstream input(data, std::ios::binary);
+  auto& idx = *index_;
+
+  idx.clear();
+
+  hnswlib::readBinaryPOD(input, idx.offsetLevel0_);
+  hnswlib::readBinaryPOD(input, idx.max_elements_);
+  hnswlib::readBinaryPOD(input, idx.cur_element_count);
+
+  size_t max_elements = idx.max_elements_;
+  if (max_elements < idx.cur_element_count) {
+    max_elements = idx.cur_element_count;
+  }
+  idx.max_elements_ = max_elements;
+
+  hnswlib::readBinaryPOD(input, idx.size_data_per_element_);
+  hnswlib::readBinaryPOD(input, idx.label_offset_);
+  hnswlib::readBinaryPOD(input, idx.offsetData_);
+  hnswlib::readBinaryPOD(input, idx.maxlevel_);
+  hnswlib::readBinaryPOD(input, idx.enterpoint_node_);
+  hnswlib::readBinaryPOD(input, idx.maxM_);
+  hnswlib::readBinaryPOD(input, idx.maxM0_);
+  hnswlib::readBinaryPOD(input, idx.M_);
+  hnswlib::readBinaryPOD(input, idx.mult_);
+  hnswlib::readBinaryPOD(input, idx.ef_construction_);
+
+  idx.data_size_ = space_.space->get_data_size();
+  idx.fstdistfunc_ = space_.space->get_dist_func();
+  idx.dist_func_param_ = space_.space->get_dist_func_param();
+
+  idx.data_level0_memory_ =
+      (char*)malloc(max_elements * idx.size_data_per_element_);
+  if (idx.data_level0_memory_ == nullptr) {
+    return absl::ResourceExhaustedError(
+        "Not enough memory to allocate level0 data");
+  }
+  input.read(idx.data_level0_memory_,
+             idx.cur_element_count * idx.size_data_per_element_);
+
+  idx.size_links_per_element_ =
+      idx.maxM_ * sizeof(hnswlib::tableint) + sizeof(hnswlib::linklistsizeint);
+  idx.size_links_level0_ =
+      idx.maxM0_ * sizeof(hnswlib::tableint) + sizeof(hnswlib::linklistsizeint);
+
+  std::vector<std::mutex>(max_elements).swap(idx.link_list_locks_);
+  std::vector<std::mutex>(hnswlib::HierarchicalNSW<float>::MAX_LABEL_OPERATION_LOCKS)
+      .swap(idx.label_op_locks_);
+  idx.visited_list_pool_.reset(
+      new hnswlib::VisitedListPool(1, max_elements));
+
+  idx.linkLists_ = (char**)malloc(sizeof(void*) * max_elements);
+  if (idx.linkLists_ == nullptr) {
+    return absl::ResourceExhaustedError(
+        "Not enough memory to allocate linklists");
+  }
+  idx.element_levels_ = std::vector<int>(max_elements);
+  idx.revSize_ = 1.0 / idx.mult_;
+  idx.ef_ = 10;
+
+  for (size_t i = 0; i < idx.cur_element_count; i++) {
+    idx.label_lookup_[idx.getExternalLabel(i)] = i;
+    unsigned int link_list_size;
+    hnswlib::readBinaryPOD(input, link_list_size);
+    if (link_list_size == 0) {
+      idx.element_levels_[i] = 0;
+      idx.linkLists_[i] = nullptr;
+    } else {
+      idx.element_levels_[i] =
+          link_list_size / idx.size_links_per_element_;
+      idx.linkLists_[i] = (char*)malloc(link_list_size);
+      if (idx.linkLists_[i] == nullptr) {
+        return absl::ResourceExhaustedError(
+            "Not enough memory to allocate linklist");
+      }
+      input.read(idx.linkLists_[i], link_list_size);
+    }
+  }
+
+  for (size_t i = 0; i < idx.cur_element_count; i++) {
+    if (idx.isMarkedDeleted(i)) {
+      idx.num_deleted_ += 1;
+      if (idx.allow_replace_deleted_) {
+        idx.deleted_elements.insert(i);
+      }
+    }
+  }
+
+  if (!input.good()) {
+    return absl::DataLossError("Failed to deserialize index from buffer");
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::SaveIndexToShadowTable() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+
+  auto serialized = SerializeIndex();
+  if (!serialized.ok()) {
+    return serialized.status();
+  }
+
+  const std::string& buf = *serialized;
+
+  // Delete existing chunks.
+  std::string sql =
+      absl::StrFormat("DELETE FROM \"%s\"", IndexTableName());
+  char* err_msg = nullptr;
+  int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to clear index table: ", err));
+  }
+
+  // Insert chunks.
+  sql = absl::StrFormat(
+      "INSERT INTO \"%s\"(chunk_id, data) VALUES(?, ?)", IndexTableName());
+  sqlite3_stmt* stmt = nullptr;
+  rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return absl::InternalError(absl::StrCat(
+        "Failed to prepare insert for index table: ", sqlite3_errmsg(db_)));
+  }
+
+  size_t offset = 0;
+  int chunk_id = 0;
+  while (offset < buf.size()) {
+    size_t chunk_size = std::min(kMaxChunkSize, buf.size() - offset);
+
+    sqlite3_bind_int(stmt, 1, chunk_id);
+    sqlite3_bind_blob(stmt, 2, buf.data() + offset,
+                      static_cast<int>(chunk_size), SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+      sqlite3_finalize(stmt);
+      return absl::InternalError(absl::StrCat(
+          "Failed to insert index chunk: ", sqlite3_errmsg(db_)));
+    }
+    sqlite3_reset(stmt);
+
+    offset += chunk_size;
+    chunk_id++;
+  }
+
+  sqlite3_finalize(stmt);
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::LoadIndexFromShadowTable() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+
+  std::string sql = absl::StrFormat(
+      "SELECT data FROM \"%s\" ORDER BY chunk_id", IndexTableName());
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return absl::InternalError(absl::StrCat(
+        "Failed to prepare select for index table: ", sqlite3_errmsg(db_)));
+  }
+
+  std::string buf;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const void* blob = sqlite3_column_blob(stmt, 0);
+    int blob_size = sqlite3_column_bytes(stmt, 0);
+    if (blob != nullptr && blob_size > 0) {
+      buf.append(static_cast<const char*>(blob), blob_size);
+    }
+  }
+
+  sqlite3_finalize(stmt);
+
+  if (rc != SQLITE_DONE) {
+    return absl::InternalError(absl::StrCat(
+        "Failed to read index chunks: ", sqlite3_errmsg(db_)));
+  }
+
+  if (buf.empty()) {
+    // No saved index — start with empty index.
+    return absl::OkStatus();
+  }
+
+  return DeserializeIndex(buf);
+}
+
+absl::Status VirtualTable::AppendToWal(int op, hnswlib::labeltype label,
+                                       const void* data, size_t data_size) {
+  VECTORLITE_ASSERT(db_ != nullptr);
+
+  // Lazily prepare the statement.
+  if (wal_insert_stmt_ == nullptr) {
+    std::string sql = absl::StrFormat(
+        "INSERT INTO \"%s\"(op, label, vector) VALUES(?, ?, ?)",
+        WalTableName());
+    int rc =
+        sqlite3_prepare_v2(db_, sql.c_str(), -1, &wal_insert_stmt_, nullptr);
+    if (rc != SQLITE_OK) {
+      return absl::InternalError(absl::StrCat(
+          "Failed to prepare WAL insert: ", sqlite3_errmsg(db_)));
+    }
+  }
+
+  sqlite3_bind_int(wal_insert_stmt_, 1, op);
+  sqlite3_bind_int64(wal_insert_stmt_, 2, static_cast<sqlite3_int64>(label));
+  if (data != nullptr && data_size > 0) {
+    sqlite3_bind_blob(wal_insert_stmt_, 3, data,
+                      static_cast<int>(data_size), SQLITE_STATIC);
+  } else {
+    sqlite3_bind_null(wal_insert_stmt_, 3);
+  }
+
+  int rc = sqlite3_step(wal_insert_stmt_);
+  sqlite3_reset(wal_insert_stmt_);
+
+  if (rc != SQLITE_DONE) {
+    return absl::InternalError(
+        absl::StrCat("Failed to append to WAL: ", sqlite3_errmsg(db_)));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::ReplayWal() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+  VECTORLITE_ASSERT(index_ != nullptr);
+
+  std::string sql = absl::StrFormat(
+      "SELECT op, label, vector FROM \"%s\" ORDER BY seq", WalTableName());
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return absl::InternalError(absl::StrCat(
+        "Failed to prepare WAL replay: ", sqlite3_errmsg(db_)));
+  }
+
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    int op = sqlite3_column_int(stmt, 0);
+    hnswlib::labeltype label =
+        static_cast<hnswlib::labeltype>(sqlite3_column_int64(stmt, 1));
+
+    if (op == 0) {
+      // INSERT_OR_UPDATE
+      const void* vec_data = sqlite3_column_blob(stmt, 2);
+      if (vec_data == nullptr) {
+        sqlite3_finalize(stmt);
+        return absl::DataLossError("WAL INSERT entry has NULL vector");
+      }
+      try {
+        index_->addPoint(vec_data, label, index_->allow_replace_deleted_);
+      } catch (const std::exception& ex) {
+        sqlite3_finalize(stmt);
+        return absl::InternalError(
+            absl::StrCat("WAL replay addPoint failed: ", ex.what()));
+      }
+    } else if (op == 1) {
+      // DELETE
+      try {
+        index_->markDelete(label);
+      } catch (const std::exception& ex) {
+        sqlite3_finalize(stmt);
+        return absl::InternalError(
+            absl::StrCat("WAL replay markDelete failed: ", ex.what()));
+      }
+    } else {
+      sqlite3_finalize(stmt);
+      return absl::DataLossError(
+          absl::StrFormat("Unknown WAL op: %d", op));
+    }
+  }
+
+  sqlite3_finalize(stmt);
+
+  if (rc != SQLITE_DONE) {
+    return absl::InternalError(absl::StrCat(
+        "Failed to replay WAL: ", sqlite3_errmsg(db_)));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::Compact() {
+  VECTORLITE_ASSERT(db_ != nullptr);
+
+  auto status = SaveIndexToShadowTable();
+  if (!status.ok()) {
+    return status;
+  }
+
+  std::string sql =
+      absl::StrFormat("DELETE FROM \"%s\"", WalTableName());
+  char* err_msg = nullptr;
+  int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    std::string err = err_msg ? err_msg : "unknown error";
+    sqlite3_free(err_msg);
+    return absl::InternalError(
+        absl::StrCat("Failed to clear WAL: ", err));
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status VirtualTable::Rebuild() {
+  VECTORLITE_ASSERT(index_ != nullptr);
+
+  // Collect all non-deleted vectors.
+  struct VectorEntry {
+    hnswlib::labeltype label;
+    std::vector<char> data;
+  };
+  std::vector<VectorEntry> entries;
+
+  size_t data_size = index_->data_size_;
+  for (size_t i = 0; i < index_->cur_element_count; i++) {
+    if (!index_->isMarkedDeleted(i)) {
+      VectorEntry entry;
+      entry.label = index_->getExternalLabel(i);
+      const char* ptr =
+          static_cast<const char*>(index_->getDataByInternalId(i));
+      entry.data.assign(ptr, ptr + data_size);
+      entries.push_back(std::move(entry));
+    }
+  }
+
+  // Create a new index with the same parameters.
+  size_t max_elements = std::max(entries.size(), index_options_.max_elements);
+  auto new_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
+      space_.space.get(), max_elements, index_options_.M,
+      index_options_.ef_construction, index_options_.random_seed,
+      index_options_.allow_replace_deleted);
+
+  // Re-insert all non-deleted vectors.
+  for (const auto& entry : entries) {
+    try {
+      new_index->addPoint(entry.data.data(), entry.label);
+    } catch (const std::exception& ex) {
+      return absl::InternalError(
+          absl::StrCat("Rebuild addPoint failed: ", ex.what()));
+    }
+  }
+
+  // Swap in the new index.
+  index_ = std::move(new_index);
+
+  // Compact: serialize and clear WAL.
+  return Compact();
+}
+
+int VirtualTable::ExecuteCommand(const char* command) {
+  if (std::strcmp(command, "compact") == 0) {
+    auto status = Compact();
+    if (!status.ok()) {
+      SetZErrMsg(&this->zErrMsg, "Compact failed: %s",
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
+    }
+    return SQLITE_OK;
+  } else if (std::strcmp(command, "rebuild") == 0) {
+    auto status = Rebuild();
+    if (!status.ok()) {
+      SetZErrMsg(&this->zErrMsg, "Rebuild failed: %s",
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
+    }
+    return SQLITE_OK;
+  } else {
+    SetZErrMsg(&this->zErrMsg, "Unknown command: %s", command);
+    return SQLITE_ERROR;
+  }
+}
+
+absl::Status VirtualTable::InitStorage(bool is_create) {
+  if (use_shadow_tables_) {
+    if (is_create) {
+      auto status = CreateShadowTables();
+      if (!status.ok()) return status;
+      return SaveIndexToShadowTable();
+    } else {
+      auto status = LoadIndexFromShadowTable();
+      if (!status.ok()) return status;
+      return ReplayWal();
+    }
+  } else {
+    return LoadIndexFromFile();
+  }
+}
+
 int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
                          const char* const* argv, sqlite3_vtab** ppVTab,
                          char** pzErr) {
@@ -198,6 +709,10 @@ int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
 }
 
 VirtualTable::~VirtualTable() {
+  if (wal_insert_stmt_) {
+    sqlite3_finalize(wal_insert_stmt_);
+    wal_insert_stmt_ = nullptr;
+  }
   if (zErrMsg) {
     sqlite3_free(zErrMsg);
   }
@@ -207,11 +722,20 @@ int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Destroy called";
   VECTORLITE_ASSERT(pVTab != nullptr);
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
-  auto status = vtab->DeleteIndexFile();
-  if (!status.ok()) {
-    SetZErrMsg(&vtab->zErrMsg, "Failed to delete index file: %s",
-               absl::StatusMessageAsCStr(status));
-    return SQLITE_ERROR;
+  if (vtab->use_shadow_tables_) {
+    auto status = vtab->DropShadowTables();
+    if (!status.ok()) {
+      SetZErrMsg(&vtab->zErrMsg, "Failed to drop shadow tables: %s",
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
+    }
+  } else {
+    auto status = vtab->DeleteIndexFile();
+    if (!status.ok()) {
+      SetZErrMsg(&vtab->zErrMsg, "Failed to delete index file: %s",
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
+    }
   }
   delete vtab;
   return SQLITE_OK;
@@ -220,19 +744,23 @@ int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
 int VirtualTable::Connect(sqlite3* db, void* pAux, int argc,
                           const char* const* argv, sqlite3_vtab** ppVTab,
                           char** pzErr) {
-  return InitVirtualTable(true, db, pAux, argc, argv, ppVTab, pzErr);
+  return InitVirtualTable(false, db, pAux, argc, argv, ppVTab, pzErr);
 }
 
 int VirtualTable::Disconnect(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Disconnect called";
   VECTORLITE_ASSERT(pVTab != nullptr);
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
-  auto status = vtab->SaveIndexToFile();
-  if (!status.ok()) {
-    SetZErrMsg(&vtab->zErrMsg, "Failed to save index to file: %s",
-               absl::StatusMessageAsCStr(status));
-    return SQLITE_ERROR;
+  if (!vtab->use_shadow_tables_) {
+    // File-based mode: save on disconnect.
+    auto status = vtab->SaveIndexToFile();
+    if (!status.ok()) {
+      SetZErrMsg(&vtab->zErrMsg, "Failed to save index to file: %s",
+                 absl::StatusMessageAsCStr(status));
+      return SQLITE_ERROR;
+    }
   }
+  // Shadow table mode: no save on disconnect. WAL persists.
   delete vtab;
   return SQLITE_OK;
 }
@@ -328,6 +856,9 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
       sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
       return SQLITE_NOTFOUND;
     }
+  } else if (kColumnIndexCommand == N) {
+    sqlite3_result_null(pCtx);
+    return SQLITE_OK;
   } else {
     std::string err = absl::StrFormat("Invalid column index: %d", N);
     sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
@@ -645,6 +1176,23 @@ int VirtualTable::InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid) {
                e.what());
     return SQLITE_ERROR;
   }
+
+  // Append to WAL if in shadow table mode.
+  if (use_shadow_tables_) {
+    // Read the processed vector data back from the index.
+    auto it = index_->label_lookup_.find(rowid);
+    if (it != index_->label_lookup_.end()) {
+      const void* stored_data = index_->getDataByInternalId(it->second);
+      auto status =
+          AppendToWal(0, rowid, stored_data, index_->data_size_);
+      if (!status.ok()) {
+        SetZErrMsg(&this->zErrMsg, "Failed to append to WAL: %s",
+                   absl::StatusMessageAsCStr(status));
+        return SQLITE_ERROR;
+      }
+    }
+  }
+
   return SQLITE_OK;
 }
 
@@ -653,7 +1201,17 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
   auto argv0_type = sqlite3_value_type(argv[0]);
   if (argc > 1 && argv0_type == SQLITE_NULL) {
-    // Insert with a new row
+    // Insert with a new row.
+
+    // Check for command-only insert: INSERT INTO vtab(command) VALUES('...')
+    // In this case, argv[2] (vector) is NULL and argv[4] (command) is TEXT.
+    if (argc > 4 && sqlite3_value_type(argv[2]) == SQLITE_NULL &&
+        sqlite3_value_type(argv[4]) == SQLITE_TEXT) {
+      const char* command =
+          reinterpret_cast<const char*>(sqlite3_value_text(argv[4]));
+      return vtab->ExecuteCommand(command);
+    }
+
     if (sqlite3_value_type(argv[1]) == SQLITE_NULL) {
       SetZErrMsg(&vtab->zErrMsg, "rowid must be specified during insertion");
       return SQLITE_ERROR;
@@ -715,6 +1273,15 @@ int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
       SetZErrMsg(&vtab->zErrMsg, "Delete failed with rowid %lld: %s", raw_rowid,
                  ex.what());
       return SQLITE_ERROR;
+    }
+    // Append to WAL if in shadow table mode.
+    if (vtab->use_shadow_tables_) {
+      auto status = vtab->AppendToWal(1, rowid, nullptr, 0);
+      if (!status.ok()) {
+        SetZErrMsg(&vtab->zErrMsg, "Failed to append delete to WAL: %s",
+                   absl::StatusMessageAsCStr(status));
+        return SQLITE_ERROR;
+      }
     }
     return SQLITE_OK;
   } else if (argc > 1 && argv0_type != SQLITE_NULL) {
