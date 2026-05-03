@@ -10,6 +10,23 @@ Configuration is driven by environment variables:
     BENCHMARK_VSS=1        also benchmark sqlite_vss (Linux/macOS only)
     BENCHMARK_SQLITE_VEC=1 also benchmark sqlite-vec (Linux/macOS only)
     BENCHMARK_MILVUS_LITE=1 also benchmark milvus-lite (Linux/macOS only)
+
+SQLite driver
+-------------
+
+The benchmark uses Python's standard-library ``sqlite3`` module rather than
+``apsw``. The module loads the vectorlite extension via
+``conn.enable_load_extension(True)`` followed by ``conn.load_extension(...)``,
+which requires a Python interpreter built with
+``--enable-loadable-sqlite-extensions``. Standard Homebrew, python.org and
+modern Linux distribution Python builds all enable this; if your interpreter
+does not, ``conn.enable_load_extension(True)`` raises ``AttributeError`` or
+``OperationalError`` and you will need a different Python build (or ``apsw``).
+
+Vectorlite's optional metadata-filter (rowid pushdown) feature requires
+SQLite >= 3.38; the benchmark itself does not exercise that path, so any
+SQLite version that vectorlite loads on will work here. The bundled SQLite
+version is reported by ``sqlite3.sqlite_version``.
 """
 
 from __future__ import annotations
@@ -17,11 +34,11 @@ from __future__ import annotations
 import dataclasses
 import os
 import platform
+import sqlite3
 import time
 from collections import defaultdict
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
-import apsw
 import hnswlib
 import numpy as np
 import vectorlite_py
@@ -235,9 +252,9 @@ class Backend:
 
 
 class _SqlBackend(Backend):
-    """Shared scaffolding for backends that use the apsw cursor."""
+    """Shared scaffolding for backends that use the sqlite3 cursor."""
 
-    def __init__(self, cursor: apsw.Cursor, data: BenchmarkData) -> None:
+    def __init__(self, cursor: sqlite3.Cursor, data: BenchmarkData) -> None:
         self.cursor = cursor
         self.data = data
         self._table: Optional[str] = None
@@ -579,7 +596,7 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "0") != "0"
 
 
-def collect_optional_backends(cursor: apsw.Cursor, conn: apsw.Connection,
+def collect_optional_backends(cursor: sqlite3.Cursor, conn: sqlite3.Connection,
                               data: BenchmarkData) -> List[Backend]:
     backends: List[Backend] = []
     if not is_supported_platform():
@@ -614,7 +631,11 @@ def main() -> None:
     if vectorlite_path != vectorlite_py.vectorlite_path():
         console.print(f"Using local vectorlite: {vectorlite_path}")
 
-    conn = apsw.Connection(":memory:")
+    # ``isolation_level=None`` puts sqlite3 in autocommit mode so that the
+    # explicit ``BEGIN TRANSACTION`` / ``COMMIT`` statements issued by
+    # ``_SqlBackend._insert_rows`` are honoured rather than wrapped in an
+    # implicit transaction by the driver.
+    conn = sqlite3.connect(":memory:", isolation_level=None)
     conn.enable_load_extension(True)
     conn.load_extension(vectorlite_path)
     cursor = conn.cursor()

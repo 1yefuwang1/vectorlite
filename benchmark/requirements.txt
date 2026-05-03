@@ -1,6 +1,5 @@
 vectorlite_py>=0.2.0
 numpy>=2.4.4
-apsw>=3.53.0.0
 rich>=15.0.0
 hnswlib>=0.8
 matplotlib>=3.10.9
