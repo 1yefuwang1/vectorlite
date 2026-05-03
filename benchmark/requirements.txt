@@ -1,8 +1,11 @@
-vectorlite_py
-numpy>=1.22
-apsw>=3.45
-rich>=13.7
+vectorlite_py>=0.2.0
+numpy>=2.4.4
+apsw>=3.53.0.0
+rich>=15.0.0
 hnswlib>=0.8
-matplotlib
-pandas
-pymilvus
+matplotlib>=3.10.9
+pandas>=3.0.2
+# milvus_lite extra is required for the optional MilvusLite backend
+# (BENCHMARK_MILVUS_LITE=1). Linux/macOS only.
+pymilvus[milvus_lite]>=2.6.12; sys_platform != "win32"
+pymilvus>=2.6.12; sys_platform == "win32"
