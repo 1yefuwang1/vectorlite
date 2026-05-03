@@ -25,9 +25,23 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import sys
 import warnings
 from pathlib import Path
 from typing import Iterator
+
+# Hard-fail before any third-party import so the user sees a clear error
+# rather than a confusing pip / NumPy ABI mismatch downstream. The
+# effective floor is currently driven by the wheel availability of the
+# pinned dependencies (notably NumPy 2.4, which has no wheels for
+# Python < 3.10).
+_REQUIRED_PYTHON = (3, 10)
+if sys.version_info < _REQUIRED_PYTHON:
+    sys.exit(
+        f"benchmark requires Python >= "
+        f"{_REQUIRED_PYTHON[0]}.{_REQUIRED_PYTHON[1]}, "
+        f"got {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}."
+    )
 
 import pytest
 import vectorlite_py

@@ -12,6 +12,15 @@ Each cell is benchmarked with `pytest-benchmark`, which auto-calibrates
 warm-up and round count and reports min / max / mean / median / stddev / IQR
 per cell.
 
+## Requirements
+
+- **Python >= 3.10** (driven by NumPy 2.4 wheel availability; enforced
+  at session start by `benchmark/conftest.py` so wrong-Python runs fail
+  with a clear message instead of cryptic install errors)
+- A Python interpreter built with `--enable-loadable-sqlite-extensions`
+  (standard on Homebrew, python.org installer, and modern Linux distro
+  Pythons; see [SQLite driver](#sqlite-driver) below)
+
 ## Quick start
 
 ```bash
