@@ -73,6 +73,14 @@ def _env_flag(name: str) -> bool:
 
 _DEBUG_PATH_RE = re.compile(r"(/build/dev/|/Debug/|/debug/)")
 
+# Vectorlite's metadata-filter (rowid pushdown) feature requires SQLite
+# >= 3.38. The benchmark itself does not exercise that path, but if the
+# user is going to use the same Python interpreter to run the
+# metadata-filter examples afterwards, we want them to know whether it
+# will work. This threshold is informational only - we still let the
+# benchmark run.
+_VECTORLITE_RECOMMENDED_SQLITE = (3, 38, 0)
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("vectorlite", "vectorlite benchmark options")
@@ -127,6 +135,14 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         f"vectorlite: {path}",
         f"            ({size_str}, sqlite3 {sqlite3.sqlite_version})",
     ]
+
+    if sqlite3.sqlite_version_info < _VECTORLITE_RECOMMENDED_SQLITE:
+        recommended = ".".join(str(p) for p in _VECTORLITE_RECOMMENDED_SQLITE)
+        lines.append(
+            f"            NOTE: sqlite3 {sqlite3.sqlite_version} is below "
+            f"{recommended}; vectorlite's metadata-filter "
+            f"(rowid pushdown) feature requires sqlite3 >= {recommended}. "
+            "The benchmark itself does not use that feature.")
 
     if _DEBUG_PATH_RE.search(path):
         lines.append(

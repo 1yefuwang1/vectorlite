@@ -21,6 +21,52 @@ per cell.
   (standard on Homebrew, python.org installer, and modern Linux distro
   Pythons; see [SQLite driver](#sqlite-driver) below)
 
+## Choosing a Python interpreter
+
+The benchmark uses Python's stdlib `sqlite3` module, which links against
+whatever SQLite the interpreter was built with. SQLite versions vary
+significantly across Python distributions, even at the same Python
+version. Vectorlite itself loads on virtually any SQLite, but its
+metadata-filter (rowid pushdown) feature requires **SQLite >= 3.38** -
+the benchmark does not exercise that path, so any SQLite that loads
+the extension at all will run the benchmark. The session header reports
+the loaded SQLite version and prints a NOTE line if it is below 3.38.
+
+Empirically, here is what common Python distributions ship:
+
+| Distribution                        | SQLite          | Metadata filter (>= 3.38)? |
+|-------------------------------------|-----------------|----------------------------|
+| python.org installer 3.10           | 3.36            | no                         |
+| python.org installer 3.11           | 3.39            | yes                        |
+| python.org installer 3.12           | 3.43            | yes                        |
+| python.org installer 3.13+          | 3.45+           | yes                        |
+| Homebrew Python (any version)       | tracks Homebrew's `sqlite` keg, currently ~3.53 | yes |
+| pyenv-built Python (any version)    | tracks the Homebrew/system SQLite at build time | usually yes |
+| Conda / Miniconda Python            | bundled, recent | yes                        |
+| Ubuntu 20.04 system Python (3.8)    | 3.31            | no                         |
+| Ubuntu 22.04 system Python (3.10)   | 3.37            | no (just under!)           |
+| Ubuntu 24.04 system Python (3.12)   | 3.45            | yes                        |
+| Debian 11 system Python             | 3.34            | no                         |
+| Debian 12 system Python             | 3.40            | yes                        |
+| RHEL/Rocky/Alma 9 system Python     | 3.34            | no                         |
+| Official `python:3.X` Docker image  | tracks the Debian base; recent tags are fine | usually yes |
+
+**Rule of thumb:** Python 3.11+ from python.org, Homebrew, or pyenv is
+always fine. System Python on Linux is unreliable below
+Ubuntu 24.04 / Debian 12 / RHEL 10 / Alpine 3.19+.
+
+To check what your interpreter has:
+
+```bash
+python -c "import sqlite3; print(sqlite3.sqlite_version)"
+```
+
+If the version is too old and you cannot upgrade Python, switch to
+[apsw](https://rogerbinns.github.io/apsw/), which bundles its own
+SQLite (currently 3.53). The benchmark targets stdlib `sqlite3`
+specifically, but the rest of vectorlite's documentation and examples
+work with apsw.
+
 ## Quick start
 
 ```bash
