@@ -4,12 +4,29 @@ Provides session-scoped, expensive resources (extension-loaded sqlite
 connection, randomly generated test data, ground-truth labels) plus
 ``backend_factory`` fixtures that hand out fresh ``Backend`` instances to
 each test.
+
+Selecting the vectorlite library to benchmark
+---------------------------------------------
+
+Resolution order:
+
+1. ``--vectorlite-path=<path>`` command-line option (highest priority)
+2. ``VECTORLITE_PATH`` environment variable
+3. ``vectorlite_py.vectorlite_path()`` from the installed wheel (fallback)
+
+The session prints which file was loaded and its size; if the resolved
+path looks like a debug build (path contains ``/build/dev/``,
+``/Debug/`` or ``/debug/``) a warning is emitted because debug builds
+are typically several times slower than release.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+import warnings
+from pathlib import Path
 from typing import Iterator
 
 import pytest
@@ -40,6 +57,77 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "0") != "0"
 
 
+_DEBUG_PATH_RE = re.compile(r"(/build/dev/|/Debug/|/debug/)")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("vectorlite", "vectorlite benchmark options")
+    group.addoption(
+        "--vectorlite-path",
+        action="store",
+        default=None,
+        help="Path to the vectorlite shared library to benchmark. "
+             "Overrides the VECTORLITE_PATH environment variable. "
+             "Defaults to the wheel's bundled binary.",
+    )
+
+
+def _resolve_vectorlite_path(config: pytest.Config) -> str:
+    cli = config.getoption("--vectorlite-path")
+    if cli:
+        return os.path.abspath(cli)
+    env = os.environ.get("VECTORLITE_PATH")
+    if env:
+        return os.path.abspath(env)
+    return vectorlite_py.vectorlite_path()
+
+
+@pytest.fixture(scope="session")
+def vectorlite_path(pytestconfig: pytest.Config) -> str:
+    return _resolve_vectorlite_path(pytestconfig)
+
+
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """Print the resolved vectorlite library banner above the test list."""
+    path = _resolve_vectorlite_path(config)
+
+    # ``vectorlite_py.vectorlite_path()`` and the VECTORLITE_PATH convention
+    # may omit the platform-specific suffix (SQLite's loader appends it).
+    # Look for the actual file on disk so we can print its size.
+    resolved = Path(path)
+    if not resolved.exists():
+        for ext in (".dylib", ".so", ".dll"):
+            candidate = resolved.with_suffix(ext) if resolved.suffix else \
+                Path(str(resolved) + ext)
+            if candidate.exists():
+                resolved = candidate
+                break
+
+    try:
+        size_bytes = resolved.stat().st_size
+        size_str = f"{size_bytes / (1024 * 1024):.2f} MiB"
+    except OSError:
+        size_str = "missing"
+
+    lines = [
+        f"vectorlite: {path}",
+        f"            ({size_str}, sqlite3 {sqlite3.sqlite_version})",
+    ]
+
+    if _DEBUG_PATH_RE.search(path):
+        lines.append(
+            "            WARNING: path looks like a debug build; "
+            "benchmark numbers will not be representative.")
+        warnings.warn(
+            f"Benchmarking what looks like a debug build: {path}. "
+            "Use a release build (build/release/...) for representative numbers.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return lines
+
+
 @pytest.fixture(scope="session")
 def num_elements() -> int:
     return int(os.environ.get("NUM_ELEMENTS", 3000))
@@ -51,16 +139,13 @@ def num_elements() -> int:
 
 
 @pytest.fixture(scope="session")
-def sqlite_conn() -> Iterator[sqlite3.Connection]:
+def sqlite_conn(vectorlite_path: str) -> Iterator[sqlite3.Connection]:
     """A SQLite connection with vectorlite (and any optional extensions) loaded.
 
     ``isolation_level=None`` puts sqlite3 in autocommit mode so that the
     explicit ``BEGIN TRANSACTION`` / ``COMMIT`` issued by ``_SqlBackend``
     is honoured.
     """
-    vectorlite_path = os.environ.get(
-        "VECTORLITE_PATH", vectorlite_py.vectorlite_path())
-
     conn = sqlite3.connect(":memory:", isolation_level=None)
     conn.enable_load_extension(True)
     conn.load_extension(vectorlite_path)
