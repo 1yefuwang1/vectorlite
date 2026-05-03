@@ -1,9 +1,10 @@
 vectorlite_py>=0.2.0
 numpy>=2.4.4
-rich>=15.0.0
 hnswlib>=0.8
 matplotlib>=3.10.9
 pandas>=3.0.2
+pytest>=8.0
+pytest-benchmark>=5.2.3
 # milvus_lite extra is required for the optional MilvusLite backend
 # (BENCHMARK_MILVUS_LITE=1). Linux/macOS only.
 pymilvus[milvus_lite]>=2.6.12; sys_platform != "win32"

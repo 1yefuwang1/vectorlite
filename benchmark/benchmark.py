@@ -1,57 +1,53 @@
-"""Benchmark vectorlite's performance and recall against alternative backends.
+"""Benchmark harness library: synthetic data, ground truth, and pluggable backends.
+
+This module is consumed by ``test_benchmark.py``. Run the benchmarks with::
+
+    pytest benchmark/test_benchmark.py --benchmark-json=bench.json
+    python benchmark/plot.py bench.json
 
 Methodology follows
 https://github.com/nmslib/hnswlib/blob/v0.8.0/TESTING_RECALL.md.
 
-Configuration is driven by environment variables:
+Configuration is driven by environment variables (read by ``conftest.py``):
 
     NUM_ELEMENTS           number of random vectors to index (default 3000)
     VECTORLITE_PATH        path to a locally built vectorlite extension
-    BENCHMARK_VSS=1        also benchmark sqlite_vss (Linux/macOS only)
-    BENCHMARK_SQLITE_VEC=1 also benchmark sqlite-vec (Linux/macOS only)
-    BENCHMARK_MILVUS_LITE=1 also benchmark milvus-lite (Linux/macOS only)
+    BENCHMARK_VSS=1        enable sqlite_vss backend (Linux/macOS only)
+    BENCHMARK_SQLITE_VEC=1 enable sqlite-vec backend (Linux/macOS only)
+    BENCHMARK_MILVUS_LITE=1 enable milvus-lite backend (Linux/macOS only)
 
 SQLite driver
 -------------
 
 The benchmark uses Python's standard-library ``sqlite3`` module rather than
-``apsw``. The module loads the vectorlite extension via
-``conn.enable_load_extension(True)`` followed by ``conn.load_extension(...)``,
-which requires a Python interpreter built with
-``--enable-loadable-sqlite-extensions``. Standard Homebrew, python.org and
-modern Linux distribution Python builds all enable this; if your interpreter
-does not, ``conn.enable_load_extension(True)`` raises ``AttributeError`` or
-``OperationalError`` and you will need a different Python build (or ``apsw``).
+``apsw``. Loading the vectorlite extension via ``conn.load_extension(...)``
+requires a Python interpreter built with
+``--enable-loadable-sqlite-extensions`` (standard on Homebrew, python.org
+and modern Linux distribution Python builds). If your interpreter does not
+enable that, ``conn.enable_load_extension(True)`` raises ``AttributeError``
+or ``OperationalError`` and you will need a different Python build (or
+``apsw``).
 
-Vectorlite's optional metadata-filter (rowid pushdown) feature requires
+Vectorlite's metadata-filter (rowid pushdown) feature requires
 SQLite >= 3.38; the benchmark itself does not exercise that path, so any
-SQLite version that vectorlite loads on will work here. The bundled SQLite
+SQLite version that vectorlite loads on will work. The bundled SQLite
 version is reported by ``sqlite3.sqlite_version``.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import os
 import platform
 import sqlite3
-import time
-from collections import defaultdict
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import hnswlib
 import numpy as np
-import vectorlite_py
-from rich.console import Console, ConsoleOptions, RenderResult
-from rich.table import Table
-
-import plot
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration constants
 # ---------------------------------------------------------------------------
 
-NUM_ELEMENTS: int = int(os.environ.get("NUM_ELEMENTS", 3000))
 NUM_QUERIES: int = 100
 K: int = 10  # number of nearest neighbours retrieved per query
 
@@ -61,23 +57,10 @@ DISTANCE_TYPES: List[str] = ["l2", "cosine"]
 HNSW_PARAMS: List[Tuple[int, int]] = [(100, 30)]  # (ef_construction, M)
 EF_SEARCH_VALUES: List[int] = [10, 50, 100]
 
-console = Console()
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def timeit(func: Callable[[], object]) -> Tuple[float, object]:
-    """Run ``func`` once. Return (elapsed_microseconds, return_value).
-
-    Avoids ``timeit.timeit`` which compiles strings and discards return values.
-    """
-    start_us = time.perf_counter_ns() / 1000
-    retval = func()
-    end_us = time.perf_counter_ns() / 1000
-    return end_us - start_us, retval
 
 
 def compute_recall(predicted: Sequence[Sequence[int]],
@@ -102,8 +85,9 @@ def is_supported_platform() -> bool:
 class BenchmarkData:
     """Random vectors plus their precomputed brute-force k-NN ground truth."""
 
+    num_elements: int
     data: dict          # dim -> np.ndarray (NUM_ELEMENTS x dim, float32)
-    data_bytes: dict    # dim -> list[bytes]   (one per element, for SQL inserts)
+    data_bytes: dict    # dim -> list[bytes] (one per element, for SQL inserts)
     queries: dict       # dim -> np.ndarray (NUM_QUERIES x dim, float32)
     query_bytes: dict   # dim -> list[bytes]
     correct_labels: dict  # distance_type -> dim -> np.ndarray (NUM_QUERIES x K)
@@ -135,65 +119,8 @@ class BenchmarkData:
                 correct_labels[dt][d] = labels
                 del bf
 
-        return cls(data, data_bytes, queries, query_bytes, correct_labels)
-
-
-# ---------------------------------------------------------------------------
-# Result containers
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class BenchmarkResult:
-    product: str
-    distance_type: str
-    dim: int
-    insert_time_us: float
-    search_time_us: float
-    recall_rate: float
-    ef_construction: Optional[int] = None
-    M: Optional[int] = None
-    ef_search: Optional[int] = None
-
-
-@dataclasses.dataclass
-class ResultTable:
-    """Render a list of ``BenchmarkResult`` as a rich Table."""
-
-    results: List[BenchmarkResult]
-
-    def __rich_console__(self, console: Console,
-                         options: ConsoleOptions) -> RenderResult:
-        if not self.results:
-            yield Table()
-            return
-
-        show_hnsw = self.results[0].ef_construction is not None
-
-        table = Table()
-        table.add_column("product\nname")
-        table.add_column("distance\ntype")
-        table.add_column("vector\ndimension")
-        if show_hnsw:
-            table.add_column("ef\nconstruction")
-            table.add_column("M")
-            table.add_column("ef\nsearch")
-        table.add_column("insert_time\nper vector")
-        table.add_column("search_time\nper query")
-        table.add_column("recall\nrate")
-
-        for r in self.results:
-            row = [r.product, r.distance_type, str(r.dim)]
-            if show_hnsw:
-                row += [str(r.ef_construction), str(r.M), str(r.ef_search)]
-            row += [
-                f"{r.insert_time_us:.2f} us",
-                f"{r.search_time_us:.2f} us",
-                f"{r.recall_rate * 100:.2f}%",
-            ]
-            table.add_row(*row)
-
-        yield table
+        return cls(num_elements, data, data_bytes,
+                   queries, query_bytes, correct_labels)
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +132,13 @@ class Backend:
     """Common interface for every system under test.
 
     A backend handles the lifecycle of one (distance_type, dim, hnsw_params)
-    configuration. ``run_backend`` drives it end to end; the backend just
-    declares its capabilities and implements the four lifecycle hooks.
+    configuration. ``test_benchmark.py`` drives it through:
+
+        backend.setup(distance_type, dim, ef_construction, M)
+        backend.do_insert(distance_type, dim)              # measured
+        for ef in EF_SEARCH_VALUES (or [None]):
+            backend.do_search(distance_type, dim, ef)      # measured
+        backend.teardown()
     """
 
     name: str = "<unknown>"
@@ -258,10 +190,11 @@ class _SqlBackend(Backend):
         self.cursor = cursor
         self.data = data
         self._table: Optional[str] = None
+        self._dim: int = 0
 
     def _insert_rows(self) -> None:
         rows = [(i, self.data.data_bytes[self._dim][i])
-                for i in range(NUM_ELEMENTS)]
+                for i in range(self.data.num_elements)]
         self.cursor.execute("BEGIN TRANSACTION;")
         self.cursor.executemany(
             f"insert into {self._table}(rowid, embedding) values (?, ?)", rows)
@@ -286,7 +219,7 @@ class VectorliteBackend(_SqlBackend):
         self.cursor.execute(
             f"create virtual table {self._table} using vectorlite("
             f"embedding float32[{dim}] {distance_type}, "
-            f"hnsw(max_elements={NUM_ELEMENTS}, "
+            f"hnsw(max_elements={self.data.num_elements}, "
             f"ef_construction={ef_construction}, M={M}))"
         )
 
@@ -348,7 +281,7 @@ class HnswlibBackend(Backend):
               ef_construction: Optional[int], M: Optional[int]) -> None:
         self._index = hnswlib.Index(space=distance_type, dim=dim)
         self._index.init_index(
-            max_elements=NUM_ELEMENTS,
+            max_elements=self.data.num_elements,
             ef_construction=ef_construction,
             M=M,
         )
@@ -428,17 +361,13 @@ class SqliteVecBackend(_SqlBackend):
             ).fetchall())
         return results
 
-    @property
-    def include_in_query_plot(self) -> bool:  # type: ignore[override]
-        # sqlite-vec's brute force search dominates the plot at high N.
-        return NUM_ELEMENTS < 10000
-
 
 class MilvusLiteBackend(Backend):
     name = "milvus_lite"
     plot_label = "milvuslite_{distance_type}{ef_search}"
 
-    def __init__(self, data: BenchmarkData, db_path: str = "./milvus_lite_demo.db") -> None:
+    def __init__(self, data: BenchmarkData,
+                 db_path: str = "./milvus_lite_demo.db") -> None:
         from pymilvus import MilvusClient
         self.data = data
         self._client = MilvusClient(db_path)
@@ -468,7 +397,7 @@ class MilvusLiteBackend(Backend):
     def do_insert(self, distance_type: str, dim: int) -> None:
         rows = [
             {"id": i, "embedding": self.data.data[dim][i].tolist()}
-            for i in range(NUM_ELEMENTS)
+            for i in range(self.data.num_elements)
         ]
         self._client.insert(collection_name=self._collection, data=rows)
 
@@ -488,198 +417,3 @@ class MilvusLiteBackend(Backend):
         if self._collection is not None:
             self._client.drop_collection(collection_name=self._collection)
             self._collection = None
-
-
-# ---------------------------------------------------------------------------
-# Benchmark runner
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class PlotData:
-    time_taken_us: float
-    column: str
-
-
-@dataclasses.dataclass
-class BenchmarkSuite:
-    """Accumulates results and per-dim plot points across backends."""
-
-    plot_insertion: dict = dataclasses.field(default_factory=lambda: defaultdict(list))
-    plot_query: dict = dataclasses.field(default_factory=lambda: defaultdict(list))
-
-    def record_insertion(self, dim: int, label: str, time_us: float) -> None:
-        self.plot_insertion[dim].append(PlotData(time_us, label))
-
-    def record_query(self, dim: int, label: str, time_us: float) -> None:
-        self.plot_query[dim].append(PlotData(time_us, label))
-
-    def write_plots(self, num_elements: int) -> None:
-        for kind, points in (("insertion", self.plot_insertion),
-                             ("query", self.plot_query)):
-            if not points:
-                continue
-            dims = sorted(points.keys())
-            columns = ["dim"] + [p.column for p in points[dims[0]]]
-            rows = [[d] + [p.time_taken_us for p in points[d]] for d in dims]
-            plot.plot(f"vector_{kind}_{num_elements}_vectors", columns, rows)
-
-
-def run_backend(backend: Backend, data: BenchmarkData,
-                suite: BenchmarkSuite,
-                distance_types: Sequence[str] = DISTANCE_TYPES,
-                dims: Sequence[int] = DIMS,
-                hnsw_params: Sequence[Tuple[int, int]] = HNSW_PARAMS,
-                ef_values: Sequence[int] = EF_SEARCH_VALUES,
-                ) -> List[BenchmarkResult]:
-    """Run one backend across all configurations; return its results."""
-    param_combos: Iterable[Tuple[Optional[int], Optional[int]]] = (
-        hnsw_params if backend.uses_hnsw_params else [(None, None)]
-    )
-    ef_iter: Sequence[Optional[int]] = (
-        ef_values if backend.supports_ef_search else [None]
-    )
-    relevant_distances = [
-        d for d in distance_types if d in backend.supported_distances
-    ]
-
-    results: List[BenchmarkResult] = []
-
-    for distance_type in relevant_distances:
-        for dim in dims:
-            for ef_construction, M in param_combos:
-                backend.setup(distance_type, dim, ef_construction, M)
-                try:
-                    insert_total_us, _ = timeit(
-                        lambda: backend.do_insert(distance_type, dim))
-                    insert_time_us = insert_total_us / NUM_ELEMENTS
-                    suite.record_insertion(
-                        dim, backend.insertion_label(distance_type),
-                        insert_time_us)
-
-                    for ef in ef_iter:
-                        search_total_us, query_results = timeit(
-                            lambda: backend.do_search(distance_type, dim, ef))
-                        search_time_us = search_total_us / NUM_QUERIES
-                        recall = compute_recall(
-                            query_results,
-                            data.correct_labels[distance_type][dim], K)
-
-                        results.append(BenchmarkResult(
-                            product=backend.name,
-                            distance_type=distance_type,
-                            dim=dim,
-                            insert_time_us=insert_time_us,
-                            search_time_us=search_time_us,
-                            recall_rate=recall,
-                            ef_construction=ef_construction,
-                            M=M,
-                            ef_search=ef,
-                        ))
-                        if backend.include_in_query_plot:
-                            suite.record_query(
-                                dim,
-                                backend.query_label(distance_type, ef),
-                                search_time_us)
-                finally:
-                    backend.teardown()
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Optional backend loaders (gated by env vars / platform)
-# ---------------------------------------------------------------------------
-
-
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "0") != "0"
-
-
-def collect_optional_backends(cursor: sqlite3.Cursor, conn: sqlite3.Connection,
-                              data: BenchmarkData) -> List[Backend]:
-    backends: List[Backend] = []
-    if not is_supported_platform():
-        return backends
-
-    if _env_flag("BENCHMARK_VSS"):
-        # sqlite_vss is not self-contained; on Debian/Ubuntu install:
-        #   sudo apt-get install -y libgomp1 libatlas-base-dev liblapack-dev
-        import sqlite_vss
-        sqlite_vss.load(conn)
-        backends.append(SqliteVssBackend(cursor, data))
-
-    if _env_flag("BENCHMARK_SQLITE_VEC"):
-        import sqlite_vec
-        conn.load_extension(sqlite_vec.loadable_path())
-        backends.append(SqliteVecBackend(cursor, data))
-
-    if _env_flag("BENCHMARK_MILVUS_LITE"):
-        backends.append(MilvusLiteBackend(data))
-
-    return backends
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-def main() -> None:
-    vectorlite_path = os.environ.get(
-        "VECTORLITE_PATH", vectorlite_py.vectorlite_path())
-    if vectorlite_path != vectorlite_py.vectorlite_path():
-        console.print(f"Using local vectorlite: {vectorlite_path}")
-
-    # ``isolation_level=None`` puts sqlite3 in autocommit mode so that the
-    # explicit ``BEGIN TRANSACTION`` / ``COMMIT`` statements issued by
-    # ``_SqlBackend._insert_rows`` are honoured rather than wrapped in an
-    # implicit transaction by the driver.
-    conn = sqlite3.connect(":memory:", isolation_level=None)
-    conn.enable_load_extension(True)
-    conn.load_extension(vectorlite_path)
-    cursor = conn.cursor()
-
-    console.print(
-        f"Benchmarking with {NUM_ELEMENTS} random vectors. "
-        f"{NUM_QUERIES} {K}-nearest-neighbour queries per case."
-    )
-
-    data = BenchmarkData.generate(
-        DIMS, NUM_ELEMENTS, NUM_QUERIES, K, DISTANCE_TYPES)
-
-    suite = BenchmarkSuite()
-
-    # The order here defines column order in plot CSV / PNG output.
-    primary_backends: List[Tuple[Backend, str]] = [
-        (VectorliteBackend(cursor, data),
-         "vectorlite (HNSW virtual table)"),
-        (HnswlibBackend(data),
-         "hnswlib (in-memory, comparison)"),
-        (VectorliteBruteForceBackend(cursor, data),
-         "vectorlite brute force "
-         "(SELECT ... ORDER BY vector_distance(...))"),
-    ]
-
-    optional_descriptions = {
-        "sqlite_vss": "sqlite_vss (comparison)",
-        "sqlite_vec": "sqlite_vec (comparison)",
-        "milvus_lite": "milvus-lite (comparison)",
-    }
-
-    all_backends: List[Tuple[Backend, str]] = list(primary_backends)
-    for backend in collect_optional_backends(cursor, conn, data):
-        all_backends.append(
-            (backend, optional_descriptions.get(backend.name, backend.name)))
-
-    for backend, description in all_backends:
-        console.print(f"Benchmarking {description}.")
-        results = run_backend(backend, data, suite)
-        if results:
-            console.print(ResultTable(results))
-
-    suite.write_plots(NUM_ELEMENTS)
-
-
-if __name__ == "__main__":
-    main()
