@@ -196,9 +196,14 @@ class _SqlBackend(Backend):
         rows = [(i, self.data.data_bytes[self._dim][i])
                 for i in range(self.data.num_elements)]
         self.cursor.execute("BEGIN TRANSACTION;")
-        self.cursor.executemany(
-            f"insert into {self._table}(rowid, embedding) values (?, ?)", rows)
-        self.cursor.execute("COMMIT;")
+        try:
+            self.cursor.executemany(
+                f"insert into {self._table}(rowid, embedding) values (?, ?)",
+                rows)
+            self.cursor.execute("COMMIT;")
+        except Exception:
+            self.cursor.execute("ROLLBACK;")
+            raise
 
     def teardown(self) -> None:
         if self._table is not None:
@@ -409,6 +414,7 @@ class MilvusLiteBackend(Backend):
                 collection_name=self._collection,
                 data=[self.data.queries[dim][i].tolist()],
                 search_params={"metric_type": distance_type.upper()},
+                limit=K,
             )
             results.append([hit["id"] for hit in response[0]])
         return results
