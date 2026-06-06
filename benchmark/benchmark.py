@@ -485,35 +485,69 @@ class LibSQLBackend(Backend):
             self._index = None
 
 
-class SqliteVectorBackend(_SqlBackend):
-    """sqlite-vector (sqliteai) SIMD-accelerated full scan."""
+class SqliteVectorBackend(Backend):
+    """sqlite-vector (sqliteai) SIMD-accelerated full scan.
+
+    Uses its own sqlite3 connection to avoid conflicts with other loaded
+    extensions (e.g. sqlite-vss registers overlapping function names).
+    """
 
     name = "sqlite_vector"
     plot_label = "sqlite_vector_{distance_type}"
+
+    def __init__(self, data: BenchmarkData,
+                 vectorlite_path: Optional[str] = None) -> None:
+        import importlib.resources
+        self.data = data
+        self._conn = sqlite3.connect(":memory:", isolation_level=None)
+        self._conn.enable_load_extension(True)
+        if vectorlite_path is not None:
+            self._conn.load_extension(vectorlite_path)
+        ext_path = str(
+            importlib.resources.files("sqlite_vector.binaries") / "vector")
+        self._conn.load_extension(ext_path)
+        self._cursor = self._conn.cursor()
+        self._table: Optional[str] = None
+        self._dim: int = 0
 
     def setup(self, distance_type: str, dim: int,
               ef_construction: Optional[int], M: Optional[int]) -> None:
         self._dim = dim
         dist = "L2" if distance_type == "l2" else "COSINE"
         self._table = f"table_sqlite_vector_{distance_type}_{dim}"
-        self.cursor.execute(
+        self._cursor.execute(
             f"CREATE TABLE {self._table}"
             f"(rowid INTEGER PRIMARY KEY, embedding BLOB)")
-        self.cursor.execute(
+        self._cursor.execute(
             f"SELECT vector_init('{self._table}', 'embedding', "
             f"'dimension={dim},type=FLOAT32,distance={dist}')")
 
     def do_insert(self, distance_type: str, dim: int) -> None:
-        self._insert_rows()
+        rows = [(i, self.data.data_bytes[self._dim][i])
+                for i in range(self.data.num_elements)]
+        self._cursor.execute("BEGIN TRANSACTION;")
+        try:
+            self._cursor.executemany(
+                f"INSERT INTO {self._table}(rowid, embedding) VALUES (?, ?)",
+                rows)
+            self._cursor.execute("COMMIT;")
+        except Exception:
+            self._cursor.execute("ROLLBACK;")
+            raise
 
     def do_search(self, distance_type: str, dim: int,
                   ef_search: Optional[int]) -> List[Sequence[int]]:
         results = []
         for i in range(NUM_QUERIES):
-            rows = self.cursor.execute(
+            rows = self._cursor.execute(
                 f"SELECT rowid FROM vector_full_scan("
                 f"'{self._table}', 'embedding', ?, {K})",
                 (self.data.query_bytes[dim][i],),
             ).fetchall()
             results.append(rows)
         return results
+
+    def teardown(self) -> None:
+        if self._table is not None:
+            self._cursor.execute(f"DROP TABLE {self._table}")
+            self._table = None

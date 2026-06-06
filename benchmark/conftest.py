@@ -192,12 +192,6 @@ def sqlite_conn(vectorlite_path: str) -> Iterator[sqlite3.Connection]:
         import sqlite_vec
         conn.load_extension(sqlite_vec.loadable_path())
 
-    if _env_flag("BENCHMARK_SQLITE_VECTOR") and is_supported_platform():
-        import importlib.resources
-        ext_path = str(
-            importlib.resources.files("sqlite_vector.binaries") / "vector")
-        conn.load_extension(ext_path)
-
     try:
         yield conn
     finally:
@@ -282,11 +276,11 @@ def libsql_backend(benchmark_data) -> LibSQLBackend:
 
 
 @pytest.fixture
-def sqlite_vector_backend(sqlite_cursor,
+def sqlite_vector_backend(vectorlite_path,
                           benchmark_data) -> SqliteVectorBackend:
     if not _env_flag("BENCHMARK_SQLITE_VECTOR"):
         pytest.skip(
             "set BENCHMARK_SQLITE_VECTOR=1 to enable sqlite-vector benchmark")
     if not is_supported_platform():
         pytest.skip("sqlite-vector only supported on Linux/macOS")
-    return SqliteVectorBackend(sqlite_cursor, benchmark_data)
+    return SqliteVectorBackend(benchmark_data, vectorlite_path=vectorlite_path)
