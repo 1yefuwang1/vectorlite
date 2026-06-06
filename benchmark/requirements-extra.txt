@@ -1,2 +1,4 @@
-sqlite_vec>=0.1.0
-sqlite_vss>=0.1.0
+sqlite_vec>=0.1.9
+sqlite_vss>=0.1.2
+libsql-experimental>=0.0.55; sys_platform != "win32"
+sqliteai-vector
