@@ -15,6 +15,8 @@ Configuration is driven by environment variables (read by ``conftest.py``):
     BENCHMARK_VSS=1        enable sqlite_vss backend (Linux/macOS only)
     BENCHMARK_SQLITE_VEC=1 enable sqlite-vec backend (Linux/macOS only)
     BENCHMARK_MILVUS_LITE=1 enable milvus-lite backend (Linux/macOS only)
+    BENCHMARK_LIBSQL=1     enable libSQL backend (Linux/macOS only)
+    BENCHMARK_SQLITE_VECTOR=1 enable sqlite-vector backend (Linux/macOS only)
 
 SQLite driver
 -------------
@@ -423,3 +425,95 @@ class MilvusLiteBackend(Backend):
         if self._collection is not None:
             self._client.drop_collection(collection_name=self._collection)
             self._collection = None
+
+
+class LibSQLBackend(Backend):
+    """libSQL (Turso) with built-in DiskANN vector index."""
+
+    name = "libsql"
+    plot_label = "libsql_{distance_type}{ef_search}"
+
+    def __init__(self, data: BenchmarkData) -> None:
+        import libsql_experimental
+        self.data = data
+        self._conn = libsql_experimental.connect(":memory:")
+        self._cursor = self._conn.cursor()
+        self._table: Optional[str] = None
+        self._index: Optional[str] = None
+        self._dim: int = 0
+
+    def setup(self, distance_type: str, dim: int,
+              ef_construction: Optional[int], M: Optional[int]) -> None:
+        self._dim = dim
+        self._table = f"t_libsql_{distance_type}_{dim}"
+        self._index = f"idx_libsql_{distance_type}_{dim}"
+        self._cursor.execute(
+            f"CREATE TABLE {self._table} ("
+            f"rowid INTEGER PRIMARY KEY, "
+            f"embedding F32_BLOB({dim}))")
+        self._conn.commit()
+
+    def do_insert(self, distance_type: str, dim: int) -> None:
+        rows = [(i, self.data.data_bytes[dim][i])
+                for i in range(self.data.num_elements)]
+        self._cursor.executemany(
+            f"INSERT INTO {self._table} (rowid, embedding) VALUES (?, ?)",
+            rows)
+        self._conn.commit()
+        # Build DiskANN index after bulk insert.
+        self._cursor.execute(
+            f"CREATE INDEX {self._index} ON {self._table} "
+            f"(libsql_vector_idx(embedding, 'metric={distance_type}'))")
+        self._conn.commit()
+
+    def do_search(self, distance_type: str, dim: int,
+                  ef_search: Optional[int]) -> List[Sequence[int]]:
+        results = []
+        for i in range(NUM_QUERIES):
+            rows = self._cursor.execute(
+                f"SELECT id FROM vector_top_k('{self._index}', ?, ?)",
+                (self.data.query_bytes[dim][i], K),
+            ).fetchall()
+            results.append([row[0] for row in rows])
+        return results
+
+    def teardown(self) -> None:
+        if self._table is not None:
+            self._cursor.execute(f"DROP TABLE IF EXISTS {self._table}")
+            self._conn.commit()
+            self._table = None
+            self._index = None
+
+
+class SqliteVectorBackend(_SqlBackend):
+    """sqlite-vector (sqliteai) SIMD-accelerated full scan."""
+
+    name = "sqlite_vector"
+    plot_label = "sqlite_vector_{distance_type}"
+
+    def setup(self, distance_type: str, dim: int,
+              ef_construction: Optional[int], M: Optional[int]) -> None:
+        self._dim = dim
+        dist = "L2" if distance_type == "l2" else "COSINE"
+        self._table = f"table_sqlite_vector_{distance_type}_{dim}"
+        self.cursor.execute(
+            f"CREATE TABLE {self._table}"
+            f"(rowid INTEGER PRIMARY KEY, embedding BLOB)")
+        self.cursor.execute(
+            f"SELECT vector_init('{self._table}', 'embedding', "
+            f"'dimension={dim},type=FLOAT32,distance={dist}')")
+
+    def do_insert(self, distance_type: str, dim: int) -> None:
+        self._insert_rows()
+
+    def do_search(self, distance_type: str, dim: int,
+                  ef_search: Optional[int]) -> List[Sequence[int]]:
+        results = []
+        for i in range(NUM_QUERIES):
+            rows = self.cursor.execute(
+                f"SELECT rowid FROM vector_full_scan("
+                f"'{self._table}', 'embedding', ?, {K})",
+                (self.data.query_bytes[dim][i],),
+            ).fetchall()
+            results.append(rows)
+        return results

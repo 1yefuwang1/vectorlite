@@ -7,6 +7,8 @@ Compares vectorlite's vector-search performance and recall against:
 - `sqlite_vss` _(optional)_
 - `sqlite_vec` _(optional)_
 - `milvus-lite` _(optional)_
+- `libsql` _(optional)_ — Turso/libSQL with built-in DiskANN vector index
+- `sqlite-vector` _(optional)_ — sqliteai SIMD-accelerated full scan
 
 Each cell is benchmarked with `pytest-benchmark`, which auto-calibrates
 warm-up and round count and reports min / max / mean / median / stddev / IQR
@@ -157,6 +159,8 @@ Driven by environment variables; defaults in `benchmark/benchmark.py`.
 | `BENCHMARK_VSS` | `0` | `1` enables the `sqlite_vss` backend (Linux/macOS). |
 | `BENCHMARK_SQLITE_VEC` | `0` | `1` enables the `sqlite_vec` backend (Linux/macOS). |
 | `BENCHMARK_MILVUS_LITE` | `0` | `1` enables the `milvus-lite` backend (Linux/macOS). |
+| `BENCHMARK_LIBSQL` | `0` | `1` enables the `libsql` backend (Linux/macOS). |
+| `BENCHMARK_SQLITE_VECTOR` | `0` | `1` enables the `sqlite-vector` backend (Linux/macOS). |
 
 Other constants (vector dimensions, distance metrics, HNSW parameters,
 `ef_search` values, query count) are at the top of `benchmark.py` and are

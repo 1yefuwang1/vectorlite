@@ -255,3 +255,45 @@ def test_search_milvus_lite(benchmark, milvus_lite_backend, benchmark_data,
                             distance_type, dim):
     _run_search(benchmark, milvus_lite_backend, benchmark_data,
                 distance_type, dim, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# libSQL (DiskANN vector index)
+# ---------------------------------------------------------------------------
+
+
+@_param_dim
+@_param_distance
+def test_insert_libsql(benchmark, libsql_backend, benchmark_data,
+                       distance_type, dim):
+    _run_insert(benchmark, libsql_backend, benchmark_data,
+                distance_type, dim, None, None)
+
+
+@_param_dim
+@_param_distance
+def test_search_libsql(benchmark, libsql_backend, benchmark_data,
+                       distance_type, dim):
+    _run_search(benchmark, libsql_backend, benchmark_data,
+                distance_type, dim, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# sqlite-vector (SIMD full scan)
+# ---------------------------------------------------------------------------
+
+
+@_param_dim
+@_param_distance
+def test_insert_sqlite_vector(benchmark, sqlite_vector_backend, benchmark_data,
+                              distance_type, dim):
+    _run_insert(benchmark, sqlite_vector_backend, benchmark_data,
+                distance_type, dim, None, None)
+
+
+@_param_dim
+@_param_distance
+def test_search_sqlite_vector(benchmark, sqlite_vector_backend, benchmark_data,
+                              distance_type, dim):
+    _run_search(benchmark, sqlite_vector_backend, benchmark_data,
+                distance_type, dim, None, None, None)
