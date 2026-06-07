@@ -12,13 +12,17 @@
 #include "hnswlib/hnswlib.h"
 #include "macros.h"
 #include "sqlite3.h"
+#include "vector.h"
 #include "vector_space.h"
 #include "vector_view.h"
 
 namespace vectorlite {
 
 struct KnnParam {
-  VectorView query_vector;
+  // Owns the query vector. It used to be a non-owning view into the sqlite3
+  // blob argument, which dangles if that argument is a temporary (e.g.
+  // knn_param(vector_from_json('...'), k)).
+  Vector query_vector;
   uint32_t k;
   std::optional<uint32_t> ef_search;
 };

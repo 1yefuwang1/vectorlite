@@ -70,3 +70,14 @@ TEST(ParseIndexOptions, ShouldFailWithNonHNSWString) {
       "replace_deleted=false)");
   EXPECT_FALSE(options.ok());
 }
+
+TEST(ParseIndexOptions, ShouldFailWithMalformedToken) {
+  // A token that is not a key=value pair must be rejected rather than silently
+  // ignored.
+  auto options =
+      vectorlite::IndexOptions::FromString("hnsw(max_elements=1000, gibberish)");
+  EXPECT_FALSE(options.ok());
+
+  options = vectorlite::IndexOptions::FromString("hnsw(max_elements=1000 M=16)");
+  EXPECT_FALSE(options.ok());
+}

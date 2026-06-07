@@ -810,8 +810,7 @@ HWY_AFTER_NAMESPACE();
 namespace vectorlite {
 namespace ops {
 
-// This macro declares a static array used for dynamic dispatch; it resides in
-// the same outer namespace that contains FloorLog2.
+// This macro declares a static array used for dynamic dispatch.
 HWY_EXPORT(InnerProductImplF32);
 HWY_EXPORT(InnerProductImplBF16);
 HWY_EXPORT(InnerProductImplF16);
@@ -919,12 +918,12 @@ HWY_DLLEXPORT float L2DistanceSquared(const float* v1,
 // Not sure whether compiler will do auto-vectorization for this function.
 HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
   float norm = 0.0f;
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     float data = inout[i];
     norm += data * data;
   }
   norm = 1.0f / (sqrtf(norm) + 1e-30f);
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     inout[i] = inout[i] * norm;
   }
   return;
@@ -933,12 +932,12 @@ HWY_DLLEXPORT void Normalize_Scalar(float* HWY_RESTRICT inout, size_t size) {
 HWY_DLLEXPORT void Normalize_Scalar(hwy::bfloat16_t* HWY_RESTRICT inout,
                                     size_t size) {
   float norm = 0.0f;
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     float data = hwy::F32FromBF16(inout[i]);
     norm += data * data;
   }
   norm = 1.0f / (sqrtf(norm) + 1e-30f);
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     inout[i] = hwy::BF16FromF32(hwy::F32FromBF16(inout[i]) * norm);
   }
   return;
@@ -947,12 +946,12 @@ HWY_DLLEXPORT void Normalize_Scalar(hwy::bfloat16_t* HWY_RESTRICT inout,
 HWY_DLLEXPORT void Normalize_Scalar(hwy::float16_t* HWY_RESTRICT inout,
                                     size_t size) {
   float norm = 0.0f;
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     float data = hwy::F32FromF16(inout[i]);
     norm += data * data;
   }
   norm = 1.0f / (sqrtf(norm) + 1e-30f);
-  for (int i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     inout[i] = hwy::F16FromF32(hwy::F32FromF16(inout[i]) * norm);
   }
   return;

@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "absl/base/optimization.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/functional/overload.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -192,6 +193,13 @@ absl::StatusOr<QueryExecutor::QueryResult> QueryExecutor::Execute() const {
     }
 
     auto rowid_filter = MakeRowidFilter(rowid_constraint_);
+    // setEf mutates shared state on the index. Restore it afterwards so a query
+    // that overrides ef does not leak that value into subsequent queries (and
+    // to avoid a data race on concurrent reads).
+    const size_t original_ef = index_.ef_;
+    absl::Cleanup restore_ef = [this, original_ef] {
+      index_.setEf(original_ef);
+    };
     if (knn_param->ef_search.has_value()) {
       index_.setEf(*knn_param->ef_search);
     }

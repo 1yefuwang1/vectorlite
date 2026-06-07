@@ -18,8 +18,10 @@
 #include "absl/strings/str_join.h"
 #include "constraint.h"
 #include "hnswlib/hnswlib.h"
+#include "hwy/base.h"
 #include "index_options.h"
 #include "macros.h"
+#include "ops/ops.h"
 #include "quantization.h"
 #include "sqlite3ext.h"
 #include "util.h"
@@ -34,11 +36,6 @@ namespace vectorlite {
 enum ColumnIndexInTable {
   kColumnIndexVector,
   kColumnIndexDistance,
-};
-
-enum IndexConstraintUsage {
-  kVector = 1,
-  kRowid,
 };
 
 enum FunctionConstraint {
@@ -140,6 +137,8 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
       if (!status.ok()) {
         *pzErr = sqlite3_mprintf("Failed to load index from file: %s",
                                  absl::StatusMessageAsCStr(status));
+        delete vtab;
+        *ppVTab = nullptr;
         return SQLITE_ERROR;
       }
     }
@@ -290,10 +289,35 @@ int VirtualTable::Next(sqlite3_vtab_cursor* pCur) {
 absl::StatusOr<Vector> VirtualTable::GetVectorByRowid(int64_t rowid) const {
   try {
     // TODO: handle cases where sizeof(rowid) != sizeof(hnswlib::labeltype)
-    std::vector<float> vec =
-        index_->getDataByLabel<float>(static_cast<hnswlib::labeltype>(rowid));
-    VECTORLITE_ASSERT(vec.size() == dimension());
-    return Vector(std::move(vec));
+    auto label = static_cast<hnswlib::labeltype>(rowid);
+    // The element type stored in the index depends on the vector type. Reading
+    // it back with the wrong type would reinterpret (and over-read) the stored
+    // bytes, so dispatch on the actual stored type and dequantize back to f32.
+    switch (space_.vector_type) {
+      case VectorType::Float32: {
+        std::vector<float> vec = index_->getDataByLabel<float>(label);
+        VECTORLITE_ASSERT(vec.size() == dimension());
+        return Vector(std::move(vec));
+      }
+      case VectorType::BFloat16: {
+        std::vector<hwy::bfloat16_t> stored =
+            index_->getDataByLabel<hwy::bfloat16_t>(label);
+        VECTORLITE_ASSERT(stored.size() == dimension());
+        std::vector<float> vec(stored.size());
+        ops::BF16ToF32(stored.data(), vec.data(), stored.size());
+        return Vector(std::move(vec));
+      }
+      case VectorType::Float16: {
+        std::vector<hwy::float16_t> stored =
+            index_->getDataByLabel<hwy::float16_t>(label);
+        VECTORLITE_ASSERT(stored.size() == dimension());
+        std::vector<float> vec(stored.size());
+        ops::F16ToF32(stored.data(), vec.data(), stored.size());
+        return Vector(std::move(vec));
+      }
+      default:
+        return absl::InternalError("Unknown vector type");
+    }
   } catch (const std::runtime_error& ex) {
     return absl::Status(absl::StatusCode::kNotFound, ex.what());
   }
@@ -326,7 +350,7 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
       std::string err =
           absl::StrFormat("Can't find vector with rowid %d", rowid);
       sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
-      return SQLITE_NOTFOUND;
+      return SQLITE_ERROR;
     }
   } else {
     std::string err = absl::StrFormat("Invalid column index: %d", N);
@@ -561,7 +585,7 @@ void KnnParamFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   }
 
   KnnParam* param = new KnnParam();
-  param->query_vector = *vec;
+  param->query_vector = Vector(*vec);
   param->k = static_cast<uint32_t>(k);
   param->ef_search = std::move(ef_search);
 

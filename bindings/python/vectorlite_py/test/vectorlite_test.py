@@ -87,6 +87,22 @@ def test_virtual_table_happy_path(conn, random_vectors):
     for space in spaces:
         test_with_space(space)
 
+def test_read_vector_column_quantized(conn, random_vectors):
+    # Reading the vector column back from a quantized (bfloat16/float16) table
+    # must return the dequantized f32 vector, not garbage. Regression test for
+    # GetVectorByRowid hardcoding getDataByLabel<float>.
+    tolerances = {'bfloat16': 1e-2, 'float16': 1e-3}
+    for vector_type, rtol in tolerances.items():
+        cur = conn.cursor()
+        cur.execute(f'create virtual table vq using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        cur.execute('insert into vq (rowid, my_embedding) values (?, ?)', (0, random_vectors[0].tobytes()))
+        result = cur.execute('select my_embedding from vq where rowid = 0').fetchone()
+        assert result is not None
+        read_back = np.frombuffer(result[0], dtype=np.float32)
+        assert read_back.shape == (DIM,)
+        assert np.allclose(read_back, random_vectors[0], rtol=rtol, atol=rtol)
+        cur.execute('drop table vq')
+
 def test_json_happy_path(conn):
     cur = conn.cursor()
     vector = np.float32(np.random.random(DIM))
