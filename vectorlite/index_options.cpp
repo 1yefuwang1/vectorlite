@@ -22,6 +22,18 @@ absl::StatusOr<IndexOptions> IndexOptions::FromString(
   IndexOptions options;
   static const re2::RE2 kv_reg("([\\w]+)=([\\w]+)");
 
+  // Validate that the whole option string only contains comma-separated
+  // key=value pairs. Without this, FindAndConsume below silently skips any
+  // token that does not match (e.g. "hnsw(max_elements=1000, gibberish)").
+  static const re2::RE2 kv_list_reg(
+      "\\s*(\\w+=\\w+(\\s*,\\s*\\w+=\\w+)*)?\\s*");
+  if (!re2::RE2::FullMatch(key_value, kv_list_reg)) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Invalid index option. Expected comma-separated key=value pairs, got: "
+        "%s",
+        key_value));
+  }
+
   bool has_max_elements = false;
   std::string_view key;
   std::string_view value;

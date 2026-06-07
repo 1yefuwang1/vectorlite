@@ -45,9 +45,11 @@ struct NamedVectorSpace : public VectorSpace {
 
   // Parses a string into NamedVectorSpace.
   // This input is usually from the CREATE VIRTUAL TABLE statement.
-  // e.g. CREATE VIRTUAL TABLE my_vectors using vectorlite(my_vector(384,
-  // "l2"), "hnsw(max_elements=1000)") The `vector(384, "l2")` is the vector
-  // space string. Supported space type are "l2", "cos", "ip"
+  // e.g. CREATE VIRTUAL TABLE my_vectors using vectorlite(my_vector
+  // float32[384] l2, "hnsw(max_elements=1000)") The `my_vector float32[384] l2`
+  // is the vector space string. Supported vector types are "float32",
+  // "bfloat16", "float16". Supported distance types are "l2", "cosine", "ip"
+  // (distance type is optional and defaults to "l2").
   static absl::StatusOr<NamedVectorSpace> FromString(
       std::string_view space_str);
 };

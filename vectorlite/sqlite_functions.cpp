@@ -126,8 +126,8 @@ void VectorFromJson(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
 
-  sqlite3_result_blob(ctx, vector->ToBlob().data(), vector->ToBlob().size(),
-                      SQLITE_TRANSIENT);
+  std::string_view blob = vector->ToBlob();
+  sqlite3_result_blob(ctx, blob.data(), blob.size(), SQLITE_TRANSIENT);
   return;
 }
 
