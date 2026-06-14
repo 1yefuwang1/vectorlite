@@ -135,11 +135,12 @@ Add:
   `path`, overwriting any existing file. Does not create missing parent
   directories; a missing directory surfaces as an error.
 - `absl::Status LoadFrom(const std::string& path)` — loads a serialized index
-  from `path` into `index_`, replacing all current contents. Validates that the
-  loaded per-vector data size matches the table's vector space
-  (`space_.space->get_data_size()`); on mismatch it returns an error and leaves
-  the table holding a valid empty index. A missing or unreadable file is an
-  error.
+  from `path` into a freshly constructed index, then swaps it in only on
+  success, replacing all current contents. Validates that the loaded per-vector
+  data size (`label_offset_ - offsetData_`, both read from the file) matches the
+  table's vector space (`space_.space->get_data_size()`); on mismatch it returns
+  an error and leaves the table's current in-memory index unchanged. A missing
+  or unreadable file is an error.
 
 Both wrap hnswlib's `saveIndex`/`loadIndex` (which operate on a filename) and
 translate exceptions into `absl::Status`, mirroring the existing helpers.
@@ -162,7 +163,8 @@ C++ unit tests (`virtual_table` / extension level):
 
 - save then load round-trip preserves vectors and KNN results.
 - `load` replaces pre-existing data.
-- dimension / vector-space mismatch on `load` errors and leaves an empty index.
+- dimension / vector-space mismatch on `load` errors and leaves the table's
+  existing index unchanged.
 - `load` from a missing file errors.
 - unknown `operation` value errors.
 - 3-argument `CREATE VIRTUAL TABLE` is rejected.
