@@ -1,6 +1,6 @@
 {
   "name": "vectorlite",
-  "version-string": "0.2.0",
+  "version-string": "0.3.0",
   "description": "SQLite extension for fast vector search",
   "license": "MIT",
   "builtin-baseline": "6d7bf7ef2193e2d1c5798a5ff8811d533104c861",

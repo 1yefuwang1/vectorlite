@@ -131,67 +131,211 @@ def test_vector_distance(conn):
     # hnswlib doesn't calculate sqaure root of l2 distance
     assert np.isclose(math.sqrt(result), l2_distance)
 
-def test_index_file(random_vectors):
-    def remove_quote(s: str):
-        return s.strip('\'').strip('\"')
+def test_save_and_load_round_trip(random_vectors):
     with tempfile.TemporaryDirectory() as tempdir:
-        file_path = os.path.join(tempdir, 'index.bin')
-        file_paths = [f'\"{file_path}\"', f'\'{file_path}\'']
+        index_path = os.path.join(tempdir, 'index.bin')
 
         for vector_type in ['float32', 'bfloat16', 'float16']:
-            for index_file_path in file_paths:
-                assert not os.path.exists(remove_quote(index_file_path))
+            assert not os.path.exists(index_path)
 
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(f'create virtual table my_table using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
+            # Build an in-memory index and save it explicitly.
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(f'create virtual table my_table using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+            for i in range(NUM_ELEMENTS):
+                cur.execute('insert into my_table (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
 
-                for i in range(NUM_ELEMENTS):
-                    cur.execute('insert into my_table (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+            before = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+            assert len(before) == 10
 
-                result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-                assert len(result) == 10
+            cur.execute('insert into my_table(operation, path) values (?, ?)', ('save', index_path))
+            assert os.path.exists(index_path) and os.path.getsize(index_path) > 0
+            conn.close()
 
-                conn.close()
-                # The index file should be created
-                index_file_size = os.path.getsize(remove_quote(index_file_path))
-                assert os.path.exists(remove_quote(index_file_path)) and index_file_size > 0
+            # Load it into a brand new in-memory table without re-inserting data.
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(f'create virtual table reloaded using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+            # The table is empty until we load: a knn_search returns nothing.
+            # (vectorlite rejects unconstrained scans like `select count(*)`.)
+            assert cur.execute('select rowid from reloaded where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall() == []
+            cur.execute('insert into reloaded(operation, path) values (?, ?)', ('load', index_path))
 
-                # test if the index file could be loaded with the same parameters without inserting data again
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(f'create virtual table my_table using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
-                result = cur.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-                assert len(result) == 10
-                conn.close()
-                # The index file should be created
-                assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
+            after = cur.execute('select rowid, distance from reloaded where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
+            assert after == before
+            conn.close()
 
-                # test if the index file could be loaded with different hnsw parameters and distance type without inserting data again
-                # But hnsw parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file
-                # todo: test whether hnsw parameters are overwritten after more functions are introduced to provide runtime stats.
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding {vector_type}[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=32,M=32), {index_file_path})')
-                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-                assert len(result) == 10
-
-                # test searching with ef_search = 30, which defaults to 10
-                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?, ?))', (random_vectors[0].tobytes(), 10, 30)).fetchall()
-                assert len(result) == 10
-                conn.close()
-                assert os.path.exists(remove_quote(index_file_path)) and os.path.getsize(remove_quote(index_file_path)) == index_file_size
+            os.remove(index_path)
 
 
-                # test if `drop table` deletes the index file
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(f'create virtual table my_table2 using vectorlite(my_embedding {vector_type}[{DIM}] cosine, hnsw(max_elements={NUM_ELEMENTS},ef_construction=64,M=32), {index_file_path})')
-                result = cur.execute('select rowid, distance from my_table2 where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
-                assert len(result) == 10
+def test_load_replaces_existing_contents(random_vectors):
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
 
-                cur.execute(f'drop table my_table2')
-                assert not os.path.exists(remove_quote(index_file_path))
-                conn.close()
+        conn = get_connection()
+        cur = conn.cursor()
+        # Save an index containing only rowids 0..9.
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        for i in range(10):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
 
-                
+        # A different table with different rowids gets fully replaced by load.
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        for i in range(100, 110):
+            cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        rowids = set(r[0] for r in cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall())
+        assert rowids == set(range(10))
+        conn.close()
+
+
+def test_allow_replace_deleted_preserved_after_load(random_vectors):
+    # allow_replace_deleted is a runtime-only hnswlib flag that is NOT stored in
+    # the serialized index. A loaded table must keep the table's configured value
+    # (default true), otherwise inserting into a full index after a delete fails.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+        capacity = 16
+
+        conn = get_connection()
+        cur = conn.cursor()
+        # Fill an index to capacity (default allow_replace_deleted=true) and save.
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        for i in range(capacity):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+        conn.close()
+
+        # Load into a fresh table created with the default allow_replace_deleted=true.
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        # The index is full. Delete one row, then insert a new rowid: this only
+        # succeeds if allow_replace_deleted survived the load (it reuses the slot).
+        cur.execute('delete from dst where rowid = 0')
+        cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (capacity, random_vectors[0].tobytes()))
+
+        result = cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 1)).fetchall()
+        assert result[0][0] == capacity
+        conn.close()
+
+
+def test_load_into_larger_max_elements_allows_growth(random_vectors):
+    # A saved index can be loaded into a table created with a larger
+    # max_elements, and the table can then grow beyond the file's capacity.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+        capacity = 16
+
+        conn = get_connection()
+        cur = conn.cursor()
+        # Fill an index to its capacity and save it.
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        for i in range(capacity):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+        conn.close()
+
+        # Load into a table declared with a larger max_elements.
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity * 2}))')
+        cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        # Inserting beyond the file's original capacity succeeds only because the
+        # table's larger max_elements survived the load.
+        for i in range(capacity, capacity * 2):
+            cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        rowids = set(r[0] for r in cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), capacity * 2)).fetchall())
+        assert rowids == set(range(capacity * 2))
+        conn.close()
+
+
+def test_load_dimension_mismatch_is_rejected(random_vectors):
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        for i in range(10):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+
+        # Declare a table with a different dimension and insert a marker row.
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM * 2}], hnsw(max_elements={NUM_ELEMENTS}))')
+        marker = np.float32(np.random.random(DIM * 2))
+        cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (999, marker.tobytes()))
+
+        with pytest.raises(apsw.SQLError):
+            cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        # Existing contents are left intact after a rejected load.
+        rowids = [r[0] for r in cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (marker.tobytes(), 1)).fetchall()]
+        assert rowids == [999]
+        conn.close()
+
+
+def test_load_element_type_mismatch_is_rejected(random_vectors):
+    # Same dimension but a different element type changes the per-vector byte
+    # size (float32 is 4 bytes/element, float16 is 2), which the data-size check
+    # must reject.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        for i in range(10):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+
+        # Same dimension, different element type -> different data size.
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float16[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        with pytest.raises(apsw.SQLError):
+            cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+        conn.close()
+
+
+def test_load_missing_file_is_rejected():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f'create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+    with pytest.raises(apsw.SQLError):
+        cur.execute('insert into t(operation, path) values (?, ?)', ('load', '/no/such/index.bin'))
+    conn.close()
+
+
+def test_unknown_operation_is_rejected():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f'create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+    with pytest.raises(apsw.SQLError):
+        cur.execute('insert into t(operation, path) values (?, ?)', ('frobnicate', '/tmp/index.bin'))
+    conn.close()
+
+
+def test_three_argument_create_is_rejected():
+    conn = get_connection()
+    cur = conn.cursor()
+    with pytest.raises(apsw.SQLError):
+        cur.execute(f"create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), 'index.bin')")
+    conn.close()
+
+
+def test_command_columns_are_hidden(random_vectors):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f'create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+    cur.execute('insert into t (rowid, my_embedding) values (?, ?)', (0, random_vectors[0].tobytes()))
+    # `select *` must not surface operation/path columns.
+    cur.execute('select * from t where rowid = 0')
+    column_names = [d[0] for d in cur.getdescription()]
+    assert 'operation' not in column_names
+    assert 'path' not in column_names
+    conn.close()

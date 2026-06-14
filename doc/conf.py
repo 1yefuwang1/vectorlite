@@ -9,7 +9,7 @@
 project = 'vectorlite'
 copyright = 'vectorlite contributors'
 author = '1yefuwang1@gmail.com'
-release = '0.2.0'
+release = '0.3.0'
 
 
 # -- General configuration ---------------------------------------------------

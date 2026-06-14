@@ -85,9 +85,22 @@ A vectorlite table can be created using:
 -- 3. M: defaults to 16
 -- 4. random_seed: defaults to 100
 -- 5. allow_replace_deleted: defaults to true
--- 6. index_file_path: no default value. If not provided, the table will be memory-only. If provided, vectorlite will try to load index from the file and save to it when db connection is closed.
-create virtual table {table_name} using vectorlite({vector_name} float32[{dimension}] {distance_type}, hnsw(max_elements={max_elements}, {ef_construction=200}, {M=16}, {random_seed=100}, {allow_replace_deleted=true}), {index_file_path});
+-- The index is always held in memory. Persist or restore it explicitly with the
+-- operation/path commands shown below.
+create virtual table {table_name} using vectorlite({vector_name} float32[{dimension}] {distance_type}, hnsw(max_elements={max_elements}, {ef_construction=200}, {M=16}, {random_seed=100}, {allow_replace_deleted=true}));
 ```
+Persist an index to disk, or restore a saved index into an in-memory table:
+```sql
+-- Save the current in-memory index to a file (overwrites if it exists).
+insert into {table_name}(operation, path) values ('save', '/path/to/index.bin');
+-- Load a saved index into a freshly created table. Loading replaces the table's
+-- current in-memory index; on any error the existing index is left unchanged.
+insert into {table_name}(operation, path) values ('load', '/path/to/index.bin');
+```
+On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is lost on connection close unless you explicitly save it.
+
+Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
+
 You can insert, update and delete a vectorlite table as if it's a normal sqlite table. 
 ```sql
 -- rowid is required during insertion, because rowid is used to connect the vector to its metadata stored elsewhere. Auto-generating rowid doesn't makes sense.

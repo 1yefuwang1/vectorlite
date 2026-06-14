@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <filesystem>
 #include <memory>
 #include <set>
 #include <string_view>
@@ -45,28 +44,23 @@ class VirtualTable : public sqlite3_vtab {
 
   ~VirtualTable();
 
-  VirtualTable(NamedVectorSpace space, const IndexOptions& options,
-               std::string_view file_path)
+  VirtualTable(NamedVectorSpace space, const IndexOptions& options)
       : space_(std::move(space)),
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.space.get(), options.max_elements, options.M,
             options.ef_construction, options.random_seed,
             options.allow_replace_deleted)),
-        file_path_() {
+        allow_replace_deleted_(options.allow_replace_deleted) {
     VECTORLITE_ASSERT(space_.space != nullptr);
     VECTORLITE_ASSERT(index_ != nullptr);
-    if (!file_path.empty()) {
-      // might throw
-      file_path_ = file_path;
-    }
   }
 
-  // Load index from file_path_.
-  absl::Status LoadIndexFromFile();
+  // Serialize the in-memory index to `path`, overwriting any existing file.
+  absl::Status SaveTo(const std::string& path);
 
-  absl::Status DeleteIndexFile();
-
-  absl::Status SaveIndexToFile();
+  // Replace the in-memory index with one loaded from `path`. On any error the
+  // current index is left unchanged.
+  absl::Status LoadFrom(const std::string& path);
 
   size_t dimension() const { return space_.dimension(); }
 
@@ -100,10 +94,14 @@ class VirtualTable : public sqlite3_vtab {
  private:
   absl::StatusOr<Vector> GetVectorByRowid(int64_t rowid) const;
   int InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid);
+  // Handles an INSERT carrying a non-NULL `operation` column.
+  int ExecutePersistenceCommand(sqlite3_value** argv);
 
   NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
-  std::filesystem::path file_path_;
+  // allow_replace_deleted is a runtime-only hnswlib flag that is not stored in
+  // the serialized index, so it is retained here to reapply it after LoadFrom.
+  bool allow_replace_deleted_;
 };
 
 // Just a marker function that tells BestIndex that this is a vector search

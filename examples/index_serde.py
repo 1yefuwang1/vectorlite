@@ -50,10 +50,10 @@ print('Trying to create virtual table for vector search.')
 # The "hnsw(max_elements=10000)" part configures HNSW index parameters, which can be used to tune the performance of the index.
 # Please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md for more information about HNSW parameters.
 # Only max_elements is required.
-# the 3rd argument is an optional index file path. Vectorlite will try to load the index from the file if it exists and save the index to the file when database connetion closes.
-# If the index file path is not provided, the index will be stored in memory and will be lost when the database connection closes.
-# The index file will be deleted if the table is dropped.
-cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), {index_file_path})')
+# The index is held in memory and will be lost when the database connection closes unless it is explicitly saved.
+# Persist it with: insert into x(operation, path) values('save', <path>)
+# Restore it with: insert into x(operation, path) values('load', <path>)
+cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
 
 print("Adding %d vectors" % (len(data)))
 def insert_vectors():
@@ -132,17 +132,19 @@ if use_apsw:
     vector2_updated = result[1]
     assert (vector2 != vector2_updated)
 
+cur.execute('insert into x(operation, path) values (?, ?)', ('save', index_file_path))
 conn.close()
-# If database connection is closed, the index will be saved to the index file.
+# The index file was written by the explicit save command.
 assert os.path.exists(index_file_path) and os.path.getsize(index_file_path) > 0
 conn = create_connection()
 cur = conn.cursor()
-# We could load the index from the index file by providing the index file path when creating the virtual table.
-# When loading the index from the file, vector dimension MUST stay the same. But table name, vector name can be changed. 
+# We can explicitly load the saved index into a path-less vectorlite table.
+# When loading the index from the file, vector dimension MUST stay the same. But table name, vector name can be changed.
 # HNSW parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file, 
 # except that max_elements can be increased.
 # Distance type can be changed too.
-cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS * 2}), {index_file_path})')
+cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS * 2}))')
+cur.execute('insert into table_reloaded(operation, path) values (?, ?)', ('load', index_file_path))
 print(f'index is loaded from {index_file_path} with higher max_elements.')
 # Because the index is loaded from the file, we can query the table without inserting any data.
 result = cur.execute('select rowid, distance from table_reloaded where knn_search(vec_reloaded, knn_param(?, ?))', (data[0].tobytes(), 10)).fetchall()
@@ -156,5 +158,6 @@ print(f'time taken for calculating recall rate after reloading from file: {time_
 time_taken = timeit.timeit(lambda: test_recall('table_reloaded', 'vec_reloaded', 32), number=1)
 print(f'time taken for calculating recall rate after reloading from file with ef=32: {time_taken} seconds')
 
-# index file will be deleted when the table is dropped.
+# Dropping a table only frees the in-memory index; it never deletes files.
 cur.execute('drop table table_reloaded')
+os.remove(index_file_path)
