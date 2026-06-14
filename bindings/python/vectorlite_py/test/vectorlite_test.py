@@ -339,3 +339,79 @@ def test_command_columns_are_hidden(random_vectors):
     assert 'operation' not in column_names
     assert 'path' not in column_names
     conn.close()
+
+
+def _make_table_and_fill(cur, name='surv', n=20):
+    cur.execute(f'create virtual table {name} using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+    vectors = np.float32(np.random.random((n, DIM)))
+    for i in range(n):
+        cur.execute(f'insert into {name} (rowid, my_embedding) values (?, ?)', (i, vectors[i].tobytes()))
+    return vectors
+
+
+def _count(cur, name, query_vec, k=20):
+    return len(cur.execute(f'select rowid from {name} where knn_search(my_embedding, knn_param(?, ?))', (query_vec.tobytes(), k)).fetchall())
+
+
+def test_index_survives_vacuum():
+    conn = get_connection()
+    cur = conn.cursor()
+    vectors = _make_table_and_fill(cur)
+    assert _count(cur, 'surv', vectors[0]) == 20
+    cur.execute('vacuum')
+    assert _count(cur, 'surv', vectors[0]) == 20
+    conn.close()
+
+
+def test_index_survives_alter_table_on_other_table():
+    conn = get_connection()
+    cur = conn.cursor()
+    vectors = _make_table_and_fill(cur)
+    cur.execute('create table other(a)')
+    assert _count(cur, 'surv', vectors[0]) == 20
+    cur.execute('alter table other add column b')
+    assert _count(cur, 'surv', vectors[0]) == 20
+    conn.close()
+
+
+def test_index_survives_foreign_connection_ddl():
+    with tempfile.TemporaryDirectory() as tempdir:
+        db_path = os.path.join(tempdir, 'shared.db')
+
+        def open_conn():
+            c = apsw.Connection(db_path)
+            c.enable_load_extension(True)
+            c.load_extension(vectorlite_py.vectorlite_path())
+            return c
+
+        conn_a = open_conn()
+        cur_a = conn_a.cursor()
+        vectors = _make_table_and_fill(cur_a)
+        assert _count(cur_a, 'surv', vectors[0]) == 20
+
+        # Another connection performs DDL, bumping the schema version.
+        conn_b = open_conn()
+        conn_b.cursor().execute('create table unrelated(a)')
+        conn_b.close()
+
+        # Connection A reparses on its next statement; the index must survive.
+        assert _count(cur_a, 'surv', vectors[0]) == 20
+        conn_a.close()
+
+
+def test_name_reuse_with_different_shape_is_clean():
+    conn = get_connection()
+    cur = conn.cursor()
+    # Create a dim-4 table, fill it, drop it.
+    cur.execute('create virtual table reuse using vectorlite(emb float32[4], hnsw(max_elements=100))')
+    for i in range(5):
+        cur.execute('insert into reuse (rowid, emb) values (?, ?)', (i, np.float32(np.random.random(4)).tobytes()))
+    cur.execute('drop table reuse')
+
+    # Recreate with the SAME name but a different dimension.
+    cur.execute('create virtual table reuse using vectorlite(emb float32[8], hnsw(max_elements=100))')
+    # The new table is empty (no stale dim-4 data) and accepts dim-8 vectors.
+    assert cur.execute('select rowid from reuse where knn_search(emb, knn_param(?, ?))', (np.float32(np.random.random(8)).tobytes(), 10)).fetchall() == []
+    cur.execute('insert into reuse (rowid, emb) values (?, ?)', (0, np.float32(np.random.random(8)).tobytes()))
+    assert len(cur.execute('select rowid from reuse where knn_search(emb, knn_param(?, ?))', (np.float32(np.random.random(8)).tobytes(), 10)).fetchall()) == 1
+    conn.close()
