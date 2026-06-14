@@ -9,6 +9,7 @@
 #include "absl/status/statusor.h"
 #include "hnswlib/hnswlib.h"
 #include "index_options.h"
+#include "index_registry.h"
 #include "macros.h"
 #include "sqlite3ext.h"
 #include "vector.h"
@@ -44,13 +45,17 @@ class VirtualTable : public sqlite3_vtab {
 
   ~VirtualTable();
 
-  VirtualTable(NamedVectorSpace space, const IndexOptions& options)
-      : space_(std::move(space)),
-        index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
-            space_.space.get(), options.max_elements, options.M,
-            options.ef_construction, options.random_seed,
-            options.allow_replace_deleted)),
-        allow_replace_deleted_(options.allow_replace_deleted) {
+  // `registry` and `handle` are owned by the connection's IndexRegistry, not by
+  // this object. `handle` must already live in `registry` under `key`.
+  VirtualTable(IndexRegistry* registry, RegistryKey key, IndexHandle* handle)
+      : registry_(registry),
+        key_(std::move(key)),
+        handle_(handle),
+        space_(handle->space),
+        index_(handle->index),
+        allow_replace_deleted_(handle->allow_replace_deleted) {
+    VECTORLITE_ASSERT(registry_ != nullptr);
+    VECTORLITE_ASSERT(handle_ != nullptr);
     VECTORLITE_ASSERT(space_.space != nullptr);
     VECTORLITE_ASSERT(index_ != nullptr);
   }
@@ -97,11 +102,15 @@ class VirtualTable : public sqlite3_vtab {
   // Handles an INSERT carrying a non-NULL `operation` column.
   int ExecutePersistenceCommand(sqlite3_value** argv);
 
-  NamedVectorSpace space_;
-  std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
-  // allow_replace_deleted is a runtime-only hnswlib flag that is not stored in
-  // the serialized index, so it is retained here to reapply it after LoadFrom.
-  bool allow_replace_deleted_;
+  IndexRegistry* registry_;  // not owned
+  RegistryKey key_;          // this table's (schema, name)
+  IndexHandle* handle_;      // owned by registry_
+  // References into *handle_, so existing member-access call sites are
+  // unchanged. The handle has a stable address (owned via unique_ptr in the
+  // registry map), so these references stay valid until the entry is erased.
+  NamedVectorSpace& space_;
+  std::unique_ptr<hnswlib::HierarchicalNSW<float>>& index_;
+  bool& allow_replace_deleted_;
 };
 
 // Just a marker function that tells BestIndex that this is a vector search
