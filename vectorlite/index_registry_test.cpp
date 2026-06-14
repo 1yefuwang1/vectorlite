@@ -65,5 +65,33 @@ TEST(IndexRegistry, KeysWithDifferentSchemasAreDistinct) {
   EXPECT_EQ(registry.Find({"temp", "t"}), temp_handle);
 }
 
+TEST(IndexRegistry, RenameMovesEntryAndKeepsHandleAddress) {
+  IndexRegistry registry;
+  IndexHandle* handle = registry.Insert({"main", "old"}, MakeTestHandle());
+  registry.Rename({"main", "old"}, {"main", "new"});
+  EXPECT_EQ(registry.Find({"main", "old"}), nullptr);
+  // The handle address is preserved so live references stay valid.
+  EXPECT_EQ(registry.Find({"main", "new"}), handle);
+}
+
+TEST(IndexRegistry, RenameReplacesExistingEntryAtNewKey) {
+  IndexRegistry registry;
+  IndexHandle* src = registry.Insert({"main", "old"}, MakeTestHandle());
+  registry.Insert({"main", "new"}, MakeTestHandle());
+  registry.Rename({"main", "old"}, {"main", "new"});
+  EXPECT_EQ(registry.Find({"main", "old"}), nullptr);
+  EXPECT_EQ(registry.Find({"main", "new"}), src);
+}
+
+TEST(IndexRegistry, RenameIsNoOpForMissingOrIdenticalKey) {
+  IndexRegistry registry;
+  registry.Rename({"main", "absent"}, {"main", "whatever"});
+  EXPECT_EQ(registry.Find({"main", "whatever"}), nullptr);
+
+  IndexHandle* handle = registry.Insert({"main", "t"}, MakeTestHandle());
+  registry.Rename({"main", "t"}, {"main", "t"});
+  EXPECT_EQ(registry.Find({"main", "t"}), handle);
+}
+
 }  // namespace
 }  // namespace vectorlite

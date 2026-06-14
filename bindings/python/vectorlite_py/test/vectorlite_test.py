@@ -399,6 +399,20 @@ def test_index_survives_foreign_connection_ddl():
         conn_a.close()
 
 
+def test_index_survives_rename():
+    conn = get_connection()
+    cur = conn.cursor()
+    vectors = _make_table_and_fill(cur)
+    assert _count(cur, 'surv', vectors[0]) == 20
+    cur.execute('alter table surv rename to renamed')
+    # The in-memory index must follow the table to its new name.
+    assert _count(cur, 'renamed', vectors[0]) == 20
+    # Inserts and queries keep working under the new name.
+    cur.execute('insert into renamed (rowid, my_embedding) values (?, ?)', (100, np.float32(np.random.random(DIM)).tobytes()))
+    assert _count(cur, 'renamed', vectors[0], k=21) == 21
+    conn.close()
+
+
 def test_name_reuse_with_different_shape_is_clean():
     conn = get_connection()
     cur = conn.cursor()

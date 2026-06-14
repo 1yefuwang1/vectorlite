@@ -28,7 +28,7 @@ static sqlite3_module vector_search_module = {
     /* xCommit     */ 0,
     /* xRollback   */ 0,
     /* xFindFunction */ VirtualTable::FindFunction,
-    /* xRename     */ 0,
+    /* xRename     */ VirtualTable::Rename,
     /* xSavepoint  */ 0,
     /* xRelease    */ 0,
     /* xRollbackTo */ 0,

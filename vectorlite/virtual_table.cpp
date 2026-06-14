@@ -261,6 +261,23 @@ int VirtualTable::Disconnect(sqlite3_vtab* pVTab) {
   return SQLITE_OK;
 }
 
+int VirtualTable::Rename(sqlite3_vtab* pVTab, const char* zNew) {
+  DLOG(INFO) << "Rename called";
+  VECTORLITE_ASSERT(pVTab != nullptr);
+  VECTORLITE_ASSERT(zNew != nullptr);
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  // A rename keeps the table in the same schema, so reuse the schema name and
+  // move the registry entry to the new table name. This lets the in-memory
+  // index follow the table across the reparse that ALTER TABLE RENAME triggers,
+  // instead of being rebuilt empty. (A rolled-back rename reverts the schema
+  // name but not the registry key, the same in-memory-only limitation that DROP
+  // already has; durability still requires an explicit save.)
+  RegistryKey new_key{vtab->key_.first, zNew};
+  vtab->registry_->Rename(vtab->key_, new_key);
+  vtab->key_ = std::move(new_key);
+  return SQLITE_OK;
+}
+
 int VirtualTable::Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor) {
   DLOG(INFO) << "Open called";
   VECTORLITE_ASSERT(pVtab != nullptr);

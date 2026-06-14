@@ -79,6 +79,7 @@ class VirtualTable : public sqlite3_vtab {
   static int Connect(sqlite3* db, void* pAux, int argc, const char* const* argv,
                      sqlite3_vtab** ppVTab, char** pzErr);
   static int Disconnect(sqlite3_vtab* pVTab);
+  static int Rename(sqlite3_vtab* pVTab, const char* zNew);
 
   static int BestIndex(sqlite3_vtab* pVTab, sqlite3_index_info*);
   static int Open(sqlite3_vtab* pVtab, sqlite3_vtab_cursor** ppCursor);

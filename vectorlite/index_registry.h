@@ -42,6 +42,11 @@ class IndexRegistry {
   // Removes the entry for `key` if present.
   void Erase(const RegistryKey& key);
 
+  // Moves the entry from `old_key` to `new_key`, preserving the handle's
+  // address (and thus any references held into it). Any existing entry at
+  // `new_key` is replaced. No-op if `old_key` is absent or equals `new_key`.
+  void Rename(const RegistryKey& old_key, const RegistryKey& new_key);
+
  private:
   std::map<RegistryKey, std::unique_ptr<IndexHandle>> handles_;
 };
