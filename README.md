@@ -97,7 +97,7 @@ insert into {table_name}(operation, path) values ('save', '/path/to/index.bin');
 -- current in-memory index; on any error the existing index is left unchanged.
 insert into {table_name}(operation, path) values ('load', '/path/to/index.bin');
 ```
-On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is lost on connection close unless you explicitly save it.
+On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is held per database connection and survives schema changes (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections) for the life of the connection. It is lost when the connection closes unless you explicitly save it.
 
 Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
 
