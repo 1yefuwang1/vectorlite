@@ -49,7 +49,8 @@ class VirtualTable : public sqlite3_vtab {
         index_(std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.space.get(), options.max_elements, options.M,
             options.ef_construction, options.random_seed,
-            options.allow_replace_deleted)) {
+            options.allow_replace_deleted)),
+        allow_replace_deleted_(options.allow_replace_deleted) {
     VECTORLITE_ASSERT(space_.space != nullptr);
     VECTORLITE_ASSERT(index_ != nullptr);
   }
@@ -98,6 +99,9 @@ class VirtualTable : public sqlite3_vtab {
 
   NamedVectorSpace space_;
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
+  // allow_replace_deleted is a runtime-only hnswlib flag that is not stored in
+  // the serialized index, so it is retained here to reapply it after LoadFrom.
+  bool allow_replace_deleted_;
 };
 
 // Just a marker function that tells BestIndex that this is a vector search

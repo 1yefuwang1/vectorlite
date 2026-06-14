@@ -174,6 +174,9 @@ absl::Status VirtualTable::LoadFrom(const std::string& path) {
         file_data_size, space_.space->get_data_size()));
   }
 
+  // allow_replace_deleted is a runtime-only flag and is not stored in the
+  // serialized index, so reapply the table's configured value after loading.
+  new_index->allow_replace_deleted_ = allow_replace_deleted_;
   index_ = std::move(new_index);
   return absl::OkStatus();
 }

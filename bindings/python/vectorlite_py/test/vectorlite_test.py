@@ -191,6 +191,39 @@ def test_load_replaces_existing_contents(random_vectors):
         conn.close()
 
 
+def test_allow_replace_deleted_preserved_after_load(random_vectors):
+    # allow_replace_deleted is a runtime-only hnswlib flag that is NOT stored in
+    # the serialized index. A loaded table must keep the table's configured value
+    # (default true), otherwise inserting into a full index after a delete fails.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+        capacity = 16
+
+        conn = get_connection()
+        cur = conn.cursor()
+        # Fill an index to capacity (default allow_replace_deleted=true) and save.
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        for i in range(capacity):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+        conn.close()
+
+        # Load into a fresh table created with the default allow_replace_deleted=true.
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        # The index is full. Delete one row, then insert a new rowid: this only
+        # succeeds if allow_replace_deleted survived the load (it reuses the slot).
+        cur.execute('delete from dst where rowid = 0')
+        cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (capacity, random_vectors[0].tobytes()))
+
+        result = cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 1)).fetchall()
+        assert result[0][0] == capacity
+        conn.close()
+
+
 def test_load_dimension_mismatch_is_rejected(random_vectors):
     with tempfile.TemporaryDirectory() as tempdir:
         index_path = os.path.join(tempdir, 'index.bin')
