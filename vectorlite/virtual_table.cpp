@@ -36,6 +36,8 @@ namespace vectorlite {
 enum ColumnIndexInTable {
   kColumnIndexVector,
   kColumnIndexDistance,
+  kColumnIndexOperation,
+  kColumnIndexPath,
 };
 
 enum FunctionConstraint {
@@ -119,8 +121,10 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
     }
   }
 
-  std::string sql = absl::StrFormat("CREATE TABLE X(%s, distance REAL hidden)",
-                                    vector_space->vector_name);
+  std::string sql = absl::StrFormat(
+      "CREATE TABLE X(%s, distance REAL hidden, operation TEXT hidden, path "
+      "TEXT hidden)",
+      vector_space->vector_name);
   rc = sqlite3_declare_vtab(db, sql.c_str());
   DLOG(INFO) << "vtab declared: " << sql.c_str() << ", rc=" << rc;
   if (rc != SQLITE_OK) {
@@ -352,6 +356,10 @@ int VirtualTable::Column(sqlite3_vtab_cursor* pCur, sqlite3_context* pCtx,
       sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
       return SQLITE_ERROR;
     }
+  } else if (kColumnIndexOperation == N || kColumnIndexPath == N) {
+    // operation/path are a write-only command channel.
+    sqlite3_result_null(pCtx);
+    return SQLITE_OK;
   } else {
     std::string err = absl::StrFormat("Invalid column index: %d", N);
     sqlite3_result_text(pCtx, err.c_str(), err.size(), SQLITE_TRANSIENT);
