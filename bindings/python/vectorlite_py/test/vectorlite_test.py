@@ -156,8 +156,9 @@ def test_save_and_load_round_trip(random_vectors):
             conn = get_connection()
             cur = conn.cursor()
             cur.execute(f'create virtual table reloaded using vectorlite(my_embedding {vector_type}[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
-            # No rows yet.
-            assert cur.execute('select count(*) from reloaded').fetchone()[0] == 0
+            # The table is empty until we load: a knn_search returns nothing.
+            # (vectorlite rejects unconstrained scans like `select count(*)`.)
+            assert cur.execute('select rowid from reloaded where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall() == []
             cur.execute('insert into reloaded(operation, path) values (?, ?)', ('load', index_path))
 
             after = cur.execute('select rowid, distance from reloaded where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), 10)).fetchall()
