@@ -157,8 +157,14 @@ absl::Status VirtualTable::LoadFrom(const std::string& path) {
   std::unique_ptr<hnswlib::HierarchicalNSW<float>> new_index;
   try {
     // This constructor loads the index from `path`; it throws on failure.
+    // Passing the table's configured max_elements lets a saved index be
+    // reloaded into a larger-capacity table; hnswlib falls back to the file's
+    // value if it is smaller than the file's element count. allow_replace_deleted
+    // is a runtime-only flag that is not serialized, so pass the table's
+    // configured value here so it survives the load.
     new_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-        space_.space.get(), path);
+        space_.space.get(), path, /*nmslib=*/false, index_->max_elements_,
+        allow_replace_deleted_);
   } catch (const std::exception& ex) {
     return absl::InternalError(ex.what());
   }
@@ -174,9 +180,6 @@ absl::Status VirtualTable::LoadFrom(const std::string& path) {
         file_data_size, space_.space->get_data_size()));
   }
 
-  // allow_replace_deleted is a runtime-only flag and is not stored in the
-  // serialized index, so reapply the table's configured value after loading.
-  new_index->allow_replace_deleted_ = allow_replace_deleted_;
   index_ = std::move(new_index);
   return absl::OkStatus();
 }

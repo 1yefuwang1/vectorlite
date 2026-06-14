@@ -224,6 +224,38 @@ def test_allow_replace_deleted_preserved_after_load(random_vectors):
         conn.close()
 
 
+def test_load_into_larger_max_elements_allows_growth(random_vectors):
+    # A saved index can be loaded into a table created with a larger
+    # max_elements, and the table can then grow beyond the file's capacity.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+        capacity = 16
+
+        conn = get_connection()
+        cur = conn.cursor()
+        # Fill an index to its capacity and save it.
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity}))')
+        for i in range(capacity):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+        conn.close()
+
+        # Load into a table declared with a larger max_elements.
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={capacity * 2}))')
+        cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
+
+        # Inserting beyond the file's original capacity succeeds only because the
+        # table's larger max_elements survived the load.
+        for i in range(capacity, capacity * 2):
+            cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+
+        rowids = set(r[0] for r in cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (random_vectors[0].tobytes(), capacity * 2)).fetchall())
+        assert rowids == set(range(capacity * 2))
+        conn.close()
+
+
 def test_load_dimension_mismatch_is_rejected(random_vectors):
     with tempfile.TemporaryDirectory() as tempdir:
         index_path = os.path.join(tempdir, 'index.bin')
@@ -246,6 +278,27 @@ def test_load_dimension_mismatch_is_rejected(random_vectors):
         # Existing contents are left intact after a rejected load.
         rowids = [r[0] for r in cur.execute('select rowid from dst where knn_search(my_embedding, knn_param(?, ?))', (marker.tobytes(), 1)).fetchall()]
         assert rowids == [999]
+        conn.close()
+
+
+def test_load_element_type_mismatch_is_rejected(random_vectors):
+    # Same dimension but a different element type changes the per-vector byte
+    # size (float32 is 4 bytes/element, float16 is 2), which the data-size check
+    # must reject.
+    with tempfile.TemporaryDirectory() as tempdir:
+        index_path = os.path.join(tempdir, 'index.bin')
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(f'create virtual table src using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        for i in range(10):
+            cur.execute('insert into src (rowid, my_embedding) values (?, ?)', (i, random_vectors[i].tobytes()))
+        cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
+
+        # Same dimension, different element type -> different data size.
+        cur.execute(f'create virtual table dst using vectorlite(my_embedding float16[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
+        with pytest.raises(apsw.SQLError):
+            cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
         conn.close()
 
 

@@ -93,10 +93,13 @@ Persist an index to disk, or restore a saved index into an in-memory table:
 ```sql
 -- Save the current in-memory index to a file (overwrites if it exists).
 insert into {table_name}(operation, path) values ('save', '/path/to/index.bin');
--- Load a saved index into a freshly created table with a matching vector dimension.
+-- Load a saved index into a freshly created table. Loading replaces the table's
+-- current in-memory index; on any error the existing index is left unchanged.
 insert into {table_name}(operation, path) values ('load', '/path/to/index.bin');
 ```
-Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name. The in-memory index is lost on connection close unless you explicitly save it.
+On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is lost on connection close unless you explicitly save it.
+
+Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
 
 You can insert, update and delete a vectorlite table as if it's a normal sqlite table. 
 ```sql
