@@ -154,43 +154,50 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
   return SQLITE_OK;
 }
 
-absl::Status VirtualTable::LoadIndexFromFile() {
+absl::Status VirtualTable::SaveTo(const std::string& path) {
   VECTORLITE_ASSERT(index_ != nullptr);
-  if (!file_path_.empty() && std::filesystem::exists(file_path_)) {
-    try {
-      index_->loadIndex(file_path_.string(), space_.space.get(),
-                        index_->max_elements_);
-    } catch (const std::runtime_error& ex) {
-      return absl::Status(absl::StatusCode::kInternal, ex.what());
-    } catch (const std::exception& ex) {
-      return absl::Status(absl::StatusCode::kUnknown, ex.what());
-    }
+  if (path.empty()) {
+    return absl::InvalidArgumentError("path must not be empty");
   }
-
-  return absl::OkStatus();
-}
-
-absl::Status VirtualTable::DeleteIndexFile() {
-  if (!file_path_.empty()) {
-    try {
-      std::filesystem::remove(file_path_);
-    } catch (const std::filesystem::filesystem_error& ex) {
-      return absl::Status(absl::StatusCode::kInternal, ex.what());
-    }
+  try {
+    index_->saveIndex(path);
+  } catch (const std::exception& ex) {
+    return absl::InternalError(ex.what());
   }
   return absl::OkStatus();
 }
 
-absl::Status VirtualTable::SaveIndexToFile() {
+absl::Status VirtualTable::LoadFrom(const std::string& path) {
   VECTORLITE_ASSERT(index_ != nullptr);
-  if (!file_path_.empty()) {
-    try {
-      index_->saveIndex(file_path_.string());
-    } catch (const std::runtime_error& ex) {
-      return absl::Status(absl::StatusCode::kInternal, ex.what());
-    }
+  if (path.empty()) {
+    return absl::InvalidArgumentError("path must not be empty");
+  }
+  if (!std::filesystem::exists(path)) {
+    return absl::NotFoundError(
+        absl::StrFormat("index file does not exist: %s", path));
   }
 
+  std::unique_ptr<hnswlib::HierarchicalNSW<float>> new_index;
+  try {
+    // This constructor loads the index from `path`; it throws on failure.
+    new_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
+        space_.space.get(), path);
+  } catch (const std::exception& ex) {
+    return absl::InternalError(ex.what());
+  }
+
+  // The file stores offsetData_ and label_offset_; their difference is the
+  // per-vector data size recorded when the index was created. Compare it to
+  // what this table's vector space expects to catch dimension/type mismatches.
+  size_t file_data_size = new_index->label_offset_ - new_index->offsetData_;
+  if (file_data_size != space_.space->get_data_size()) {
+    return absl::FailedPreconditionError(absl::StrFormat(
+        "index data size mismatch: file has %d bytes per vector, table expects "
+        "%d",
+        file_data_size, space_.space->get_data_size()));
+  }
+
+  index_ = std::move(new_index);
   return absl::OkStatus();
 }
 
