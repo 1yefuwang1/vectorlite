@@ -58,9 +58,9 @@ static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
 }
 
 // Shared by Create and Connect
-static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
-                            int argc, const char* const* argv,
-                            sqlite3_vtab** ppVTab, char** pzErr) {
+static int InitVirtualTable(sqlite3* db, void* pAux, int argc,
+                            const char* const* argv, sqlite3_vtab** ppVTab,
+                            char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
   if (rc != SQLITE_OK) {
     return rc;
@@ -80,9 +80,14 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
   // VIRTUAL TABLE statement.
   constexpr int kModuleParamOffset = 3;
 
-  if (argc != 2 + kModuleParamOffset && argc != 3 + kModuleParamOffset) {
-    *pzErr = sqlite3_mprintf("vectorlite expects 2 or 3 arguments, got %d",
-                             argc - kModuleParamOffset);
+  if (argc != 2 + kModuleParamOffset) {
+    *pzErr = sqlite3_mprintf(
+        "vectorlite expects 2 arguments (a vector space and index options), "
+        "got %d. The index file path argument has been removed; use INSERT "
+        "INTO <table>(operation, path) VALUES('save', <path>) to persist an "
+        "index and INSERT INTO <table>(operation, path) VALUES('load', <path>) "
+        "to restore one.",
+        argc - kModuleParamOffset);
     return SQLITE_ERROR;
   }
 
@@ -106,21 +111,6 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
     return SQLITE_ERROR;
   }
 
-  std::string_view index_file_path;
-  if (argc == 3 + kModuleParamOffset) {
-    index_file_path = argv[2 + kModuleParamOffset];
-    int size = index_file_path.size();
-    // Handle cases where the index_file_path is enclosed in double/single
-    // quotes. It is necessary for windows paths, because they contain ':', that
-    // must be quoted for sqlite to parse correctly.
-    if (size > 2) {
-      if ((index_file_path[0] == '\"' && index_file_path[size - 1] == '\"') ||
-          (index_file_path[0] == '\'' && index_file_path[size - 1] == '\'')) {
-        index_file_path = index_file_path.substr(1, size - 2);
-      }
-    }
-  }
-
   std::string sql = absl::StrFormat(
       "CREATE TABLE X(%s, distance REAL hidden, operation TEXT hidden, path "
       "TEXT hidden)",
@@ -132,21 +122,8 @@ static int InitVirtualTable(bool load_from_file, sqlite3* db, void* pAux,
   }
 
   try {
-    auto vtab = new VirtualTable(std::move(*vector_space), *index_options,
-                                 index_file_path);
+    auto vtab = new VirtualTable(std::move(*vector_space), *index_options);
     *ppVTab = vtab;
-
-    if (load_from_file) {
-      auto status = vtab->LoadIndexFromFile();
-      if (!status.ok()) {
-        *pzErr = sqlite3_mprintf("Failed to load index from file: %s",
-                                 absl::StatusMessageAsCStr(status));
-        delete vtab;
-        *ppVTab = nullptr;
-        return SQLITE_ERROR;
-      }
-    }
-
   } catch (const std::exception& ex) {
     *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
     return SQLITE_ERROR;
@@ -204,7 +181,7 @@ absl::Status VirtualTable::LoadFrom(const std::string& path) {
 int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
                          const char* const* argv, sqlite3_vtab** ppVTab,
                          char** pzErr) {
-  return InitVirtualTable(true, db, pAux, argc, argv, ppVTab, pzErr);
+  return InitVirtualTable(db, pAux, argc, argv, ppVTab, pzErr);
 }
 
 VirtualTable::~VirtualTable() {
@@ -216,34 +193,20 @@ VirtualTable::~VirtualTable() {
 int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Destroy called";
   VECTORLITE_ASSERT(pVTab != nullptr);
-  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
-  auto status = vtab->DeleteIndexFile();
-  if (!status.ok()) {
-    SetZErrMsg(&vtab->zErrMsg, "Failed to delete index file: %s",
-               absl::StatusMessageAsCStr(status));
-    return SQLITE_ERROR;
-  }
-  delete vtab;
+  delete static_cast<VirtualTable*>(pVTab);
   return SQLITE_OK;
 }
 
 int VirtualTable::Connect(sqlite3* db, void* pAux, int argc,
                           const char* const* argv, sqlite3_vtab** ppVTab,
                           char** pzErr) {
-  return InitVirtualTable(true, db, pAux, argc, argv, ppVTab, pzErr);
+  return InitVirtualTable(db, pAux, argc, argv, ppVTab, pzErr);
 }
 
 int VirtualTable::Disconnect(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Disconnect called";
   VECTORLITE_ASSERT(pVTab != nullptr);
-  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
-  auto status = vtab->SaveIndexToFile();
-  if (!status.ok()) {
-    SetZErrMsg(&vtab->zErrMsg, "Failed to save index to file: %s",
-               absl::StatusMessageAsCStr(status));
-    return SQLITE_ERROR;
-  }
-  delete vtab;
+  delete static_cast<VirtualTable*>(pVTab);
   return SQLITE_OK;
 }
 
@@ -687,11 +650,52 @@ int VirtualTable::InsertOrUpdateVector(VectorView vector, Cursor::Rowid rowid) {
   return SQLITE_OK;
 }
 
+int VirtualTable::ExecutePersistenceCommand(sqlite3_value** argv) {
+  sqlite3_value* op_value = argv[2 + kColumnIndexOperation];
+  std::string operation(
+      reinterpret_cast<const char*>(sqlite3_value_text(op_value)),
+      sqlite3_value_bytes(op_value));
+
+  sqlite3_value* path_value = argv[2 + kColumnIndexPath];
+  if (sqlite3_value_type(path_value) != SQLITE_TEXT) {
+    SetZErrMsg(&zErrMsg, "path must be provided as TEXT for '%s' operation",
+               operation.c_str());
+    return SQLITE_ERROR;
+  }
+  std::string path(
+      reinterpret_cast<const char*>(sqlite3_value_text(path_value)),
+      sqlite3_value_bytes(path_value));
+
+  absl::Status status;
+  if (operation == "save") {
+    status = SaveTo(path);
+  } else if (operation == "load") {
+    status = LoadFrom(path);
+  } else {
+    SetZErrMsg(&zErrMsg, "unknown operation '%s'; expected 'save' or 'load'",
+               operation.c_str());
+    return SQLITE_ERROR;
+  }
+
+  if (!status.ok()) {
+    SetZErrMsg(&zErrMsg, "%s failed: %s", operation.c_str(),
+               absl::StatusMessageAsCStr(status));
+    return SQLITE_ERROR;
+  }
+  return SQLITE_OK;
+}
+
 int VirtualTable::Update(sqlite3_vtab* pVTab, int argc, sqlite3_value** argv,
                          sqlite_int64* pRowid) {
   VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
   auto argv0_type = sqlite3_value_type(argv[0]);
   if (argc > 1 && argv0_type == SQLITE_NULL) {
+    // An INSERT carrying a non-NULL `operation` column is a persistence
+    // command (save/load), not a vector insert.
+    if (sqlite3_value_type(argv[2 + kColumnIndexOperation]) == SQLITE_TEXT) {
+      *pRowid = 0;
+      return vtab->ExecutePersistenceCommand(argv);
+    }
     // Insert with a new row
     if (sqlite3_value_type(argv[1]) == SQLITE_NULL) {
       SetZErrMsg(&vtab->zErrMsg, "rowid must be specified during insertion");
