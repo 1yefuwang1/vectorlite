@@ -35,6 +35,9 @@ jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+      CIBW_ENVIRONMENT_LINUX: "VCPKG_DEFAULT_BINARY_CACHE=/project/vcpkg-binary-cache"
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
@@ -46,7 +49,19 @@ jobs:
 
       - uses: benjlevesque/short-sha@v3.0
         id: short_sha
-    
+
+      - name: Create vcpkg binary cache directory
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-binary-cache
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
+
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
         with:
