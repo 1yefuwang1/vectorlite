@@ -2,6 +2,7 @@
 #include "sqlite3ext.h"
 #include "sqlite_functions.h"
 #include "virtual_table.h"
+#include "index_registry.h"
 
 SQLITE_EXTENSION_INIT1;
 
@@ -27,7 +28,7 @@ static sqlite3_module vector_search_module = {
     /* xCommit     */ 0,
     /* xRollback   */ 0,
     /* xFindFunction */ VirtualTable::FindFunction,
-    /* xRename     */ 0,
+    /* xRename     */ VirtualTable::Rename,
     /* xSavepoint  */ 0,
     /* xRelease    */ 0,
     /* xRollbackTo */ 0,
@@ -96,7 +97,10 @@ VECTORLITE_EXPORT int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg,
     return rc;
   }
 
-  rc = sqlite3_create_module(db, "vectorlite", &vector_search_module, nullptr);
+  auto* registry = new vectorlite::IndexRegistry();
+  rc = sqlite3_create_module_v2(
+      db, "vectorlite", &vector_search_module, registry,
+      [](void* p) { delete static_cast<vectorlite::IndexRegistry*>(p); });
   if (rc != SQLITE_OK) {
     *pzErrMsg = sqlite3_mprintf("Failed to create module vector_search: %s",
                                 sqlite3_errstr(rc));

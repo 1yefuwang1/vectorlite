@@ -57,8 +57,24 @@ static void SetZErrMsg(char** pzErr, const char* fmt, ...) {
   va_end(args);
 }
 
+// Builds an IndexHandle (vector space + fresh empty index) from parsed args.
+// Might throw (hnswlib allocation).
+static IndexHandle MakeIndexHandle(NamedVectorSpace space,
+                                   const IndexOptions& options,
+                                   std::string_view vector_space_str,
+                                   std::string_view index_options_str) {
+  auto index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
+      space.space.get(), options.max_elements, options.M,
+      options.ef_construction, options.random_seed,
+      options.allow_replace_deleted);
+  return IndexHandle{std::move(space), std::move(index),
+                     options.allow_replace_deleted,
+                     std::string(vector_space_str),
+                     std::string(index_options_str)};
+}
+
 // Shared by Create and Connect
-static int InitVirtualTable(sqlite3* db, void* pAux, int argc,
+static int InitVirtualTable(bool is_create, sqlite3* db, void* pAux, int argc,
                             const char* const* argv, sqlite3_vtab** ppVTab,
                             char** pzErr) {
   int rc = sqlite3_vtab_config(db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
@@ -121,13 +137,38 @@ static int InitVirtualTable(sqlite3* db, void* pAux, int argc,
     return rc;
   }
 
-  try {
-    auto vtab = new VirtualTable(std::move(*vector_space), *index_options);
-    *ppVTab = vtab;
-  } catch (const std::exception& ex) {
-    *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
-    return SQLITE_ERROR;
+  IndexRegistry* registry = static_cast<IndexRegistry*>(pAux);
+  VECTORLITE_ASSERT(registry != nullptr);
+  RegistryKey key{argv[1], argv[2]};
+
+  IndexHandle* handle = nullptr;
+  if (!is_create) {
+    // On connect/reparse, reuse the existing in-memory index, but only if it
+    // matches the current table definition. A stale entry left by a different
+    // table that reused this name will not match and is rebuilt instead.
+    handle = registry->Find(key);
+    if (handle != nullptr &&
+        (handle->vector_space_str != vector_space_str ||
+         handle->index_options_str != index_options_str)) {
+      handle = nullptr;
+    }
   }
+
+  if (handle == nullptr) {
+    // xCreate always builds fresh (replacing any stale entry); xConnect builds
+    // fresh only when no matching entry exists.
+    try {
+      handle = registry->Insert(
+          key, MakeIndexHandle(std::move(*vector_space), *index_options,
+                               vector_space_str, index_options_str));
+    } catch (const std::exception& ex) {
+      *pzErr = sqlite3_mprintf("Failed to create virtual table: %s", ex.what());
+      return SQLITE_ERROR;
+    }
+  }
+
+  auto vtab = new VirtualTable(registry, key, handle);
+  *ppVTab = vtab;
   return SQLITE_OK;
 }
 
@@ -187,7 +228,8 @@ absl::Status VirtualTable::LoadFrom(const std::string& path) {
 int VirtualTable::Create(sqlite3* db, void* pAux, int argc,
                          const char* const* argv, sqlite3_vtab** ppVTab,
                          char** pzErr) {
-  return InitVirtualTable(db, pAux, argc, argv, ppVTab, pzErr);
+  return InitVirtualTable(/*is_create=*/true, db, pAux, argc, argv, ppVTab,
+                          pzErr);
 }
 
 VirtualTable::~VirtualTable() {
@@ -199,20 +241,40 @@ VirtualTable::~VirtualTable() {
 int VirtualTable::Destroy(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Destroy called";
   VECTORLITE_ASSERT(pVTab != nullptr);
-  delete static_cast<VirtualTable*>(pVTab);
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  vtab->registry_->Erase(vtab->key_);
+  delete vtab;
   return SQLITE_OK;
 }
 
 int VirtualTable::Connect(sqlite3* db, void* pAux, int argc,
                           const char* const* argv, sqlite3_vtab** ppVTab,
                           char** pzErr) {
-  return InitVirtualTable(db, pAux, argc, argv, ppVTab, pzErr);
+  return InitVirtualTable(/*is_create=*/false, db, pAux, argc, argv, ppVTab,
+                          pzErr);
 }
 
 int VirtualTable::Disconnect(sqlite3_vtab* pVTab) {
   DLOG(INFO) << "Disconnect called";
   VECTORLITE_ASSERT(pVTab != nullptr);
   delete static_cast<VirtualTable*>(pVTab);
+  return SQLITE_OK;
+}
+
+int VirtualTable::Rename(sqlite3_vtab* pVTab, const char* zNew) {
+  DLOG(INFO) << "Rename called";
+  VECTORLITE_ASSERT(pVTab != nullptr);
+  VECTORLITE_ASSERT(zNew != nullptr);
+  VirtualTable* vtab = static_cast<VirtualTable*>(pVTab);
+  // A rename keeps the table in the same schema, so reuse the schema name and
+  // move the registry entry to the new table name. This lets the in-memory
+  // index follow the table across the reparse that ALTER TABLE RENAME triggers,
+  // instead of being rebuilt empty. (A rolled-back rename reverts the schema
+  // name but not the registry key, the same in-memory-only limitation that DROP
+  // already has; durability still requires an explicit save.)
+  RegistryKey new_key{vtab->key_.first, zNew};
+  vtab->registry_->Rename(vtab->key_, new_key);
+  vtab->key_ = std::move(new_key);
   return SQLITE_OK;
 }
 
