@@ -27,8 +27,7 @@ requires a Python interpreter built with
 ``--enable-loadable-sqlite-extensions`` (standard on Homebrew, python.org
 and modern Linux distribution Python builds). If your interpreter does not
 enable that, ``conn.enable_load_extension(True)`` raises ``AttributeError``
-or ``OperationalError`` and you will need a different Python build (or
-``apsw``).
+or ``OperationalError`` and you will need a different Python build.
 
 Vectorlite's metadata-filter (rowid pushdown) feature requires
 SQLite >= 3.38; the benchmark itself does not exercise that path, so any

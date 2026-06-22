@@ -365,20 +365,20 @@ Bencharmk sqlite_vec as comparison.
 The quickest way to get started is to install vectorlite using python.
 ```shell
 # Note: vectorlite-py not vectorlite. vectorlite is another project.
-pip install vectorlite-py apsw numpy
+pip install vectorlite-py numpy
 ```
-Vectorlite's metadata filter feature requires sqlite>=3.38. Python's builtin `sqlite` module is usually built with old sqlite versions. So `apsw` is used here as sqlite driver, because it provides bindings to latest sqlite. Vectorlite still works with old sqlite versions if metadata filter support is not required.
+Vectorlite's metadata filter feature requires sqlite>=3.38. Python 3.14's built-in `sqlite3` module bundles SQLite 3.50.4 (>= 3.38), so no extra driver is needed. Vectorlite still works with older sqlite versions if metadata filter support is not required.
 Below is a minimal example of using vectorlite. It can also be found in the examples folder.
 
 ```python
 import vectorlite_py
-import apsw
+import sqlite3
 import numpy as np
 """
 Quick start of using vectorlite extension.
 """
 
-conn = apsw.Connection(':memory:')
+conn = sqlite3.connect(':memory:')
 conn.enable_load_extension(True) # enable extension loading
 conn.load_extension(vectorlite_py.vectorlite_path()) # load vectorlite
 
@@ -494,7 +494,7 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 3. ~~SIMD is only enabled on x86 platforms. Because the default implementation in hnswlib doesn't support SIMD on ARM. Vectorlite is 3x-4x slower on MacOS-ARM than MacOS-x64. I plan to improve it in the future.~~
 4. rowid in sqlite3 is of type int64_t and can be negative. However, rowid in a vectorlite table should be in this range `[0, min(max value of size_t, max value of int64_t)]`. The reason is rowid is used as `labeltype` in hnsw index, which has type `size_t`(usually 32-bit or 64-bit depending on the platform).
 5. Transaction is not supported.
-6. Metadata filter(rowid filter) requires sqlite3 >= 3.38. Python's built-in `sqlite` module is usually built with old versions. Please use a newer sqlite binding such as `apsw` if you want to use metadata filter. knn_search() without rowid fitler still works for old sqlite3.
+6. Metadata filter(rowid filter) requires sqlite3 >= 3.38. Python 3.14's built-in `sqlite3` module bundles SQLite 3.50.4 (>= 3.38) to use it. knn_search() without rowid fitler still works for old sqlite3.
 7. The vector index is held in memory.
 8. Deleting a row only marks the vector as deleted and doesn't free the memory. The vector will not be included in later queries. However, if another vector is inserted with the same rowid, the memory will be reused.
 9. A vectorlite table can only have one vector column.

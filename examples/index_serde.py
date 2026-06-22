@@ -1,6 +1,5 @@
 import sqlite3
 from typing import Optional
-import apsw 
 import numpy as np
 import os
 import timeit
@@ -14,8 +13,6 @@ vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_pat
 if vectorlite_path != vectorlite_py.vectorlite_path():
     print(f"Using local vectorlite: {vectorlite_path}")
 
-use_apsw = os.environ.get('USE_BUILTIN_SQLITE3', '0') == '0'
-
 DIM = 1000
 NUM_ELEMENTS = 10000
 
@@ -24,7 +21,7 @@ data = np.float32(np.random.random((NUM_ELEMENTS, DIM)))
 
 def create_connection():
     # create connection to in-memory database
-    conn = apsw.Connection(':memory:') if use_apsw else sqlite3.connect(':memory:')
+    conn = sqlite3.connect(':memory:')
     conn.enable_load_extension(True)
     conn.load_extension(vectorlite_path)
     return conn
@@ -95,42 +92,40 @@ time_taken = timeit.timeit(lambda: test_recall('x', 'my_embedding', 32), number=
 print(f'time taken for calculating recall rate with ef=32: {time_taken} seconds')
 
 
-if use_apsw:
-    # Optionally, rowid can be filtered using 'rowid in (...)'. The rowid filter is pushed down to HNSW index and is efficient.
-    # Please note: 'rowid in (...)' is only supported for sqlite3 version >= 3.38.0. The built-in sqlite3 module usually doesn't support it. 
-    # Please use apsw module if you want to use rowid filtering.
-    cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)', (data[0].tobytes(), 10))
-    print(cur.fetchall())
+# Optionally, rowid can be filtered using 'rowid in (...)'. The rowid filter is pushed down to HNSW index and is efficient.
+# Note: 'rowid in (...)' requires sqlite3 version >= 3.38.0, which Python 3.14's built-in sqlite3 module satisfies.
+cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)', (data[0].tobytes(), 10))
+print(cur.fetchall())
 
-    # Multiple 'rowid in (...)' is not supported.
-    # cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1) and rowid in (1, 2)', (data[0].tobytes(), 10))
-    # print(cur.fetchall())
+# Multiple 'rowid in (...)' is not supported.
+# cur.execute(f'select rowid, distance from x where knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1) and rowid in (1, 2)', (data[0].tobytes(), 10))
+# print(cur.fetchall())
 
-    # However, multiple constraints can be combined using 'or'.
-    cur.execute(f'select rowid, distance from x where (knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)) or (knn_search(my_embedding, knn_param(?, ?)) and rowid in (3,4,5))', (data[0].tobytes(), 10, data[1].tobytes(), 10))
-    print(cur.fetchall())
+# However, multiple constraints can be combined using 'or'.
+cur.execute(f'select rowid, distance from x where (knn_search(my_embedding, knn_param(?, ?)) and rowid in (0, 1)) or (knn_search(my_embedding, knn_param(?, ?)) and rowid in (3,4,5))', (data[0].tobytes(), 10, data[1].tobytes(), 10))
+print(cur.fetchall())
 
 
-    # delete a row
-    cur.execute(f'delete from x where rowid = 1')
-    cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1')
-    assert (len(cur.fetchall()) == 0)
-    print('row 1 is deleted')
+# delete a row
+cur.execute(f'delete from x where rowid = 1')
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 1')
+assert (len(cur.fetchall()) == 0)
+print('row 1 is deleted')
 
-    # Because vectors are bytes, we need to use vector_to_json to print a vector.
-    cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
-    result = cur.fetchone()
-    vector2 = result[1]
-    print(f'vector of row 2 is {vector2}')
+# Because vectors are bytes, we need to use vector_to_json to print a vector.
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
+result = cur.fetchone()
+vector2 = result[1]
+print(f'vector of row 2 is {vector2}')
 
-    # update a row
-    cur.execute(f'update x set my_embedding = ? where rowid = 2', (data[0].tobytes(),))
-    print('vector of row 2 is updated')
+# update a row
+cur.execute(f'update x set my_embedding = ? where rowid = 2', (data[0].tobytes(),))
+print('vector of row 2 is updated')
 
-    cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
-    result = cur.fetchone()
-    vector2_updated = result[1]
-    assert (vector2 != vector2_updated)
+cur.execute(f'select rowid, vector_to_json(my_embedding) from x where rowid = 2')
+result = cur.fetchone()
+vector2_updated = result[1]
+assert (vector2 != vector2_updated)
 
 cur.execute('insert into x(operation, path) values (?, ?)', ('save', index_file_path))
 conn.close()
