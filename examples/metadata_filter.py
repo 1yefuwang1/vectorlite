@@ -1,6 +1,6 @@
 import vectorlite_py
 import numpy as np
-import apsw
+import sqlite3
 import os
 
 """
@@ -16,7 +16,7 @@ vectorlite_path = os.environ.get("VECTORLITE_PATH", vectorlite_py.vectorlite_pat
 if vectorlite_path != vectorlite_py.vectorlite_path():
     print(f"Using local vectorlite: {vectorlite_path}")
 
-conn = apsw.Connection(':memory:')
+conn = sqlite3.connect(':memory:')
 conn.enable_load_extension(True) # enable extension loading
 conn.load_extension(vectorlite_path) # loads vectorlite
 

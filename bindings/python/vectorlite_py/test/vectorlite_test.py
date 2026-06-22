@@ -1,5 +1,5 @@
 import vectorlite_py
-import apsw
+import sqlite3
 import pytest
 import numpy as np
 import json
@@ -8,7 +8,7 @@ import os
 import platform
 
 def get_connection():
-    conn = apsw.Connection(':memory:')
+    conn = sqlite3.connect(':memory:', isolation_level=None)
     conn.enable_load_extension(True)
     conn.load_extension(vectorlite_py.vectorlite_path())
     return conn
@@ -272,7 +272,7 @@ def test_load_dimension_mismatch_is_rejected(random_vectors):
         marker = np.float32(np.random.random(DIM * 2))
         cur.execute('insert into dst (rowid, my_embedding) values (?, ?)', (999, marker.tobytes()))
 
-        with pytest.raises(apsw.SQLError):
+        with pytest.raises(sqlite3.OperationalError):
             cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
 
         # Existing contents are left intact after a rejected load.
@@ -297,7 +297,7 @@ def test_load_element_type_mismatch_is_rejected(random_vectors):
 
         # Same dimension, different element type -> different data size.
         cur.execute(f'create virtual table dst using vectorlite(my_embedding float16[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
-        with pytest.raises(apsw.SQLError):
+        with pytest.raises(sqlite3.OperationalError):
             cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
         conn.close()
 
@@ -306,7 +306,7 @@ def test_load_missing_file_is_rejected():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(operation, path) values (?, ?)', ('load', '/no/such/index.bin'))
     conn.close()
 
@@ -315,7 +315,7 @@ def test_unknown_operation_is_rejected():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(operation, path) values (?, ?)', ('frobnicate', '/tmp/index.bin'))
     conn.close()
 
@@ -323,7 +323,7 @@ def test_unknown_operation_is_rejected():
 def test_three_argument_create_is_rejected():
     conn = get_connection()
     cur = conn.cursor()
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute(f"create virtual table t using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}), 'index.bin')")
     conn.close()
 
@@ -335,7 +335,7 @@ def test_command_columns_are_hidden(random_vectors):
     cur.execute('insert into t (rowid, my_embedding) values (?, ?)', (0, random_vectors[0].tobytes()))
     # `select *` must not surface operation/path columns.
     cur.execute('select * from t where rowid = 0')
-    column_names = [d[0] for d in cur.getdescription()]
+    column_names = [d[0] for d in cur.description]
     assert 'operation' not in column_names
     assert 'path' not in column_names
     conn.close()
@@ -379,7 +379,7 @@ def test_index_survives_foreign_connection_ddl():
         db_path = os.path.join(tempdir, 'shared.db')
 
         def open_conn():
-            c = apsw.Connection(db_path)
+            c = sqlite3.connect(db_path, isolation_level=None)
             c.enable_load_extension(True)
             c.load_extension(vectorlite_py.vectorlite_path())
             return c

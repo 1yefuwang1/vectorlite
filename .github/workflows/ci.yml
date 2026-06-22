@@ -68,7 +68,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==3.3.1 pytest apsw numpy
+        run: python -m pip install cibuildwheel==3.3.1 pytest numpy
 
       - uses: ilammy/msvc-dev-cmd@v1 
 

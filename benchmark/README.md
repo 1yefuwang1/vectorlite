@@ -63,11 +63,8 @@ To check what your interpreter has:
 python -c "import sqlite3; print(sqlite3.sqlite_version)"
 ```
 
-If the version is too old and you cannot upgrade Python, switch to
-[apsw](https://rogerbinns.github.io/apsw/), which bundles its own
-SQLite (currently 3.53). The benchmark targets stdlib `sqlite3`
-specifically, but the rest of vectorlite's documentation and examples
-work with apsw.
+If the version is too old and you cannot upgrade Python, upgrade to
+Python 3.14 or newer, whose built-in `sqlite3` bundles SQLite 3.50.4 (>= 3.38).
 
 ## Quick start
 
@@ -216,7 +213,7 @@ interpreter built with `--enable-loadable-sqlite-extensions` (standard on
 Homebrew, python.org installer and modern Linux distro Pythons). If your
 interpreter does not enable that, `conn.enable_load_extension(True)`
 raises `AttributeError` or `OperationalError` and you'll need a different
-Python build (or `apsw`).
+Python build.
 
 The benchmark itself does not use vectorlite's metadata-filter (rowid
 pushdown) feature, so any SQLite version that vectorlite loads on works

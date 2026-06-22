@@ -1,3 +1,2 @@
 vectorlite_py
 numpy>=1.22
-apsw>=3.45
