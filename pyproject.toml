@@ -52,9 +52,12 @@ SKBUILD = "1"
 CMAKE_BUILD_TYPE = "Release"
 
 [tool.cibuildwheel]
-test-requires = ["pytest", "numpy"]
-# --import-mode=importlib forces pytest to use installed packages instead of the local source code
-test-command = "pytest --import-mode=importlib {project}/bindings/python/vectorlite_py/test"
+# cibuildwheel only builds wheels here. The prebuilt CPython interpreters that
+# cibuildwheel uses (manylinux/macOS/Windows) ship a `sqlite3` module compiled
+# without loadable-extension support, so they cannot load the vectorlite
+# extension. The built wheels are instead tested in CI with a uv-managed
+# CPython 3.14, whose `sqlite3` has loadable extensions enabled and bundles a
+# recent SQLite (>= 3.38).
 skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp39*", "cp310*", "cp311*", "cp312*", "cp313*"]
 
 [tool.cibuildwheel.macos]

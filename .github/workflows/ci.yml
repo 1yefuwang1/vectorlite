@@ -68,7 +68,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==3.3.1 pytest numpy
+        run: python -m pip install cibuildwheel==3.3.1
 
       - uses: ilammy/msvc-dev-cmd@v1 
 
@@ -105,6 +105,34 @@ jobs:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
 
+      # The wheels are tested with a uv-managed CPython 3.14 because it has
+      # loadable SQLite extensions enabled (the interpreters bundled with
+      # cibuildwheel and actions/setup-python do not) and ships a recent SQLite.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Set up Python 3.14 test environment
+        shell: bash
+        run: |
+          ws="$(pwd)"
+          uv python install 3.14
+          uv venv --python 3.14 "${ws}/.venv-test"
+          if [ -f "${ws}/.venv-test/bin/python" ]; then
+            echo "TEST_PYTHON=${ws}/.venv-test/bin/python" >> "$GITHUB_ENV"
+          else
+            echo "TEST_PYTHON=${ws}/.venv-test/Scripts/python.exe" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run Python integration tests against built wheel
+        shell: bash
+        run: |
+          uv pip install --python "$TEST_PYTHON" pytest numpy
+          for wheel in wheelhouse/*.whl; do
+            echo "Installing $wheel"
+            uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
+          done
+          "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test
+
       - name: Get release version
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
         shell: bash
@@ -123,22 +151,27 @@ jobs:
         shell: bash
         run: |
 
+          uv pip install --python "$TEST_PYTHON" -r examples/requirements.txt
+          # Reinstall the freshly built wheel last so it wins over the PyPI copy
+          # pulled in by examples/requirements.txt.
           for wheel in wheelhouse/*.whl; do
-            echo "Running examples for $wheel"
-            python -m pip install $wheel --force-reinstall
-            python -m pip install -r examples/requirements.txt
-            for example in examples/*.py; do
-              echo "Running $example"
-              python $example
-            done
+            uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
+          done
+          for example in examples/*.py; do
+            echo "Running $example"
+            "$TEST_PYTHON" "$example"
           done
 
       - name: Run benchmark
         working-directory: benchmark
         shell: bash
         run: |
-          python -m pip install -r requirements.txt
-          python benchmark.py
+          uv pip install --python "$TEST_PYTHON" -r requirements.txt
+          # Reinstall the freshly built wheel last so it wins over the PyPI copy.
+          for wheel in ../wheelhouse/*.whl; do
+            uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
+          done
+          "$TEST_PYTHON" benchmark.py
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
