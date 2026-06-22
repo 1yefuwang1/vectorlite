@@ -5,7 +5,8 @@
 Expand vectorlite's Python integration tests into a comprehensive
 behavior-characterization suite that pins down the extension's *observable SQL
 behavior*, so regressions in any future change are caught. The suite exercises
-the public surface end-to-end through SQLite (via `apsw`) rather than internal
+the public surface end-to-end through SQLite (via the stdlib `sqlite3` module)
+rather than internal
 C++ APIs.
 
 ## Scope
@@ -84,7 +85,7 @@ Confirmed empirically against the built extension:
 
 ## Non-goals / YAGNI
 
-- No new test framework or runner; reuse pytest + apsw + numpy.
+- No new test framework or runner; reuse pytest + stdlib sqlite3 + numpy.
 - No changes to extension source code (test-only change).
 - No exact HNSW graph snapshotting (too brittle); rely on brute-force-checkable
   properties instead.

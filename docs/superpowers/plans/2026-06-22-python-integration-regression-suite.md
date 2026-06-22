@@ -4,9 +4,9 @@
 
 **Goal:** Add a comprehensive, behavior-characterizing Python integration test suite that locks down vectorlite's observable SQL behavior so future changes cannot silently regress it.
 
-**Architecture:** New pytest files under `bindings/python/vectorlite_py/test/`, organized by category, sharing helpers from a new `conftest.py`. The existing `vectorlite_test.py` is left untouched. These are characterization tests: each asserts the extension's *current, verified* behavior, so they pass immediately against the built `.so` and fail if behavior drifts.
+**Architecture:** New pytest files under `bindings/python/vectorlite_py/test/`, organized by category, sharing helpers from a new `helpers.py` and fixtures from a new `conftest.py`. The existing `vectorlite_test.py` is left untouched. These are characterization tests: each asserts the extension's *current, verified* behavior, so they pass immediately against the built `.so` and fail if behavior drifts.
 
-**Tech Stack:** pytest, apsw (SQLite driver), numpy, the prebuilt `vectorlite.so`.
+**Tech Stack:** pytest, the Python standard-library `sqlite3` module (the project requires Python >= 3.14, which bundles SQLite 3.50.x with loadable-extension support; `apsw` was dropped in commit 96c5d37 / PR #54), numpy, the prebuilt `vectorlite.so`.
 
 ---
 
@@ -19,14 +19,29 @@ source .venv/bin/activate
 PYTHONPATH=bindings/python python -m pytest bindings/python/vectorlite_py/test/<file>.py -q
 ```
 
-The venv must have `apsw`, `numpy`, `pytest`. If `apsw` is missing:
-`python -m ensurepip --upgrade && python -m pip install apsw`.
+The test environment needs only `numpy` and `pytest`; database access uses the
+stdlib `sqlite3` module. The interpreter must be a CPython 3.14 whose `sqlite3`
+was compiled with loadable-extension support (the repo's `.venv` qualifies:
+`sqlite3.sqlite_version == '3.50.4'` and `load_extension` works).
 
 Because these are characterization tests against existing behavior, the "test
 fails first" TDD step is replaced by: **run the new test file and confirm every
 test PASSES** (the suite characterizes shipped behavior). A failure means either
 the test is wrong or a genuine behavior gap was found — investigate before
 committing.
+
+**Connection pattern** (mirrors `vectorlite_test.py`):
+
+```python
+conn = sqlite3.connect(':memory:', isolation_level=None)
+conn.enable_load_extension(True)
+conn.load_extension(vectorlite_py.vectorlite_path())
+```
+
+**Error type:** every vectorlite-side failure surfaces as
+`sqlite3.OperationalError` (verified for duplicate rowid, capacity, dimension
+mismatch, invalid options, bad function args, malformed JSON, load failures, and
+unconstrained scans).
 
 ---
 
@@ -63,8 +78,8 @@ was verified empirically before writing the plan.
 - [ ] **Step 1a: Write `helpers.py` (pure functions and constants)**
 
 ```python
+import sqlite3
 import numpy as np
-import apsw
 import vectorlite_py
 
 SEED = 12345
@@ -75,8 +90,8 @@ SPACES = ['l2', 'ip', 'cosine', '']
 DEQUANT_RTOL = {'float32': 0.0, 'bfloat16': 1e-2, 'float16': 1e-3}
 
 
-def get_connection():
-    conn = apsw.Connection(':memory:')
+def get_connection(path=':memory:'):
+    conn = sqlite3.connect(path, isolation_level=None)
     conn.enable_load_extension(True)
     conn.load_extension(vectorlite_py.vectorlite_path())
     return conn
@@ -165,9 +180,9 @@ Covers: `vector_distance` (l2/ip/cosine vs numpy), `vector_to_json` /
 ```python
 import json
 import math
+import sqlite3
 import numpy as np
 import pytest
-import apsw
 import vectorlite_py
 from vectorlite_py.test.helpers import l2_squared, ip_distance, cosine_distance
 
@@ -198,26 +213,26 @@ def test_vector_distance_self_is_zero_for_l2(conn):
 
 
 def test_vector_distance_wrong_arg_count_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('select vector_distance(?, ?)', (b'', b'')).fetchone()
 
 
 def test_vector_distance_unknown_space_is_rejected(conn):
     a = np.float32([1, 2, 3, 4]).tobytes()
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('select vector_distance(?, ?, "manhattan")', (a, a)).fetchone()
 
 
 def test_vector_distance_dimension_mismatch_is_rejected(conn):
     a = np.float32([1, 2, 3]).tobytes()
     b = np.float32([1, 2, 3, 4]).tobytes()
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('select vector_distance(?, ?, "l2")', (a, b)).fetchone()
 
 
 def test_vector_distance_non_float_blob_is_rejected(conn):
     # A 3-byte blob is not a multiple of sizeof(float).
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('select vector_distance(?, ?, "l2")', (b'abc', b'abc')).fetchone()
 
 
@@ -242,12 +257,12 @@ def test_vector_to_json_format(conn):
 
 
 def test_vector_from_json_rejects_malformed_json(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute("select vector_from_json('not json')").fetchone()
 
 
 def test_vector_to_json_rejects_non_blob(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('select vector_to_json(?)', ('a string',)).fetchone()
 
 
@@ -390,10 +405,10 @@ knn_search.
 - [ ] **Step 1: Write the test file**
 
 ```python
+import sqlite3
 import numpy as np
 import pytest
-import apsw
-from vectorlite_py.test.helpers import get_connection, random_vectors, brute_force_knn, l2_squared
+from vectorlite_py.test.helpers import random_vectors, brute_force_knn, l2_squared
 
 DIM = 16
 
@@ -466,7 +481,7 @@ def test_k_must_be_positive(conn):
     cur = conn.cursor()
     _fill(cur, vectors, space='l2', max_elements=10)
     for bad_k in (0, -1):
-        with pytest.raises(apsw.SQLError):
+        with pytest.raises(sqlite3.OperationalError):
             cur.execute('select rowid from t where knn_search(e, knn_param(?, ?))',
                         (vectors[0].tobytes(), bad_k)).fetchall()
 
@@ -475,7 +490,7 @@ def test_ef_must_be_positive(conn):
     vectors = random_vectors(np.random.default_rng(26), 5, DIM)
     cur = conn.cursor()
     _fill(cur, vectors, space='l2', max_elements=10)
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('select rowid from t where knn_search(e, knn_param(?, ?, ?))',
                     (vectors[0].tobytes(), 3, 0)).fetchall()
 
@@ -484,7 +499,7 @@ def test_knn_param_rejects_bad_arg_counts(conn):
     vectors = random_vectors(np.random.default_rng(27), 5, DIM)
     cur = conn.cursor()
     _fill(cur, vectors, space='l2', max_elements=10)
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('select rowid from t where knn_search(e, knn_param(?))',
                     (vectors[0].tobytes(),)).fetchall()
 
@@ -536,7 +551,7 @@ def test_unconstrained_scan_is_rejected(conn):
     cur = conn.cursor()
     _fill(cur, vectors, space='l2', max_elements=10)
     # vectorlite requires a knn_search or rowid constraint on every query.
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('select rowid from t').fetchall()
 ```
 
@@ -572,9 +587,9 @@ options, malformed column syntax.
 - [ ] **Step 1: Write the test file**
 
 ```python
+import sqlite3
 import numpy as np
 import pytest
-import apsw
 from vectorlite_py.test.helpers import get_connection, ELEMENT_TYPES, SPACES
 
 DIM = 8
@@ -616,51 +631,51 @@ def test_valid_hnsw_options_are_accepted(conn, options):
 
 
 def test_missing_max_elements_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(M=16))')
 
 
 def test_unknown_option_key_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(
             f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10, bogus=1))')
 
 
 def test_non_numeric_option_value_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(
             f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=abc))')
 
 
 def test_trailing_garbage_in_options_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(
             f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10, gibberish))')
 
 
 def test_non_hnsw_index_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(f'create virtual table t using vectorlite(e float32[{DIM}], flat(max_elements=10))')
 
 
 def test_unknown_element_type_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(f'create virtual table t using vectorlite(e int8[{DIM}], hnsw(max_elements=10))')
 
 
 def test_unknown_space_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(
             f'create virtual table t using vectorlite(e float32[{DIM}] manhattan, hnsw(max_elements=10))')
 
 
 def test_missing_dimension_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute('create virtual table t using vectorlite(e float32, hnsw(max_elements=10))')
 
 
 def test_three_argument_create_is_rejected(conn):
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         conn.cursor().execute(
             f"create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10), 'index.bin')")
 
@@ -671,7 +686,7 @@ def test_command_columns_are_hidden(conn):
     cur.execute('insert into t(rowid, e) values (?, ?)',
                 (0, np.float32(np.random.default_rng(3).random(DIM)).tobytes()))
     cur.execute('select * from t where rowid = 0')
-    column_names = [d[0] for d in cur.getdescription()]
+    column_names = [d[0] for d in cur.description]
     assert 'operation' not in column_names
     assert 'path' not in column_names
 ```
@@ -707,10 +722,10 @@ allow_replace_deleted semantics, wrong-dim insert, large batch.
 - [ ] **Step 1: Write the test file**
 
 ```python
+import sqlite3
 import numpy as np
 import pytest
-import apsw
-from vectorlite_py.test.helpers import get_connection, random_vectors
+from vectorlite_py.test.helpers import random_vectors
 
 DIM = 8
 
@@ -736,7 +751,7 @@ def test_duplicate_rowid_insert_is_rejected(conn):
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10))')
     cur.execute('insert into t(rowid, e) values (?, ?)', (0, _vec(1).tobytes()))
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(rowid, e) values (?, ?)', (0, _vec(2).tobytes()))
 
 
@@ -757,7 +772,7 @@ def test_insert_beyond_capacity_is_rejected(conn):
     cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=2))')
     cur.execute('insert into t(rowid, e) values (?, ?)', (0, _vec(1).tobytes()))
     cur.execute('insert into t(rowid, e) values (?, ?)', (1, _vec(2).tobytes()))
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(rowid, e) values (?, ?)', (2, _vec(3).tobytes()))
 
 
@@ -782,7 +797,7 @@ def test_allow_replace_deleted_false_rejects_reuse(conn):
     cur.execute('insert into t(rowid, e) values (?, ?)', (0, _vec(1).tobytes()))
     cur.execute('insert into t(rowid, e) values (?, ?)', (1, _vec(2).tobytes()))
     cur.execute('delete from t where rowid = 0')
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(rowid, e) values (?, ?)', (2, _vec(3).tobytes()))
 
 
@@ -790,7 +805,7 @@ def test_wrong_dimension_insert_is_rejected(conn):
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10))')
     wrong = np.float32(np.random.default_rng(1).random(DIM + 1))
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(rowid, e) values (?, ?)', (0, wrong.tobytes()))
 
 
@@ -840,20 +855,12 @@ errors, multi-table, file-backed reopen, rename, vacuum.
 ```python
 import os
 import tempfile
+import sqlite3
 import numpy as np
 import pytest
-import apsw
-import vectorlite_py
 from vectorlite_py.test.helpers import get_connection, random_vectors, ELEMENT_TYPES
 
 DIM = 16
-
-
-def _open_file_conn(path):
-    c = apsw.Connection(path)
-    c.enable_load_extension(True)
-    c.load_extension(vectorlite_py.vectorlite_path())
-    return c
 
 
 @pytest.mark.parametrize('vector_type', ELEMENT_TYPES)
@@ -942,7 +949,7 @@ def test_load_replaces_existing_contents(conn):
 def test_load_missing_file_is_rejected(conn):
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10))')
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(operation, path) values (?, ?)', ('load', '/no/such/index.bin'))
 
 
@@ -957,7 +964,7 @@ def test_load_dimension_mismatch_is_rejected(conn):
         cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
 
         cur.execute(f'create virtual table dst using vectorlite(e float32[{DIM * 2}], hnsw(max_elements=100))')
-        with pytest.raises(apsw.SQLError):
+        with pytest.raises(sqlite3.OperationalError):
             cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
 
 
@@ -972,14 +979,14 @@ def test_load_element_type_mismatch_is_rejected(conn):
         cur.execute('insert into src(operation, path) values (?, ?)', ('save', index_path))
 
         cur.execute(f'create virtual table dst using vectorlite(e float16[{DIM}], hnsw(max_elements=100))')
-        with pytest.raises(apsw.SQLError):
+        with pytest.raises(sqlite3.OperationalError):
             cur.execute('insert into dst(operation, path) values (?, ?)', ('load', index_path))
 
 
 def test_unknown_operation_is_rejected(conn):
     cur = conn.cursor()
     cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10))')
-    with pytest.raises(apsw.SQLError):
+    with pytest.raises(sqlite3.OperationalError):
         cur.execute('insert into t(operation, path) values (?, ?)', ('frobnicate', '/tmp/x.bin'))
 
 
@@ -1005,13 +1012,13 @@ def test_two_tables_save_load_independently(conn):
         assert rowids == set(range(10))
 
 
-def test_file_backed_index_is_not_auto_persisted(conn):
+def test_file_backed_index_is_not_auto_persisted():
     # The HNSW index lives in memory; a file-backed DB does not persist it
     # automatically. A fresh connection sees an empty index until 'load'.
     with tempfile.TemporaryDirectory() as d:
         db_path = os.path.join(d, 'x.db')
         vectors = random_vectors(np.random.default_rng(66), 5, DIM)
-        c = _open_file_conn(db_path)
+        c = get_connection(db_path)
         cur = c.cursor()
         cur.execute(f'create virtual table t using vectorlite(e float32[{DIM}], hnsw(max_elements=10))')
         for i in range(5):
@@ -1020,7 +1027,7 @@ def test_file_backed_index_is_not_auto_persisted(conn):
                                (vectors[0].tobytes(), 10)).fetchall()) == 5
         c.close()
 
-        c2 = _open_file_conn(db_path)
+        c2 = get_connection(db_path)
         cur2 = c2.cursor()
         assert cur2.execute('select rowid from t where knn_search(e, knn_param(?, ?))',
                            (vectors[0].tobytes(), 10)).fetchall() == []
@@ -1083,8 +1090,8 @@ PYTHONPATH=bindings/python python -m pytest bindings/python/vectorlite_py/test -
 ```
 
 Expected: every test passes (existing `vectorlite_test.py` plus all new files).
-If `L2DistanceSquared`-style randomness causes a one-off failure, re-run once
-before treating it as a regression.
+If an `L2DistanceSquared`-style random-vector check causes a one-off failure,
+re-run once before treating it as a regression.
 
 - [ ] **Step 2: Confirm no source files were modified**
 
@@ -1115,8 +1122,11 @@ All spec categories map to at least one task.
 
 **Type/name consistency:** Helper names (`get_connection`, `random_vectors`,
 `brute_force_knn`, `l2_squared`, `ip_distance`, `cosine_distance`,
-`DEQUANT_RTOL`, `ELEMENT_TYPES`, `SPACES`) defined in Task 1 are used
-consistently in Tasks 2-7. Each test file imports only those helpers.
+`DEQUANT_RTOL`, `ELEMENT_TYPES`, `SPACES`, `SEED`) defined in Task 1 are used
+consistently in Tasks 2-7. `get_connection` accepts an optional `path` argument
+so the file-backed persistence test reuses it. Every database error is asserted
+as `sqlite3.OperationalError`.
 
-**Verified behaviors:** All asserted error messages and outcomes were confirmed
-empirically against the built extension before writing this plan.
+**Verified behaviors:** All asserted error types/messages and outcomes were
+confirmed empirically against the built extension using stdlib `sqlite3`
+(SQLite 3.50.4) before writing this plan.
