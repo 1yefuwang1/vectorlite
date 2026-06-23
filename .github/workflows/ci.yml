@@ -17,6 +17,10 @@ on:
         type: 'choice'
         options: ['no', 'yes']
 
+  push:
+    branches:
+      - main
+
   pull_request:
     branches:
       - main
@@ -182,7 +186,7 @@ jobs:
 
   upload_wheels:
     name: Upload wheels
-    if: ${{ github.event.inputs.upload_wheel != 'no' && github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_wheel != 'no' }}
     needs: build_wheels
     runs-on: ubuntu-latest
 
@@ -219,7 +223,7 @@ jobs:
 
   publish_npm_pkgs:
     name: Upload npm packages
-    if: ${{ github.event.inputs.publish_npm == 'yes' && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_npm == 'yes' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
     needs: build_wheels
     runs-on: ubuntu-latest
 
