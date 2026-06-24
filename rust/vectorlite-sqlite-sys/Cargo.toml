@@ -1,0 +1,18 @@
+[package]
+name = "vectorlite-sqlite-sys"
+version = "0.3.0"
+edition = "2021"
+description = "Pre-generated raw FFI bindings for the SQLite loadable-extension API (sqlite3ext.h)"
+license = "Apache-2.0"
+
+[lib]
+name = "vectorlite_sqlite_sys"
+
+# Enabling `regenerate` re-runs bindgen against the vcpkg sqlite3ext.h and
+# rewrites src/bindings.rs. Needs libclang; off by default so normal builds use
+# the committed bindings and require no libclang.
+[features]
+regenerate = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.70", optional = true }
