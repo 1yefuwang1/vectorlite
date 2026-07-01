@@ -68,7 +68,7 @@ pub unsafe extern "C" fn knn_param(
     let query_vector = match vector::blob_to_f32(&blob) {
         Ok(v) => v,
         Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse vector due to: {}", e));
+            ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}"));
             return;
         }
     };
@@ -110,7 +110,7 @@ pub unsafe extern "C" fn vector_distance(
     if argc != 3 {
         ffi::result_error(
             ctx,
-            &format!("vector_distance expects 3 arguments but {} provided", argc),
+            &format!("vector_distance expects 3 arguments but {argc} provided"),
         );
         return;
     }
@@ -119,10 +119,7 @@ pub unsafe extern "C" fn vector_distance(
     if t0 != ffi::SQLITE_BLOB as c_int || t1 != ffi::SQLITE_BLOB as c_int {
         ffi::result_error(
             ctx,
-            &format!(
-                "vector_distance expects vectors of type blob but found {} and {}",
-                t0, t1
-            ),
+            &format!("vector_distance expects vectors of type blob but found {t0} and {t1}"),
         );
         return;
     }
@@ -135,7 +132,7 @@ pub unsafe extern "C" fn vector_distance(
     let distance_type = match parse_distance_type(&space_str) {
         Some(d) => d,
         None => {
-            ffi::result_error(ctx, &format!("Failed to parse space type: {}", space_str));
+            ffi::result_error(ctx, &format!("Failed to parse space type: {space_str}"));
             return;
         }
     };
@@ -144,7 +141,7 @@ pub unsafe extern "C" fn vector_distance(
     let v0 = match vector::blob_to_f32(&b0) {
         Ok(v) => v,
         Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse 1st vector due to: {}", e));
+            ffi::result_error(ctx, &format!("Failed to parse 1st vector due to: {e}"));
             return;
         }
     };
@@ -152,7 +149,7 @@ pub unsafe extern "C" fn vector_distance(
     let v1 = match vector::blob_to_f32(&b1) {
         Ok(v) => v,
         Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse 2nd vector due to: {}", e));
+            ffi::result_error(ctx, &format!("Failed to parse 2nd vector due to: {e}"));
             return;
         }
     };
@@ -179,7 +176,7 @@ pub unsafe extern "C" fn vector_from_json(
     if argc != 1 {
         ffi::result_error(
             ctx,
-            &format!("vector_from_json expects 1 argument but {} provided", argc),
+            &format!("vector_from_json expects 1 argument but {argc} provided"),
         );
         return;
     }
@@ -190,7 +187,7 @@ pub unsafe extern "C" fn vector_from_json(
     let json = ffi::value_text_string(arg(argv, 0));
     match vector::from_json(&json) {
         Ok(v) => ffi::result_blob(ctx, &vector::f32_to_blob(&v)),
-        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {}", e)),
+        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}")),
     }
 }
 
@@ -202,7 +199,7 @@ pub unsafe extern "C" fn vector_to_json(
     if argc != 1 {
         ffi::result_error(
             ctx,
-            &format!("vector_to_json expects 1 argument but {} provided", argc),
+            &format!("vector_to_json expects 1 argument but {argc} provided"),
         );
         return;
     }
@@ -213,7 +210,7 @@ pub unsafe extern "C" fn vector_to_json(
     let blob = ffi::value_blob_slice(arg(argv, 0));
     match vector::blob_to_f32(&blob) {
         Ok(v) => ffi::result_text(ctx, &vector::to_json(&v)),
-        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {}", e)),
+        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}")),
     }
 }
 

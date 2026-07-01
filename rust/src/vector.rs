@@ -3,7 +3,7 @@
 
 /// Parses a little-endian f32 blob. Errors if the length is not a multiple of 4.
 pub fn blob_to_f32(blob: &[u8]) -> Result<Vec<f32>, String> {
-    if blob.len() % std::mem::size_of::<f32>() != 0 {
+    if !blob.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err("Blob size is not a multiple of float".to_string());
     }
     let mut out = Vec::with_capacity(blob.len() / 4);
@@ -24,8 +24,7 @@ pub fn f32_to_blob(v: &[f32]) -> Vec<u8> {
 
 /// Parses a JSON array of numbers into an f32 vector.
 pub fn from_json(json: &str) -> Result<Vec<f32>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let arr = value
         .as_array()
         .ok_or_else(|| "Input JSON is not an array.".to_string())?;

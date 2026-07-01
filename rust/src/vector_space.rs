@@ -21,7 +21,6 @@ pub enum VectorType {
 }
 
 impl VectorType {
-    #[allow(dead_code)]
     pub fn element_size(self) -> usize {
         match self {
             VectorType::Float32 => 4,
@@ -55,13 +54,6 @@ pub struct NamedVectorSpace {
     pub dim: usize,
     pub distance_type: DistanceType,
     pub vector_type: VectorType,
-}
-
-impl NamedVectorSpace {
-    #[allow(dead_code)]
-    pub fn normalize(&self) -> bool {
-        self.distance_type == DistanceType::Cosine
-    }
 }
 
 fn is_word_char(c: char) -> bool {
@@ -163,7 +155,7 @@ pub fn parse_named_vector_space(input: &str) -> Result<NamedVectorSpace, String>
         }
         let dist_str = &input[i..dist_end];
         distance_type = parse_distance_type(dist_str)
-            .ok_or_else(|| format!("Invalid distance type: {}", dist_str))?;
+            .ok_or_else(|| format!("Invalid distance type: {dist_str}"))?;
         i = dist_end;
     }
 
@@ -174,11 +166,11 @@ pub fn parse_named_vector_space(input: &str) -> Result<NamedVectorSpace, String>
     }
 
     if !is_valid_column_name(vector_name) {
-        return Err(format!("Invalid vector name: {}", vector_name));
+        return Err(format!("Invalid vector name: {vector_name}"));
     }
 
     let vector_type = parse_vector_type(vector_type_str)
-        .ok_or_else(|| format!("Invalid vector type: {}", vector_type_str))?;
+        .ok_or_else(|| format!("Invalid vector type: {vector_type_str}"))?;
 
     Ok(NamedVectorSpace {
         vector_name: vector_name.to_string(),

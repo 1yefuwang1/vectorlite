@@ -51,50 +51,47 @@ impl IndexOptions {
         if !body.is_empty() {
             for pair in body.split(',') {
                 let pair = pair.trim();
-                let (key, value) = pair
-                    .split_once('=')
-                    .ok_or_else(|| {
-                        format!(
-                            "Invalid index option. Expected comma-separated key=value pairs, got: {}",
-                            inner
-                        )
-                    })?;
+                let (key, value) = pair.split_once('=').ok_or_else(|| {
+                    format!(
+                        "Invalid index option. Expected comma-separated key=value pairs, got: {inner}"
+                    )
+                })?;
                 let key = key.trim();
                 let value = value.trim();
                 if !is_word(key) || !is_word(value) {
                     return Err(format!(
-                        "Invalid index option. Expected comma-separated key=value pairs, got: {}",
-                        inner
+                        "Invalid index option. Expected comma-separated key=value pairs, got: {inner}"
                     ));
                 }
                 match key {
                     "max_elements" => {
                         options.max_elements = value
                             .parse()
-                            .map_err(|_| format!("Cannot parse max_elements: {}", value))?;
+                            .map_err(|_| format!("Cannot parse max_elements: {value}"))?;
                         has_max_elements = true;
                     }
                     "M" => {
-                        options.m =
-                            value.parse().map_err(|_| format!("Cannot parse M: {}", value))?;
+                        options.m = value
+                            .parse()
+                            .map_err(|_| format!("Cannot parse M: {value}"))?;
                     }
                     "ef_construction" => {
                         options.ef_construction = value
                             .parse()
-                            .map_err(|_| format!("Cannot parse ef_construction: {}", value))?;
+                            .map_err(|_| format!("Cannot parse ef_construction: {value}"))?;
                     }
                     "random_seed" => {
                         options.random_seed = value
                             .parse()
-                            .map_err(|_| format!("Cannot parse random_seed: {}", value))?;
+                            .map_err(|_| format!("Cannot parse random_seed: {value}"))?;
                     }
                     "allow_replace_deleted" => {
                         options.allow_replace_deleted = parse_bool(value).ok_or_else(|| {
-                            format!("Cannot parse allow_replace_deleted: {}", value)
+                            format!("Cannot parse allow_replace_deleted: {value}")
                         })?;
                     }
                     other => {
-                        return Err(format!("Invalid index option: {}", other));
+                        return Err(format!("Invalid index option: {other}"));
                     }
                 }
             }

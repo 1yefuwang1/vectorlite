@@ -123,8 +123,7 @@ pub unsafe extern "C" fn dist_ip_f16(
 }
 
 /// The hnswlib distance-function pointer type.
-pub type DistFunc =
-    unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> f32;
+pub type DistFunc = unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> f32;
 
 /// Selects the distance callback for a (metric, element-type) pair. Cosine uses
 /// the inner-product function (vectors are normalized separately at insert and

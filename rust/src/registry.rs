@@ -18,10 +18,6 @@ pub type RegistryKey = (String, String);
 pub struct IndexEntry {
     pub index: Index,
     pub space: NamedVectorSpace,
-    /// Mirrors the C++ IndexHandle field. The C++ core preserves this flag
-    /// across save/load internally, so it is not read on the Rust side.
-    #[allow(dead_code)]
-    pub allow_replace_deleted: bool,
     pub vector_space_str: String,
     pub index_options_str: String,
 }

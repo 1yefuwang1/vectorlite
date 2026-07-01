@@ -25,9 +25,7 @@ fn find_vcpkg(repo_root: &Path, static_lib_marker: &str) -> Option<(PathBuf, Pat
             let triplet = entry.path();
             let include = triplet.join("include");
             let lib = triplet.join("lib");
-            if include.join("hnswlib/hnswlib.h").exists()
-                && lib.join(static_lib_marker).exists()
-            {
+            if include.join("hnswlib/hnswlib.h").exists() && lib.join(static_lib_marker).exists() {
                 return Some((include, lib));
             }
         }
@@ -88,8 +86,7 @@ fn main() {
     // the whole library in rather than have the linker drop it as unused.
     if !lib_dir.join(sqlite_marker).exists() {
         panic!(
-            "could not locate {} next to the highway lib; build the CMake project first",
-            sqlite_marker
+            "could not locate {sqlite_marker} next to the highway lib; build the CMake project first"
         );
     }
     println!("cargo:rustc-link-lib=static:+whole-archive=sqlite3");

@@ -33,11 +33,7 @@ unsafe fn register_function(
     name: &str,
     n_arg: c_int,
     flags: c_int,
-    func: unsafe extern "C" fn(
-        *mut ffi::sqlite3_context,
-        c_int,
-        *mut *mut ffi::sqlite3_value,
-    ),
+    func: unsafe extern "C" fn(*mut ffi::sqlite3_context, c_int, *mut *mut ffi::sqlite3_value),
 ) -> c_int {
     let cname = CString::new(name).unwrap();
     let rc = ffi::create_function(
@@ -49,7 +45,7 @@ unsafe fn register_function(
         Some(func),
     );
     if rc != ffi::SQLITE_OK as c_int {
-        ffi::set_err(pz_err_msg, &format!("Failed to create function {}", name));
+        ffi::set_err(pz_err_msg, &format!("Failed to create function {name}"));
     }
     rc
 }
@@ -68,65 +64,29 @@ pub unsafe extern "C" fn sqlite3_extension_init(
     ffi::set_api(p_api);
 
     let utf8 = ffi::SQLITE_UTF8 as c_int;
-    let deterministic_flags =
+    let deterministic =
         (ffi::SQLITE_UTF8 | ffi::SQLITE_INNOCUOUS | ffi::SQLITE_DETERMINISTIC) as c_int;
 
-    let rc = register_function(
-        db,
-        pz_err_msg,
-        "vector_distance",
-        3,
-        deterministic_flags,
-        scalar::vector_distance,
-    );
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
-
-    let rc = register_function(
-        db,
-        pz_err_msg,
-        "vector_from_json",
-        1,
-        deterministic_flags,
-        scalar::vector_from_json,
-    );
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
-
-    let rc = register_function(
-        db,
-        pz_err_msg,
-        "vector_to_json",
-        1,
-        deterministic_flags,
-        scalar::vector_to_json,
-    );
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
-
-    let rc = register_function(db, pz_err_msg, "knn_search", 2, utf8, scalar::knn_search);
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
-
-    let rc = register_function(db, pz_err_msg, "knn_param", -1, utf8, scalar::knn_param);
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
-
-    let rc = register_function(
-        db,
-        pz_err_msg,
-        "vectorlite_info",
-        0,
-        utf8,
-        scalar::vectorlite_info,
-    );
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
+    type ScalarFn =
+        unsafe extern "C" fn(*mut ffi::sqlite3_context, c_int, *mut *mut ffi::sqlite3_value);
+    let functions: &[(&str, c_int, c_int, ScalarFn)] = &[
+        ("vector_distance", 3, deterministic, scalar::vector_distance),
+        (
+            "vector_from_json",
+            1,
+            deterministic,
+            scalar::vector_from_json,
+        ),
+        ("vector_to_json", 1, deterministic, scalar::vector_to_json),
+        ("knn_search", 2, utf8, scalar::knn_search),
+        ("knn_param", -1, utf8, scalar::knn_param),
+        ("vectorlite_info", 0, utf8, scalar::vectorlite_info),
+    ];
+    for &(name, n_arg, flags, func) in functions {
+        let rc = register_function(db, pz_err_msg, name, n_arg, flags, func);
+        if rc != ffi::SQLITE_OK as c_int {
+            return rc;
+        }
     }
 
     let registry = Box::into_raw(Box::new(Registry::new())) as *mut c_void;

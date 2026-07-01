@@ -25,7 +25,12 @@ mod regenerate {
     pub fn run() {
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         // rust/vectorlite-sqlite-sys -> rust -> repo root
-        let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+        let repo_root = manifest_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
 
         let include_candidates = [
             "build/dev/vcpkg_installed/x64-linux/include",

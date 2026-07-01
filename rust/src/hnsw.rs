@@ -68,8 +68,11 @@ extern "C" {
         out_label: *mut u64,
         err: *mut *mut c_char,
     ) -> std::os::raw::c_int;
-    fn vl_hnsw_save(index: *mut VlHnsw, path: *const c_char, err: *mut *mut c_char)
-        -> std::os::raw::c_int;
+    fn vl_hnsw_save(
+        index: *mut VlHnsw,
+        path: *const c_char,
+        err: *mut *mut c_char,
+    ) -> std::os::raw::c_int;
     fn vl_hnsw_get_ef(index: *mut VlHnsw) -> usize;
     fn vl_hnsw_set_ef(index: *mut VlHnsw, ef: usize);
     fn vl_hnsw_per_vector_data_size(index: *mut VlHnsw) -> usize;

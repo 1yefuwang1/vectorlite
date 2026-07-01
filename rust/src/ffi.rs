@@ -6,7 +6,12 @@
 //! in C). We store that pointer once and expose thin typed wrappers. All of the
 //! `unsafe` needed to talk to SQLite is concentrated here.
 
-#![allow(non_upper_case_globals, non_camel_case_types, non_snake_case, dead_code)]
+#![allow(
+    non_upper_case_globals,
+    non_camel_case_types,
+    non_snake_case,
+    dead_code
+)]
 
 use std::os::raw::{c_char, c_int, c_void};
 
@@ -160,16 +165,10 @@ pub unsafe fn set_err(pp: *mut *mut c_char, msg: &str) {
 pub unsafe fn vtab_in(info: *mut sqlite3_index_info, i: c_int, handle: c_int) -> c_int {
     (api().vtab_in.unwrap())(info, i, handle)
 }
-pub unsafe fn vtab_in_first(
-    v: *mut sqlite3_value,
-    out: *mut *mut sqlite3_value,
-) -> c_int {
+pub unsafe fn vtab_in_first(v: *mut sqlite3_value, out: *mut *mut sqlite3_value) -> c_int {
     (api().vtab_in_first.unwrap())(v, out)
 }
-pub unsafe fn vtab_in_next(
-    v: *mut sqlite3_value,
-    out: *mut *mut sqlite3_value,
-) -> c_int {
+pub unsafe fn vtab_in_next(v: *mut sqlite3_value, out: *mut *mut sqlite3_value) -> c_int {
     (api().vtab_in_next.unwrap())(v, out)
 }
 
@@ -205,11 +204,7 @@ pub unsafe fn create_function(
     n_arg: c_int,
     flags: c_int,
     p_app: *mut c_void,
-    x_func: Option<
-        unsafe extern "C" fn(*mut sqlite3_context, c_int, *mut *mut sqlite3_value),
-    >,
+    x_func: Option<unsafe extern "C" fn(*mut sqlite3_context, c_int, *mut *mut sqlite3_value)>,
 ) -> c_int {
-    (api().create_function_v2.unwrap())(
-        db, name, n_arg, flags, p_app, x_func, None, None, None,
-    )
+    (api().create_function_v2.unwrap())(db, name, n_arg, flags, p_app, x_func, None, None, None)
 }

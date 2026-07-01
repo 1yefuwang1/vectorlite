@@ -202,7 +202,7 @@ impl Index {
             return Err("path must not be empty".to_string());
         }
         if !Path::new(path).exists() {
-            return Err(format!("index file does not exist: {}", path));
+            return Err(format!("index file does not exist: {path}"));
         }
         let new_index = Hnsw::load(
             &self.space,
@@ -215,8 +215,7 @@ impl Index {
         let file_size = new_index.per_vector_data_size();
         if file_size != expected {
             return Err(format!(
-                "index data size mismatch: file has {} bytes per vector, table expects {}",
-                file_size, expected
+                "index data size mismatch: file has {file_size} bytes per vector, table expects {expected}"
             ));
         }
 
