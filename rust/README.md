@@ -1,10 +1,12 @@
 # vectorlite (Rust port)
 
-A Rust port of the vectorlite SQLite extension's **virtual table and scalar
-functions**. The heavy numeric core is intentionally *not* rewritten: the
-existing C++ SIMD `ops` (Google Highway) and the hnswlib index are compiled into
-a static library and linked in. This crate owns the SQLite glue in safe,
-idiomatic Rust, confining `unsafe` to the SQLite FFI boundary and the thin C ABI.
+A Rust port of the vectorlite SQLite extension. **All virtual-table logic is in
+Rust** — the SQLite glue, constraint handling, per-connection index registry,
+vector-space/index-option parsing, quantization/normalization *decisions*, the
+rowid filter predicate, per-query `ef` handling, the load data-size check and
+save/load orchestration. C++ is reached **only via FFI, and only for two things:
+hnswlib and the SIMD `ops`** (Google Highway). `unsafe` is confined to the SQLite
+FFI boundary and the hnswlib/ops C ABI.
 
 ## Architecture
 
@@ -18,15 +20,24 @@ idiomatic Rust, confining `unsafe` to the SQLite FFI boundary and the thin C ABI
 │ index_options.rs  parse "hnsw(max_elements=..., M=..., ...)"                          │
 │ vector.rs         f32 blob <-> Vec<f32>, JSON (de)serialisation                        │
 │ registry.rs       per-connection index registry (survives reparse/vacuum/rename)      │
-│ core.rs           safe wrapper over the C ABI                                          │
+│ core.rs           vtab policy: encode/decode, ef orchestration, filter, load check     │
+│ ops.rs            safe `ops` FFI wrappers + hnswlib distance callbacks (in Rust)        │
+│ hnsw.rs           safe hnswlib FFI wrappers + rowid-filter trampoline (in Rust)         │
 │ vectorlite-sqlite-sys/  vendored, pre-generated SQLite extension-API bindings          │
 └──────────────────────────────────────┬───────────────────────────────────────────────┘
-                                        │ C ABI (cpp/core_shim.h)
+                                        │ C ABI (cpp/core_shim.h) — hnswlib + ops ONLY
 ┌──────────────────────────────────────▼───────────────────────────────────────────────┐
-│ cpp/core_shim.cpp  hnswlib + vectorlite spaces + quantization (thin wrapper)           │
+│ cpp/core_shim.cpp  generic glue: a SpaceInterface adapter around a Rust distance        │
+│                    callback, a BaseFilterFunctor adapter around a Rust predicate, thin  │
+│                    HierarchicalNSW wrappers, and forwarders to `ops`. No vtab logic.     │
 │ vectorlite/ops/ops.cpp  (un-ported) SIMD kernels via Google Highway                    │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+The distance function hnswlib uses is a Rust `extern "C"` callback (`ops.rs`)
+that forwards to `ops`; the rowid filter is a Rust predicate invoked through a
+trampoline. So the *only* C++ is hnswlib itself, the `ops` kernels, and the
+minimal generic adapters needed to expose those two through a C ABI.
 
 ## Building
 

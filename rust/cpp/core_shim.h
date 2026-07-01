@@ -1,7 +1,10 @@
-// C ABI over the vectorlite numeric core (hnswlib + vectorlite spaces + ops +
-// quantization). This is intentionally a thin wrapper: all algorithm/SIMD code
-// lives in the existing C++ (`vectorlite/ops`) and hnswlib; the Rust side owns
-// the SQLite virtual-table glue and calls into these functions.
+// Pure C ABI over ONLY two things: hnswlib and vectorlite's SIMD `ops`.
+//
+// This file deliberately contains no virtual-table / business logic. It exposes
+// generic hnswlib primitives (an index whose distance function and rowid filter
+// are supplied by the caller as C callbacks) and thin forwarders to `ops`. All
+// policy — which distance/space to use, quantization, normalization, the filter
+// predicate, the load data-size check, save/load orchestration — lives in Rust.
 #ifndef VECTORLITE_CORE_SHIM_H
 #define VECTORLITE_CORE_SHIM_H
 
@@ -12,88 +15,88 @@
 extern "C" {
 #endif
 
-// Distance types. Must match Rust DistanceType discriminants.
-enum VlDistanceType {
-  VL_DISTANCE_L2 = 0,
-  VL_DISTANCE_IP = 1,
-  VL_DISTANCE_COSINE = 2,
-};
+// ------------------------------------------------------------------ ops FFI --
+// Thin forwarders to vectorlite::ops. bf16/f16 buffers are passed as uint16_t*
+// (the ops functions take hwy::bfloat16_t*/float16_t*, which are 2-byte structs
+// wrapping a uint16_t, so the pointer reinterpret is layout-compatible).
 
-// Vector element types. Must match Rust VectorType discriminants.
-enum VlVectorType {
-  VL_VECTOR_F32 = 0,
-  VL_VECTOR_BF16 = 1,
-  VL_VECTOR_F16 = 2,
-};
+float vl_ops_l2_sq_f32(const float* a, const float* b, size_t n);
+float vl_ops_l2_sq_bf16(const uint16_t* a, const uint16_t* b, size_t n);
+float vl_ops_l2_sq_f16(const uint16_t* a, const uint16_t* b, size_t n);
+float vl_ops_ip_dist_f32(const float* a, const float* b, size_t n);
+float vl_ops_ip_dist_bf16(const uint16_t* a, const uint16_t* b, size_t n);
+float vl_ops_ip_dist_f16(const uint16_t* a, const uint16_t* b, size_t n);
 
-// Rowid filter kinds for search.
-enum VlFilterKind {
-  VL_FILTER_NONE = 0,
-  VL_FILTER_IN = 1,
-  VL_FILTER_EQ = 2,
-};
+void vl_ops_normalize_f32(float* inout, size_t n);
+void vl_ops_normalize_bf16(uint16_t* inout, size_t n);
+void vl_ops_normalize_f16(uint16_t* inout, size_t n);
 
-typedef struct VlIndex VlIndex;
+void vl_ops_quantize_f32_to_bf16(const float* in, uint16_t* out, size_t n);
+void vl_ops_quantize_f32_to_f16(const float* in, uint16_t* out, size_t n);
+void vl_ops_bf16_to_f32(const uint16_t* in, float* out, size_t n);
+void vl_ops_f16_to_f32(const uint16_t* in, float* out, size_t n);
 
-// Creates an index. On failure returns NULL and, if `err` is non-NULL, sets
-// *err to a malloc'd message (free with vl_free_err).
-VlIndex* vl_index_create(size_t dim, int distance_type, int vector_type,
-                         size_t max_elements, size_t M, size_t ef_construction,
-                         size_t random_seed, int allow_replace_deleted,
-                         char** err);
+const char* vl_ops_best_target(void);
 
-void vl_index_free(VlIndex* index);
+// -------------------------------------------------------------- hnswlib FFI --
 
-size_t vl_index_dim(const VlIndex* index);
+// Distance function, matching hnswlib::DISTFUNC<float>: (a, b, dist_func_param).
+// The third argument is the pointer returned by the space's
+// get_dist_func_param(); this shim makes it point at the dimension (size_t).
+typedef float (*VlDistFunc)(const void*, const void*, const void*);
 
-// Bytes stored per vector (dim * sizeof(element_type)).
-size_t vl_index_data_size(const VlIndex* index);
+// Rowid filter predicate. Returns non-zero to keep the candidate `label`.
+typedef int (*VlFilterFunc)(void* ctx, uint64_t label);
 
-// Adds/replaces a vector (f32 input of length `len`, must equal dim). The shim
-// quantizes and/or normalizes internally according to the index's space.
-// Returns 0 on success, non-zero on failure (sets *err).
-int vl_index_add(VlIndex* index, const float* data, size_t len, uint64_t rowid,
-                 char** err);
+typedef struct VlSpace VlSpace;
+typedef struct VlHnsw VlHnsw;
 
-// Marks a rowid deleted. Returns 0 on success, non-zero on failure (sets *err).
-int vl_index_mark_delete(VlIndex* index, uint64_t rowid, char** err);
+// Wraps a caller-supplied distance function into an hnswlib SpaceInterface. The
+// space must outlive any index built from it (hnswlib caches its param pointer).
+VlSpace* vl_hnsw_space_create(VlDistFunc distfunc, size_t dim, size_t data_size);
+void vl_hnsw_space_free(VlSpace* space);
 
-// Returns 1 if rowid is present and not marked deleted, else 0.
-int vl_index_contains(const VlIndex* index, uint64_t rowid);
+// Creates an empty index over `space`. Returns NULL on failure (sets *err).
+VlHnsw* vl_hnsw_create(VlSpace* space, size_t max_elements, size_t M,
+                       size_t ef_construction, size_t random_seed,
+                       int allow_replace_deleted, char** err);
 
-// Reads a vector back, dequantized to f32 into `out` (must hold dim floats).
-// Returns 0 on success, -1 if rowid not found.
-int vl_index_get_vector(const VlIndex* index, uint64_t rowid, float* out);
+// Loads an index from `path` using `space`. Returns NULL on failure (sets *err).
+VlHnsw* vl_hnsw_load(VlSpace* space, const char* path, size_t max_elements,
+                     int allow_replace_deleted, char** err);
 
-// k-NN search. `query` is f32 of length `len` (must equal dim). `ef_override`
-// of 0 means "use the index default". Results (closer-first) are written to
-// out_distances/out_rowids, each of capacity `k`. Returns the number of results
-// written (>=0), or -1 on error (sets *err).
-int vl_index_search(VlIndex* index, const float* query, size_t len, size_t k,
-                    size_t ef_override, int filter_kind,
-                    const uint64_t* filter_rowids, size_t filter_count,
-                    float* out_distances, uint64_t* out_rowids, char** err);
+void vl_hnsw_free(VlHnsw* index);
 
-// Serializes the index to `path`. Returns 0 on success, non-zero on failure.
-int vl_index_save(VlIndex* index, const char* path, char** err);
+// Adds/replaces a point whose stored bytes are `data` (already in the index's
+// element type/normalization, prepared by the caller). Returns 0 on success.
+int vl_hnsw_add_point(VlHnsw* index, const void* data, uint64_t label,
+                      int replace_deleted, char** err);
 
-// Loads an index from `path`, replacing the in-memory index on success. The
-// table's configured max_elements and allow_replace_deleted are preserved. The
-// per-vector data size in the file must match this index's data size, otherwise
-// the load is rejected and the current index is left unchanged. Returns 0 on
-// success, non-zero on failure (sets *err).
-int vl_index_load(VlIndex* index, const char* path, char** err);
+int vl_hnsw_mark_delete(VlHnsw* index, uint64_t label, char** err);
 
-// Computes the distance between two f32 vectors of length `dim`. Cosine
-// normalizes internally. Returns 0 on success and writes *out; non-zero on
-// failure.
-int vl_distance(const float* a, const float* b, size_t dim, int distance_type,
-                float* out);
+// Returns 1 if `label` is present and not marked deleted, else 0.
+int vl_hnsw_contains(VlHnsw* index, uint64_t label);
 
-// Returns the best SIMD target chosen by Highway at runtime (static string).
-const char* vl_best_target(void);
+// Copies the stored bytes for `label` into `out` (exactly `nbytes`). Returns 0
+// on success, -1 if the label is absent. The caller dequantizes as needed.
+int vl_hnsw_get_data(VlHnsw* index, uint64_t label, void* out, size_t nbytes);
 
-// Frees an error string returned through an `err` out-parameter.
+// k-NN search returning up to `k` results closer-first. `filter` may be NULL.
+// Uses the index's current ef (the caller sets/restores ef via vl_hnsw_*_ef).
+// Returns the number of results written, or -1 on error (sets *err).
+int vl_hnsw_search(VlHnsw* index, const void* query, size_t k,
+                   VlFilterFunc filter, void* filter_ctx, float* out_dist,
+                   uint64_t* out_label, char** err);
+
+int vl_hnsw_save(VlHnsw* index, const char* path, char** err);
+
+size_t vl_hnsw_get_ef(VlHnsw* index);
+void vl_hnsw_set_ef(VlHnsw* index, size_t ef);
+
+// Per-vector data size recorded in the index's memory layout
+// (label_offset_ - offsetData_). Used by the caller to detect a load mismatch.
+size_t vl_hnsw_per_vector_data_size(VlHnsw* index);
+
 void vl_free_err(char* err);
 
 #ifdef __cplusplus

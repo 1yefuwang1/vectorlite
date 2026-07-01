@@ -1,7 +1,8 @@
-// Implementation of the C ABI declared in core_shim.h. Mirrors the behaviour of
-// the original C++ virtual table's numeric paths (vector_space.cpp,
-// virtual_table.cpp, constraint.cpp, quantization.cpp) but exposes a flat C
-// interface so the Rust port can own the SQLite glue.
+// Implementation of the pure hnswlib+ops C ABI declared in core_shim.h.
+// Contains only generic glue: forwarders to `ops`, an hnswlib SpaceInterface
+// adapter around a caller-supplied distance function, an hnswlib filter adapter
+// around a caller-supplied predicate, and thin wrappers over HierarchicalNSW.
+// No virtual-table policy lives here.
 #include "core_shim.h"
 
 #include <hnswlib/hnswlib.h>
@@ -10,31 +11,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <filesystem>
 #include <memory>
 #include <mutex>
-#include <new>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "ops/ops.h"
 
-// Bring in the vectorlite hnswlib space implementations (header-only). These
-// depend on ops/ops.h and hnswlib only.
-#include "distance.h"
-
 namespace {
-
-struct VlIndexImpl {
-  std::unique_ptr<hnswlib::SpaceInterface<float>> space;
-  std::unique_ptr<hnswlib::HierarchicalNSW<float>> index;
-  size_t dim = 0;
-  int distance_type = VL_DISTANCE_L2;
-  int vector_type = VL_VECTOR_F32;
-  bool normalize = false;
-  bool allow_replace_deleted = true;
-};
 
 char* DupError(const std::string& msg) {
   char* out = static_cast<char*>(std::malloc(msg.size() + 1));
@@ -50,174 +34,151 @@ void SetError(char** err, const std::string& msg) {
   }
 }
 
-std::unique_ptr<hnswlib::SpaceInterface<float>> CreateSpace(size_t dim,
-                                                            int distance_type,
-                                                            int vector_type) {
-  // Cosine uses the inner-product space (vectors are normalized on the way in).
-  bool inner_product = (distance_type == VL_DISTANCE_IP) ||
-                       (distance_type == VL_DISTANCE_COSINE);
-  if (inner_product) {
-    switch (vector_type) {
-      case VL_VECTOR_F32:
-        return std::make_unique<vectorlite::InnerProductSpace>(dim);
-      case VL_VECTOR_BF16:
-        return std::make_unique<vectorlite::InnerProductSpaceBF16>(dim);
-      case VL_VECTOR_F16:
-        return std::make_unique<vectorlite::InnerProductSpaceF16>(dim);
-      default:
-        return nullptr;
-    }
-  }
-  switch (vector_type) {
-    case VL_VECTOR_F32:
-      return std::make_unique<vectorlite::L2Space>(dim);
-    case VL_VECTOR_BF16:
-      return std::make_unique<vectorlite::L2SpaceBF16>(dim);
-    case VL_VECTOR_F16:
-      return std::make_unique<vectorlite::L2SpaceF16>(dim);
-    default:
-      return nullptr;
-  }
+inline const hwy::bfloat16_t* AsBf16(const uint16_t* p) {
+  return reinterpret_cast<const hwy::bfloat16_t*>(p);
+}
+inline hwy::bfloat16_t* AsBf16(uint16_t* p) {
+  return reinterpret_cast<hwy::bfloat16_t*>(p);
+}
+inline const hwy::float16_t* AsF16(const uint16_t* p) {
+  return reinterpret_cast<const hwy::float16_t*>(p);
+}
+inline hwy::float16_t* AsF16(uint16_t* p) {
+  return reinterpret_cast<hwy::float16_t*>(p);
 }
 
-// Produces the stored-type representation of an f32 vector (quantize + optional
-// normalize) into `storage`, returning a pointer to the contiguous data to feed
-// to hnswlib. Mirrors InsertOrUpdateVector / QueryExecutor::Execute.
-const void* MakeStoredVector(const VlIndexImpl* impl, const float* data,
-                             size_t dim, std::vector<float>& f32_storage,
-                             std::vector<hwy::bfloat16_t>& bf16_storage,
-                             std::vector<hwy::float16_t>& f16_storage) {
-  switch (impl->vector_type) {
-    case VL_VECTOR_F32: {
-      if (!impl->normalize) {
-        return data;
-      }
-      f32_storage.assign(data, data + dim);
-      vectorlite::ops::Normalize(f32_storage.data(), dim);
-      return f32_storage.data();
-    }
-    case VL_VECTOR_BF16: {
-      bf16_storage.resize(dim);
-      vectorlite::ops::QuantizeF32ToBF16(data, bf16_storage.data(), dim);
-      if (impl->normalize) {
-        vectorlite::ops::Normalize(bf16_storage.data(), dim);
-      }
-      return bf16_storage.data();
-    }
-    case VL_VECTOR_F16: {
-      f16_storage.resize(dim);
-      vectorlite::ops::QuantizeF32ToF16(data, f16_storage.data(), dim);
-      if (impl->normalize) {
-        vectorlite::ops::Normalize(f16_storage.data(), dim);
-      }
-      return f16_storage.data();
-    }
-    default:
-      return nullptr;
-  }
-}
-
-class RowidInFilter : public hnswlib::BaseFilterFunctor {
+// Adapts a caller-supplied distance function into hnswlib's SpaceInterface.
+class SpaceAdapter : public hnswlib::SpaceInterface<float> {
  public:
-  explicit RowidInFilter(std::unordered_set<hnswlib::labeltype> ids)
-      : ids_(std::move(ids)) {}
+  SpaceAdapter(VlDistFunc func, size_t dim, size_t data_size)
+      : func_(func), dim_(dim), data_size_(data_size) {}
+
+  size_t get_data_size() override { return data_size_; }
+  hnswlib::DISTFUNC<float> get_dist_func() override { return func_; }
+  void* get_dist_func_param() override { return &dim_; }
+
+ private:
+  VlDistFunc func_;
+  size_t dim_;
+  size_t data_size_;
+};
+
+// Adapts a caller-supplied predicate into hnswlib's BaseFilterFunctor.
+class CallbackFilter : public hnswlib::BaseFilterFunctor {
+ public:
+  CallbackFilter(VlFilterFunc func, void* ctx) : func_(func), ctx_(ctx) {}
   bool operator()(hnswlib::labeltype id) override {
-    return ids_.find(id) != ids_.end();
+    return func_(ctx_, static_cast<uint64_t>(id)) != 0;
   }
 
  private:
-  std::unordered_set<hnswlib::labeltype> ids_;
+  VlFilterFunc func_;
+  void* ctx_;
 };
-
-class RowidEqualsFilter : public hnswlib::BaseFilterFunctor {
- public:
-  explicit RowidEqualsFilter(hnswlib::labeltype id) : id_(id) {}
-  bool operator()(hnswlib::labeltype id) override { return id == id_; }
-
- private:
-  hnswlib::labeltype id_;
-};
-
-// Mirrors vectorlite::IsRowidInIndex.
-bool RowidInIndex(const hnswlib::HierarchicalNSW<float>& index,
-                  hnswlib::labeltype rowid) {
-  std::unique_lock<std::mutex> lock_label(index.getLabelOpMutex(rowid));
-  std::unique_lock<std::mutex> lock_table(index.label_lookup_lock);
-  auto search = index.label_lookup_.find(rowid);
-  if (search == index.label_lookup_.end() ||
-      index.isMarkedDeleted(search->second)) {
-    return false;
-  }
-  return true;
-}
 
 }  // namespace
 
 extern "C" {
 
-VlIndex* vl_index_create(size_t dim, int distance_type, int vector_type,
-                         size_t max_elements, size_t M, size_t ef_construction,
-                         size_t random_seed, int allow_replace_deleted,
-                         char** err) {
-  if (dim == 0) {
-    SetError(err, "Dimension must be greater than 0");
-    return nullptr;
-  }
-  auto space = CreateSpace(dim, distance_type, vector_type);
-  if (!space) {
-    SetError(err, "Invalid distance/vector type");
-    return nullptr;
-  }
+// ------------------------------------------------------------------ ops FFI --
+
+float vl_ops_l2_sq_f32(const float* a, const float* b, size_t n) {
+  return vectorlite::ops::L2DistanceSquared(a, b, n);
+}
+float vl_ops_l2_sq_bf16(const uint16_t* a, const uint16_t* b, size_t n) {
+  return vectorlite::ops::L2DistanceSquared(AsBf16(a), AsBf16(b), n);
+}
+float vl_ops_l2_sq_f16(const uint16_t* a, const uint16_t* b, size_t n) {
+  return vectorlite::ops::L2DistanceSquared(AsF16(a), AsF16(b), n);
+}
+float vl_ops_ip_dist_f32(const float* a, const float* b, size_t n) {
+  return vectorlite::ops::InnerProductDistance(a, b, n);
+}
+float vl_ops_ip_dist_bf16(const uint16_t* a, const uint16_t* b, size_t n) {
+  return vectorlite::ops::InnerProductDistance(AsBf16(a), AsBf16(b), n);
+}
+float vl_ops_ip_dist_f16(const uint16_t* a, const uint16_t* b, size_t n) {
+  return vectorlite::ops::InnerProductDistance(AsF16(a), AsF16(b), n);
+}
+
+void vl_ops_normalize_f32(float* inout, size_t n) {
+  vectorlite::ops::Normalize(inout, n);
+}
+void vl_ops_normalize_bf16(uint16_t* inout, size_t n) {
+  vectorlite::ops::Normalize(AsBf16(inout), n);
+}
+void vl_ops_normalize_f16(uint16_t* inout, size_t n) {
+  vectorlite::ops::Normalize(AsF16(inout), n);
+}
+
+void vl_ops_quantize_f32_to_bf16(const float* in, uint16_t* out, size_t n) {
+  vectorlite::ops::QuantizeF32ToBF16(in, AsBf16(out), n);
+}
+void vl_ops_quantize_f32_to_f16(const float* in, uint16_t* out, size_t n) {
+  vectorlite::ops::QuantizeF32ToF16(in, AsF16(out), n);
+}
+void vl_ops_bf16_to_f32(const uint16_t* in, float* out, size_t n) {
+  vectorlite::ops::BF16ToF32(AsBf16(in), out, n);
+}
+void vl_ops_f16_to_f32(const uint16_t* in, float* out, size_t n) {
+  vectorlite::ops::F16ToF32(AsF16(in), out, n);
+}
+
+const char* vl_ops_best_target(void) {
+  return vectorlite::ops::GetBestTarget();
+}
+
+// -------------------------------------------------------------- hnswlib FFI --
+
+VlSpace* vl_hnsw_space_create(VlDistFunc distfunc, size_t dim,
+                              size_t data_size) {
+  return reinterpret_cast<VlSpace*>(
+      new SpaceAdapter(distfunc, dim, data_size));
+}
+
+void vl_hnsw_space_free(VlSpace* space) {
+  delete reinterpret_cast<SpaceAdapter*>(space);
+}
+
+VlHnsw* vl_hnsw_create(VlSpace* space, size_t max_elements, size_t M,
+                       size_t ef_construction, size_t random_seed,
+                       int allow_replace_deleted, char** err) {
+  auto* s = reinterpret_cast<SpaceAdapter*>(space);
   try {
-    auto impl = std::make_unique<VlIndexImpl>();
-    impl->dim = dim;
-    impl->distance_type = distance_type;
-    impl->vector_type = vector_type;
-    impl->normalize = (distance_type == VL_DISTANCE_COSINE);
-    impl->allow_replace_deleted = allow_replace_deleted != 0;
-    impl->index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-        space.get(), max_elements, M, ef_construction, random_seed,
-        impl->allow_replace_deleted);
-    impl->space = std::move(space);
-    return reinterpret_cast<VlIndex*>(impl.release());
+    auto* index = new hnswlib::HierarchicalNSW<float>(
+        s, max_elements, M, ef_construction, random_seed,
+        allow_replace_deleted != 0);
+    return reinterpret_cast<VlHnsw*>(index);
   } catch (const std::exception& ex) {
     SetError(err, ex.what());
     return nullptr;
   }
 }
 
-void vl_index_free(VlIndex* index) {
-  delete reinterpret_cast<VlIndexImpl*>(index);
-}
-
-size_t vl_index_dim(const VlIndex* index) {
-  return reinterpret_cast<const VlIndexImpl*>(index)->dim;
-}
-
-size_t vl_index_data_size(const VlIndex* index) {
-  auto impl = reinterpret_cast<const VlIndexImpl*>(index);
-  return impl->space->get_data_size();
-}
-
-int vl_index_add(VlIndex* index, const float* data, size_t len, uint64_t rowid,
-                 char** err) {
-  auto impl = reinterpret_cast<VlIndexImpl*>(index);
-  if (len != impl->dim) {
-    SetError(err, "Dimension mismatch");
-    return 1;
-  }
-  std::vector<float> f32_storage;
-  std::vector<hwy::bfloat16_t> bf16_storage;
-  std::vector<hwy::float16_t> f16_storage;
-  const void* stored = MakeStoredVector(impl, data, impl->dim, f32_storage,
-                                        bf16_storage, f16_storage);
-  if (stored == nullptr) {
-    SetError(err, "Unrecognized vector type");
-    return 1;
-  }
+VlHnsw* vl_hnsw_load(VlSpace* space, const char* path, size_t max_elements,
+                     int allow_replace_deleted, char** err) {
+  auto* s = reinterpret_cast<SpaceAdapter*>(space);
   try {
-    impl->index->addPoint(stored, static_cast<hnswlib::labeltype>(rowid),
-                          impl->index->allow_replace_deleted_);
+    auto* index = new hnswlib::HierarchicalNSW<float>(
+        s, std::string(path), /*nmslib=*/false, max_elements,
+        allow_replace_deleted != 0);
+    return reinterpret_cast<VlHnsw*>(index);
+  } catch (const std::exception& ex) {
+    SetError(err, ex.what());
+    return nullptr;
+  }
+}
+
+void vl_hnsw_free(VlHnsw* index) {
+  delete reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+}
+
+int vl_hnsw_add_point(VlHnsw* index, const void* data, uint64_t label,
+                      int replace_deleted, char** err) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+  try {
+    idx->addPoint(data, static_cast<hnswlib::labeltype>(label),
+                  replace_deleted != 0);
   } catch (const std::exception& ex) {
     SetError(err, ex.what());
     return 1;
@@ -225,10 +186,10 @@ int vl_index_add(VlIndex* index, const float* data, size_t len, uint64_t rowid,
   return 0;
 }
 
-int vl_index_mark_delete(VlIndex* index, uint64_t rowid, char** err) {
-  auto impl = reinterpret_cast<VlIndexImpl*>(index);
+int vl_hnsw_mark_delete(VlHnsw* index, uint64_t label, char** err) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
   try {
-    impl->index->markDelete(static_cast<hnswlib::labeltype>(rowid));
+    idx->markDelete(static_cast<hnswlib::labeltype>(label));
   } catch (const std::exception& ex) {
     SetError(err, ex.what());
     return 1;
@@ -236,107 +197,70 @@ int vl_index_mark_delete(VlIndex* index, uint64_t rowid, char** err) {
   return 0;
 }
 
-int vl_index_contains(const VlIndex* index, uint64_t rowid) {
-  auto impl = reinterpret_cast<const VlIndexImpl*>(index);
-  return RowidInIndex(*impl->index, static_cast<hnswlib::labeltype>(rowid)) ? 1
-                                                                            : 0;
+int vl_hnsw_contains(VlHnsw* index, uint64_t label) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+  auto id = static_cast<hnswlib::labeltype>(label);
+  std::unique_lock<std::mutex> lock_label(idx->getLabelOpMutex(id));
+  std::unique_lock<std::mutex> lock_table(idx->label_lookup_lock);
+  auto search = idx->label_lookup_.find(id);
+  if (search == idx->label_lookup_.end() ||
+      idx->isMarkedDeleted(search->second)) {
+    return 0;
+  }
+  return 1;
 }
 
-int vl_index_get_vector(const VlIndex* index, uint64_t rowid, float* out) {
-  auto impl = reinterpret_cast<const VlIndexImpl*>(index);
-  auto label = static_cast<hnswlib::labeltype>(rowid);
+int vl_hnsw_get_data(VlHnsw* index, uint64_t label, void* out, size_t nbytes) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+  auto id = static_cast<hnswlib::labeltype>(label);
   try {
-    switch (impl->vector_type) {
-      case VL_VECTOR_F32: {
-        std::vector<float> vec = impl->index->getDataByLabel<float>(label);
-        std::memcpy(out, vec.data(), vec.size() * sizeof(float));
-        return 0;
-      }
-      case VL_VECTOR_BF16: {
-        std::vector<hwy::bfloat16_t> stored =
-            impl->index->getDataByLabel<hwy::bfloat16_t>(label);
-        vectorlite::ops::BF16ToF32(stored.data(), out, stored.size());
-        return 0;
-      }
-      case VL_VECTOR_F16: {
-        std::vector<hwy::float16_t> stored =
-            impl->index->getDataByLabel<hwy::float16_t>(label);
-        vectorlite::ops::F16ToF32(stored.data(), out, stored.size());
-        return 0;
-      }
-      default:
-        return -1;
+    // Mirror hnswlib::getDataByLabel's lookup/deleted checks, then copy the
+    // full per-vector byte blob (nbytes) from internal storage. Using
+    // getDataByLabel<char> would instead copy only `dim` bytes, not the full
+    // dim * element_size stored vector.
+    std::unique_lock<std::mutex> lock_label(idx->getLabelOpMutex(id));
+    std::unique_lock<std::mutex> lock_table(idx->label_lookup_lock);
+    auto search = idx->label_lookup_.find(id);
+    if (search == idx->label_lookup_.end() ||
+        idx->isMarkedDeleted(search->second)) {
+      return -1;
     }
+    hnswlib::tableint internal_id = search->second;
+    lock_table.unlock();
+    std::memcpy(out, idx->getDataByInternalId(internal_id), nbytes);
+    return 0;
   } catch (const std::exception&) {
     return -1;
   }
 }
 
-int vl_index_search(VlIndex* index, const float* query, size_t len, size_t k,
-                    size_t ef_override, int filter_kind,
-                    const uint64_t* filter_rowids, size_t filter_count,
-                    float* out_distances, uint64_t* out_rowids, char** err) {
-  auto impl = reinterpret_cast<VlIndexImpl*>(index);
-  if (len != impl->dim) {
-    SetError(err, "query vector's dimension doesn't match table's dimension");
-    return -1;
-  }
-
-  std::unique_ptr<hnswlib::BaseFilterFunctor> filter;
-  if (filter_kind == VL_FILTER_IN) {
-    std::unordered_set<hnswlib::labeltype> ids;
-    ids.reserve(filter_count);
-    for (size_t i = 0; i < filter_count; i++) {
-      ids.insert(static_cast<hnswlib::labeltype>(filter_rowids[i]));
-    }
-    filter = std::make_unique<RowidInFilter>(std::move(ids));
-  } else if (filter_kind == VL_FILTER_EQ) {
-    hnswlib::labeltype id =
-        filter_count > 0 ? static_cast<hnswlib::labeltype>(filter_rowids[0]) : 0;
-    filter = std::make_unique<RowidEqualsFilter>(id);
-  }
-
-  std::vector<float> f32_storage;
-  std::vector<hwy::bfloat16_t> bf16_storage;
-  std::vector<hwy::float16_t> f16_storage;
-  const void* stored = MakeStoredVector(impl, query, impl->dim, f32_storage,
-                                        bf16_storage, f16_storage);
-  if (stored == nullptr) {
-    SetError(err, "Unrecognized vector type");
-    return -1;
-  }
-
-  // setEf mutates shared state on the index; restore it afterwards.
-  const size_t original_ef = impl->index->ef_;
-  if (ef_override != 0) {
-    impl->index->setEf(ef_override);
+int vl_hnsw_search(VlHnsw* index, const void* query, size_t k,
+                   VlFilterFunc filter, void* filter_ctx, float* out_dist,
+                   uint64_t* out_label, char** err) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+  std::unique_ptr<CallbackFilter> functor;
+  if (filter != nullptr) {
+    functor = std::make_unique<CallbackFilter>(filter, filter_ctx);
   }
   int count = 0;
   try {
-    auto result =
-        impl->index->searchKnnCloserFirst(stored, k, filter.get());
+    auto result = idx->searchKnnCloserFirst(query, k, functor.get());
     for (const auto& pair : result) {
-      out_distances[count] = pair.first;
-      out_rowids[count] = static_cast<uint64_t>(pair.second);
+      out_dist[count] = pair.first;
+      out_label[count] = static_cast<uint64_t>(pair.second);
       count++;
     }
   } catch (const std::exception& ex) {
-    impl->index->setEf(original_ef);
     SetError(err, ex.what());
     return -1;
   }
-  impl->index->setEf(original_ef);
   return count;
 }
 
-int vl_index_save(VlIndex* index, const char* path, char** err) {
-  auto impl = reinterpret_cast<VlIndexImpl*>(index);
-  if (path == nullptr || path[0] == '\0') {
-    SetError(err, "path must not be empty");
-    return 1;
-  }
+int vl_hnsw_save(VlHnsw* index, const char* path, char** err) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
   try {
-    impl->index->saveIndex(path);
+    idx->saveIndex(std::string(path));
   } catch (const std::exception& ex) {
     SetError(err, ex.what());
     return 1;
@@ -344,63 +268,18 @@ int vl_index_save(VlIndex* index, const char* path, char** err) {
   return 0;
 }
 
-int vl_index_load(VlIndex* index, const char* path, char** err) {
-  auto impl = reinterpret_cast<VlIndexImpl*>(index);
-  if (path == nullptr || path[0] == '\0') {
-    SetError(err, "path must not be empty");
-    return 1;
-  }
-  if (!std::filesystem::exists(path)) {
-    SetError(err, std::string("index file does not exist: ") + path);
-    return 1;
-  }
-
-  std::unique_ptr<hnswlib::HierarchicalNSW<float>> new_index;
-  try {
-    new_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-        impl->space.get(), std::string(path), /*nmslib=*/false,
-        impl->index->max_elements_, impl->allow_replace_deleted);
-  } catch (const std::exception& ex) {
-    SetError(err, ex.what());
-    return 1;
-  }
-
-  size_t file_data_size = new_index->label_offset_ - new_index->offsetData_;
-  if (file_data_size != impl->space->get_data_size()) {
-    SetError(err, "index data size mismatch: file has " +
-                      std::to_string(file_data_size) +
-                      " bytes per vector, table expects " +
-                      std::to_string(impl->space->get_data_size()));
-    return 1;
-  }
-
-  impl->index = std::move(new_index);
-  return 0;
+size_t vl_hnsw_get_ef(VlHnsw* index) {
+  return reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index)->ef_;
 }
 
-int vl_distance(const float* a, const float* b, size_t dim, int distance_type,
-                float* out) {
-  switch (distance_type) {
-    case VL_DISTANCE_L2:
-      *out = vectorlite::ops::L2DistanceSquared(a, b, dim);
-      return 0;
-    case VL_DISTANCE_IP:
-      *out = vectorlite::ops::InnerProductDistance(a, b, dim);
-      return 0;
-    case VL_DISTANCE_COSINE: {
-      std::vector<float> na(a, a + dim);
-      std::vector<float> nb(b, b + dim);
-      vectorlite::ops::Normalize(na.data(), dim);
-      vectorlite::ops::Normalize(nb.data(), dim);
-      *out = vectorlite::ops::InnerProductDistance(na.data(), nb.data(), dim);
-      return 0;
-    }
-    default:
-      return 1;
-  }
+void vl_hnsw_set_ef(VlHnsw* index, size_t ef) {
+  reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index)->setEf(ef);
 }
 
-const char* vl_best_target(void) { return vectorlite::ops::GetBestTarget(); }
+size_t vl_hnsw_per_vector_data_size(VlHnsw* index) {
+  auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
+  return idx->label_offset_ - idx->offsetData_;
+}
 
 void vl_free_err(char* err) { std::free(err); }
 

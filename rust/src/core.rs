@@ -1,101 +1,55 @@
-//! Safe Rust wrapper over the C ABI exposed by `cpp/core_shim.{h,cpp}`.
-//!
-//! The C++ core owns hnswlib, the vectorlite SIMD spaces and quantization. This
-//! module confines the `unsafe` FFI calls and exposes an idiomatic interface.
+//! The stateful index used by the virtual table. All *policy* lives here in
+//! Rust: choosing the distance callback, quantizing/normalizing vectors,
+//! orchestrating the per-query `ef`, applying the rowid filter, the load
+//! data-size check and save/load orchestration. It calls hnswlib and `ops`
+//! only through their FFI wrappers (`hnsw.rs`, `ops.rs`).
 
-use std::ffi::CString;
-use std::os::raw::{c_char, c_float, c_int};
+use std::cell::RefCell;
+use std::path::Path;
 
+use crate::hnsw::{Hnsw, Space};
+use crate::ops;
 use crate::vector_space::{DistanceType, VectorType};
 
-#[repr(C)]
-struct VlIndex {
-    _private: [u8; 0],
+pub use crate::hnsw::RowidFilter as SearchFilter;
+
+/// Reinterprets a typed slice as its raw bytes (native layout) for the index,
+/// which stores opaque per-vector byte blobs.
+fn as_bytes<T>(v: &[T]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
+}
+fn as_bytes_mut<T>(v: &mut [T]) -> &mut [u8] {
+    unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, std::mem::size_of_val(v)) }
 }
 
-// Filter kinds, must match VlFilterKind in core_shim.h.
-const VL_FILTER_NONE: c_int = 0;
-const VL_FILTER_IN: c_int = 1;
-const VL_FILTER_EQ: c_int = 2;
-
-extern "C" {
-    fn vl_index_create(
-        dim: usize,
-        distance_type: c_int,
-        vector_type: c_int,
-        max_elements: usize,
-        m: usize,
-        ef_construction: usize,
-        random_seed: usize,
-        allow_replace_deleted: c_int,
-        err: *mut *mut c_char,
-    ) -> *mut VlIndex;
-    fn vl_index_free(index: *mut VlIndex);
-    fn vl_index_dim(index: *const VlIndex) -> usize;
-    #[allow(dead_code)]
-    fn vl_index_data_size(index: *const VlIndex) -> usize;
-    fn vl_index_add(
-        index: *mut VlIndex,
-        data: *const c_float,
-        len: usize,
-        rowid: u64,
-        err: *mut *mut c_char,
-    ) -> c_int;
-    fn vl_index_mark_delete(index: *mut VlIndex, rowid: u64, err: *mut *mut c_char) -> c_int;
-    fn vl_index_contains(index: *const VlIndex, rowid: u64) -> c_int;
-    fn vl_index_get_vector(index: *const VlIndex, rowid: u64, out: *mut c_float) -> c_int;
-    #[allow(clippy::too_many_arguments)]
-    fn vl_index_search(
-        index: *mut VlIndex,
-        query: *const c_float,
-        len: usize,
-        k: usize,
-        ef_override: usize,
-        filter_kind: c_int,
-        filter_rowids: *const u64,
-        filter_count: usize,
-        out_distances: *mut c_float,
-        out_rowids: *mut u64,
-        err: *mut *mut c_char,
-    ) -> c_int;
-    fn vl_index_save(index: *mut VlIndex, path: *const c_char, err: *mut *mut c_char) -> c_int;
-    fn vl_index_load(index: *mut VlIndex, path: *const c_char, err: *mut *mut c_char) -> c_int;
-    fn vl_distance(
-        a: *const c_float,
-        b: *const c_float,
-        dim: usize,
-        distance_type: c_int,
-        out: *mut c_float,
-    ) -> c_int;
-    fn vl_best_target() -> *const c_char;
-    fn vl_free_err(err: *mut c_char);
+/// A vector encoded into the index's stored element type.
+enum Stored {
+    F32(Vec<f32>),
+    U16(Vec<u16>),
 }
 
-/// Takes ownership of a C-allocated error string and returns it as a `String`.
-unsafe fn take_err(err: *mut c_char) -> String {
-    if err.is_null() {
-        return "unknown error".to_string();
+impl Stored {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Stored::F32(v) => as_bytes(v),
+            Stored::U16(v) => as_bytes(v),
+        }
     }
-    let s = std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned();
-    vl_free_err(err);
-    s
 }
 
-/// Rowid filter applied during a k-NN search.
-pub enum SearchFilter<'a> {
-    None,
-    In(&'a [u64]),
-    Equals(u64),
-}
-
-/// An owned HNSW index plus its vector space, living in the C++ core.
 pub struct Index {
-    ptr: *mut VlIndex,
+    // Interior mutability so `load` can swap the underlying hnswlib index behind
+    // a shared reference (the registry hands out `&IndexEntry`). SQLite
+    // serialises access per connection, so no locking is required. Declared
+    // before `space` so it is dropped first (hnswlib caches the space pointer).
+    index: RefCell<Hnsw>,
+    space: Space,
+    dim: usize,
+    vector_type: VectorType,
+    normalize: bool,
+    max_elements: usize,
+    allow_replace_deleted: bool,
 }
-
-// The index is only ever touched while SQLite holds the per-connection lock, so
-// it is effectively single-threaded from our perspective.
-unsafe impl Send for Index {}
 
 impl Index {
     #[allow(clippy::too_many_arguments)]
@@ -109,69 +63,111 @@ impl Index {
         random_seed: usize,
         allow_replace_deleted: bool,
     ) -> Result<Index, String> {
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let ptr = unsafe {
-            vl_index_create(
-                dim,
-                distance_type as c_int,
-                vector_type as c_int,
-                max_elements,
-                m,
-                ef_construction,
-                random_seed,
-                allow_replace_deleted as c_int,
-                &mut err,
-            )
-        };
-        if ptr.is_null() {
-            return Err(unsafe { take_err(err) });
+        if dim == 0 {
+            return Err("Dimension must be greater than 0".to_string());
         }
-        Ok(Index { ptr })
+        let data_size = dim * vector_type.element_size();
+        let dist_func = ops::dist_func_for(distance_type, vector_type);
+        let space = Space::new(dist_func, dim, data_size);
+        let index = Hnsw::create(
+            &space,
+            max_elements,
+            m,
+            ef_construction,
+            random_seed,
+            allow_replace_deleted,
+        )?;
+        Ok(Index {
+            index: RefCell::new(index),
+            space,
+            dim,
+            vector_type,
+            normalize: distance_type == DistanceType::Cosine,
+            max_elements,
+            allow_replace_deleted,
+        })
     }
 
-    pub fn dim(&self) -> usize {
-        unsafe { vl_index_dim(self.ptr) }
-    }
-
-    #[allow(dead_code)]
-    pub fn data_size(&self) -> usize {
-        unsafe { vl_index_data_size(self.ptr) }
-    }
-
-    pub fn add(&self, data: &[f32], rowid: u64) -> Result<(), String> {
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let rc = unsafe {
-            vl_index_add(self.ptr, data.as_ptr(), data.len(), rowid, &mut err)
-        };
-        if rc != 0 {
-            return Err(unsafe { take_err(err) });
+    /// Quantizes and/or normalizes an f32 vector into the stored element type.
+    fn encode(&self, v: &[f32]) -> Stored {
+        match self.vector_type {
+            VectorType::Float32 => {
+                let mut buf = v.to_vec();
+                if self.normalize {
+                    ops::normalize_f32(&mut buf);
+                }
+                Stored::F32(buf)
+            }
+            VectorType::BFloat16 => {
+                let mut buf = vec![0u16; self.dim];
+                ops::quantize_bf16(v, &mut buf);
+                if self.normalize {
+                    ops::normalize_bf16(&mut buf);
+                }
+                Stored::U16(buf)
+            }
+            VectorType::Float16 => {
+                let mut buf = vec![0u16; self.dim];
+                ops::quantize_f16(v, &mut buf);
+                if self.normalize {
+                    ops::normalize_f16(&mut buf);
+                }
+                Stored::U16(buf)
+            }
         }
-        Ok(())
+    }
+
+    pub fn add(&self, v: &[f32], rowid: u64) -> Result<(), String> {
+        let stored = self.encode(v);
+        self.index
+            .borrow()
+            .add_point(stored.bytes(), rowid, self.allow_replace_deleted)
     }
 
     pub fn mark_delete(&self, rowid: u64) -> Result<(), String> {
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let rc = unsafe { vl_index_mark_delete(self.ptr, rowid, &mut err) };
-        if rc != 0 {
-            return Err(unsafe { take_err(err) });
-        }
-        Ok(())
+        self.index.borrow().mark_delete(rowid)
     }
 
     pub fn contains(&self, rowid: u64) -> bool {
-        unsafe { vl_index_contains(self.ptr, rowid) != 0 }
+        self.index.borrow().contains(rowid)
     }
 
-    /// Reads a stored vector back as f32, or `None` if the rowid is absent.
+    /// Reads a stored vector back as f32 (dequantizing as needed), or `None` if
+    /// the rowid is absent.
     pub fn get_vector(&self, rowid: u64) -> Option<Vec<f32>> {
-        let mut out = vec![0f32; self.dim()];
-        let rc = unsafe { vl_index_get_vector(self.ptr, rowid, out.as_mut_ptr()) };
-        if rc != 0 {
-            return None;
+        let index = self.index.borrow();
+        match self.vector_type {
+            VectorType::Float32 => {
+                let mut buf = vec![0f32; self.dim];
+                if !index.get_data(rowid, as_bytes_mut(&mut buf)) {
+                    return None;
+                }
+                Some(buf)
+            }
+            VectorType::BFloat16 => {
+                let mut raw = vec![0u16; self.dim];
+                if !index.get_data(rowid, as_bytes_mut(&mut raw)) {
+                    return None;
+                }
+                let mut out = vec![0f32; self.dim];
+                ops::bf16_to_f32(&raw, &mut out);
+                Some(out)
+            }
+            VectorType::Float16 => {
+                let mut raw = vec![0u16; self.dim];
+                if !index.get_data(rowid, as_bytes_mut(&mut raw)) {
+                    return None;
+                }
+                let mut out = vec![0f32; self.dim];
+                ops::f16_to_f32(&raw, &mut out);
+                Some(out)
+            }
         }
-        Some(out)
     }
 
+    /// k-NN search. Applies the per-query `ef` override (restoring the prior
+    /// value afterwards so it does not leak into later queries) and the rowid
+    /// filter.
     pub fn search(
         &self,
         query: &[f32],
@@ -179,91 +175,76 @@ impl Index {
         ef_override: Option<usize>,
         filter: SearchFilter,
     ) -> Result<Vec<(f32, u64)>, String> {
-        let (kind, rowids): (c_int, Vec<u64>) = match filter {
-            SearchFilter::None => (VL_FILTER_NONE, Vec::new()),
-            SearchFilter::In(ids) => (VL_FILTER_IN, ids.to_vec()),
-            SearchFilter::Equals(id) => (VL_FILTER_EQ, vec![id]),
-        };
-        let mut distances = vec![0f32; k];
-        let mut out_rowids = vec![0u64; k];
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let count = unsafe {
-            vl_index_search(
-                self.ptr,
-                query.as_ptr(),
-                query.len(),
-                k,
-                ef_override.unwrap_or(0),
-                kind,
-                rowids.as_ptr(),
-                rowids.len(),
-                distances.as_mut_ptr(),
-                out_rowids.as_mut_ptr(),
-                &mut err,
-            )
-        };
-        if count < 0 {
-            return Err(unsafe { take_err(err) });
+        let stored = self.encode(query);
+        let index = self.index.borrow();
+        let saved_ef = index.get_ef();
+        if let Some(ef) = ef_override {
+            index.set_ef(ef);
         }
-        let count = count as usize;
-        Ok((0..count).map(|i| (distances[i], out_rowids[i])).collect())
+        let result = index.search(stored.bytes(), k, &filter);
+        index.set_ef(saved_ef);
+        result
     }
 
     pub fn save(&self, path: &str) -> Result<(), String> {
-        let c = CString::new(path).map_err(|_| "invalid path".to_string())?;
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let rc = unsafe { vl_index_save(self.ptr, c.as_ptr(), &mut err) };
-        if rc != 0 {
-            return Err(unsafe { take_err(err) });
+        if path.is_empty() {
+            return Err("path must not be empty".to_string());
         }
-        Ok(())
+        self.index.borrow().save(path)
     }
 
+    /// Replaces the in-memory index with one loaded from `path`. The table's
+    /// configured max_elements and allow_replace_deleted are preserved. On any
+    /// error the current index is left unchanged; a per-vector data-size
+    /// mismatch (wrong dimension or element type) is rejected.
     pub fn load(&self, path: &str) -> Result<(), String> {
-        let c = CString::new(path).map_err(|_| "invalid path".to_string())?;
-        let mut err: *mut c_char = std::ptr::null_mut();
-        let rc = unsafe { vl_index_load(self.ptr, c.as_ptr(), &mut err) };
-        if rc != 0 {
-            return Err(unsafe { take_err(err) });
+        if path.is_empty() {
+            return Err("path must not be empty".to_string());
         }
+        if !Path::new(path).exists() {
+            return Err(format!("index file does not exist: {}", path));
+        }
+        let new_index = Hnsw::load(
+            &self.space,
+            path,
+            self.max_elements,
+            self.allow_replace_deleted,
+        )?;
+
+        let expected = self.dim * self.vector_type.element_size();
+        let file_size = new_index.per_vector_data_size();
+        if file_size != expected {
+            return Err(format!(
+                "index data size mismatch: file has {} bytes per vector, table expects {}",
+                file_size, expected
+            ));
+        }
+
+        *self.index.borrow_mut() = new_index;
         Ok(())
     }
 }
 
-impl Drop for Index {
-    fn drop(&mut self) {
-        unsafe { vl_index_free(self.ptr) }
-    }
-}
-
-/// Computes the distance between two equal-length f32 vectors.
+/// Computes the distance between two equal-length f32 vectors via `ops`.
+/// Cosine normalizes both inputs first, matching the C++ implementation.
 pub fn distance(a: &[f32], b: &[f32], distance_type: DistanceType) -> Option<f32> {
     if a.len() != b.len() {
         return None;
     }
-    let mut out: f32 = 0.0;
-    let rc = unsafe {
-        vl_distance(
-            a.as_ptr(),
-            b.as_ptr(),
-            a.len(),
-            distance_type as c_int,
-            &mut out,
-        )
-    };
-    if rc != 0 {
-        return None;
+    match distance_type {
+        DistanceType::L2 => Some(ops::l2_sq_f32(a, b)),
+        DistanceType::InnerProduct => Some(ops::ip_dist_f32(a, b)),
+        DistanceType::Cosine => {
+            let mut na = a.to_vec();
+            let mut nb = b.to_vec();
+            ops::normalize_f32(&mut na);
+            ops::normalize_f32(&mut nb);
+            Some(ops::ip_dist_f32(&na, &nb))
+        }
     }
-    Some(out)
 }
 
 /// Returns the best SIMD target chosen by Highway at runtime.
 pub fn best_target() -> String {
-    unsafe {
-        let p = vl_best_target();
-        if p.is_null() {
-            return "unknown".to_string();
-        }
-        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-    }
+    ops::best_target()
 }

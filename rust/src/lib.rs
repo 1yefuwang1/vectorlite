@@ -6,7 +6,9 @@
 
 mod core;
 mod ffi;
+mod hnsw;
 mod index_options;
+mod ops;
 mod registry;
 mod scalar;
 mod vector;

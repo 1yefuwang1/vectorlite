@@ -414,7 +414,7 @@ unsafe extern "C" fn x_filter(
     };
 
     let mut knn: Option<&KnnParam> = None;
-    let mut rowid_in: Option<Vec<u64>> = None;
+    let mut rowid_in: Option<std::collections::HashSet<u64>> = None;
     let mut rowid_eq: Option<u64> = None;
 
     let mut i = 0usize;
@@ -444,7 +444,7 @@ unsafe extern "C" fn x_filter(
                     set_vtab_err(p_vtab, "only one rowid constraint is allowed");
                     return ffi::SQLITE_ERROR as c_int;
                 }
-                let mut ids = Vec::new();
+                let mut ids = std::collections::HashSet::new();
                 let mut rowid_value: *mut sqlite3_value = std::ptr::null_mut();
                 let mut rc = ffi::vtab_in_first(value, &mut rowid_value);
                 while rc == ffi::SQLITE_OK as c_int && !rowid_value.is_null() {
@@ -452,7 +452,7 @@ unsafe extern "C" fn x_filter(
                         set_vtab_err(p_vtab, "rowid must be of type INTEGER");
                         return ffi::SQLITE_ERROR as c_int;
                     }
-                    ids.push(ffi::value_int64(rowid_value) as u64);
+                    ids.insert(ffi::value_int64(rowid_value) as u64);
                     rc = ffi::vtab_in_next(value, &mut rowid_value);
                 }
                 rowid_in = Some(ids);
