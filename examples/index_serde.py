@@ -42,7 +42,7 @@ print('Trying to create virtual table for vector search.')
 # cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  l2, hnsw(max_elements={num_elements}))')
 # cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  cosine, hnsw(max_elements={num_elements}))')
 # cur.execute(f'create virtual table x using vectorlite(my_embedding float32[{dim}]  ip, hnsw(max_elements={num_elements}))')
-# Note: the virtual table has an implict rowid column, which is used to uniquely identify a vector and as a "foreign key" to relate to the vector's metadata.
+# Note: the virtual table has an implicit rowid column, which is used to uniquely identify a vector and as a "foreign key" to relate to the vector's metadata.
 # For example, you could have another table with metadata columns and rowid column with the same value as the corresponding rowid in a vectorlite virutal table.
 # The "hnsw(max_elements=10000)" part configures HNSW index parameters, which can be used to tune the performance of the index.
 # Please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md for more information about HNSW parameters.
