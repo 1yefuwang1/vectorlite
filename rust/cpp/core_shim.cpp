@@ -132,8 +132,14 @@ const char* vl_ops_best_target(void) {
 
 VlSpace* vl_hnsw_space_create(VlDistFunc distfunc, size_t dim,
                               size_t data_size) {
-  return reinterpret_cast<VlSpace*>(
-      new SpaceAdapter(distfunc, dim, data_size));
+  try {
+    return reinterpret_cast<VlSpace*>(
+        new SpaceAdapter(distfunc, dim, data_size));
+  } catch (...) {
+    // Never let a C++ exception (e.g. std::bad_alloc) unwind across the C ABI
+    // into Rust; the caller treats NULL as an allocation failure.
+    return nullptr;
+  }
 }
 
 void vl_hnsw_space_free(VlSpace* space) {
@@ -200,14 +206,19 @@ int vl_hnsw_mark_delete(VlHnsw* index, uint64_t label, char** err) {
 int vl_hnsw_contains(VlHnsw* index, uint64_t label) {
   auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
   auto id = static_cast<hnswlib::labeltype>(label);
-  std::unique_lock<std::mutex> lock_label(idx->getLabelOpMutex(id));
-  std::unique_lock<std::mutex> lock_table(idx->label_lookup_lock);
-  auto search = idx->label_lookup_.find(id);
-  if (search == idx->label_lookup_.end() ||
-      idx->isMarkedDeleted(search->second)) {
+  try {
+    std::unique_lock<std::mutex> lock_label(idx->getLabelOpMutex(id));
+    std::unique_lock<std::mutex> lock_table(idx->label_lookup_lock);
+    auto search = idx->label_lookup_.find(id);
+    if (search == idx->label_lookup_.end() ||
+        idx->isMarkedDeleted(search->second)) {
+      return 0;
+    }
+    return 1;
+  } catch (...) {
+    // A lock/lookup failure must not unwind across the C ABI into Rust.
     return 0;
   }
-  return 1;
 }
 
 int vl_hnsw_get_data(VlHnsw* index, uint64_t label, void* out, size_t nbytes) {
@@ -279,6 +290,11 @@ void vl_hnsw_set_ef(VlHnsw* index, size_t ef) {
 size_t vl_hnsw_per_vector_data_size(VlHnsw* index) {
   auto* idx = reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index);
   return idx->label_offset_ - idx->offsetData_;
+}
+
+size_t vl_hnsw_current_count(VlHnsw* index) {
+  return reinterpret_cast<hnswlib::HierarchicalNSW<float>*>(index)
+      ->getCurrentElementCount();
 }
 
 void vl_free_err(char* err) { std::free(err); }

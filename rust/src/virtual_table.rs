@@ -51,10 +51,23 @@ impl VTab {
     unsafe fn registry(&self) -> &Registry {
         &*self.registry
     }
-    unsafe fn entry(&self) -> &IndexEntry {
-        self.registry()
-            .find(&self.key())
-            .expect("registry entry missing")
+    unsafe fn entry(&self) -> Option<&IndexEntry> {
+        self.registry().find(&self.key())
+    }
+}
+
+/// Looks up this table's registry entry, reporting a graceful vtab error (rather
+/// than panicking across the FFI boundary) if it is somehow missing.
+unsafe fn entry_or_vtab_err(vtab: &VTab, p_vtab: *mut sqlite3_vtab) -> Result<&IndexEntry, c_int> {
+    match vtab.entry() {
+        Some(e) => Ok(e),
+        None => {
+            set_vtab_err(
+                p_vtab,
+                "internal error: vectorlite index is missing from the registry",
+            );
+            Err(ffi::SQLITE_ERROR as c_int)
+        }
     }
 }
 
@@ -312,7 +325,17 @@ unsafe extern "C" fn x_column(
     }
     if n == COL_VECTOR {
         let vtab = &*(cursor.base.pVtab as *mut VTab);
-        match vtab.entry().index.get_vector(rowid) {
+        let entry = match vtab.entry() {
+            Some(e) => e,
+            None => {
+                ffi::result_error(
+                    ctx,
+                    "internal error: vectorlite index is missing from the registry",
+                );
+                return ffi::SQLITE_ERROR as c_int;
+            }
+        };
+        match entry.index.get_vector(rowid) {
             Some(v) => {
                 ffi::result_blob(ctx, &vector::f32_to_blob(&v));
                 ffi::SQLITE_OK as c_int
@@ -392,7 +415,9 @@ unsafe extern "C" fn x_best_index(
     }
     info.idxStr = p;
     info.needToFreeIdxStr = 1;
-    info.idxNum = (short_names.len() * 2) as c_int;
+    // idxNum is no longer used as a length (x_filter reads idxStr via CStr); it
+    // only needs to be > 0 so x_filter treats this as a chosen plan.
+    info.idxNum = short_names.len() as c_int;
     ffi::SQLITE_OK as c_int
 }
 
@@ -408,12 +433,18 @@ unsafe extern "C" fn x_filter(
     let cursor = &mut *(p_cur as *mut Cursor);
     let p_vtab = cursor.base.pVtab;
     let vtab = &*(p_vtab as *mut VTab);
-    let entry = vtab.entry();
+    let entry = match entry_or_vtab_err(vtab, p_vtab) {
+        Ok(e) => e,
+        Err(rc) => return rc,
+    };
 
+    // idxStr is the NUL-terminated concatenation of 2-char constraint short
+    // names built in x_best_index. Read it via CStr so its length is not coupled
+    // to idxNum (which is used here only as a "a plan was chosen" guard).
     let codes: Vec<u8> = if idx_str.is_null() || idx_num <= 0 {
         Vec::new()
     } else {
-        std::slice::from_raw_parts(idx_str as *const u8, idx_num as usize).to_vec()
+        CStr::from_ptr(idx_str).to_bytes().to_vec()
     };
 
     let mut knn: Option<&KnnParam> = None;
@@ -574,7 +605,10 @@ unsafe fn execute_persistence(
     }
     let path = ffi::value_text_string(path_value);
 
-    let entry = vtab.entry();
+    let entry = match entry_or_vtab_err(vtab, p_vtab) {
+        Ok(e) => e,
+        Err(rc) => return rc,
+    };
     let result = match operation.as_str() {
         "save" => entry.index.save(&path),
         "load" => entry.index.load(&path),
@@ -663,7 +697,10 @@ unsafe extern "C" fn x_update(
         let rowid = raw_rowid as u64;
         *p_rowid = raw_rowid;
 
-        let entry = vtab.entry();
+        let entry = match entry_or_vtab_err(vtab, p_vtab) {
+            Ok(e) => e,
+            Err(rc) => return rc,
+        };
         if entry.index.contains(rowid) {
             set_vtab_err(p_vtab, &format!("row {rowid} already exists"));
             return ffi::SQLITE_ERROR as c_int;
@@ -676,7 +713,10 @@ unsafe extern "C" fn x_update(
             set_vtab_err(p_vtab, &format!("rowid {raw_rowid} out of range"));
             return ffi::SQLITE_ERROR as c_int;
         }
-        let entry = vtab.entry();
+        let entry = match entry_or_vtab_err(vtab, p_vtab) {
+            Ok(e) => e,
+            Err(rc) => return rc,
+        };
         match entry.index.mark_delete(raw_rowid as u64) {
             Ok(()) => ffi::SQLITE_OK as c_int,
             Err(e) => {
@@ -708,7 +748,10 @@ unsafe extern "C" fn x_update(
             return ffi::SQLITE_ERROR as c_int;
         }
         let rowid = source_rowid as u64;
-        let entry = vtab.entry();
+        let entry = match entry_or_vtab_err(vtab, p_vtab) {
+            Ok(e) => e,
+            Err(rc) => return rc,
+        };
         if !entry.index.contains(rowid) {
             set_vtab_err(p_vtab, &format!("rowid {source_rowid} not found"));
             return ffi::SQLITE_ERROR as c_int;

@@ -179,3 +179,60 @@ pub fn parse_named_vector_space(input: &str) -> Result<NamedVectorSpace, String>
         vector_type,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_declaration() {
+        let s = parse_named_vector_space("my_embedding float32[384] cosine").unwrap();
+        assert_eq!(s.vector_name, "my_embedding");
+        assert_eq!(s.dim, 384);
+        assert_eq!(s.distance_type, DistanceType::Cosine);
+        assert_eq!(s.vector_type, VectorType::Float32);
+    }
+
+    #[test]
+    fn distance_defaults_to_l2_when_omitted() {
+        let s = parse_named_vector_space("v bfloat16[8]").unwrap();
+        assert_eq!(s.distance_type, DistanceType::L2);
+        assert_eq!(s.vector_type, VectorType::BFloat16);
+        assert_eq!(s.dim, 8);
+    }
+
+    #[test]
+    fn tolerates_extra_whitespace() {
+        let s = parse_named_vector_space("  v   float16[2]   ip  ").unwrap();
+        assert_eq!(s.vector_type, VectorType::Float16);
+        assert_eq!(s.distance_type, DistanceType::InnerProduct);
+    }
+
+    #[test]
+    fn rejects_malformed_declarations() {
+        assert!(parse_named_vector_space("").is_err());
+        assert!(parse_named_vector_space("v float32").is_err());
+        assert!(parse_named_vector_space("v float32[]").is_err());
+        assert!(parse_named_vector_space("v float32[8").is_err());
+        assert!(parse_named_vector_space("v float32[8] bogus").is_err());
+        assert!(parse_named_vector_space("v notatype[8]").is_err());
+        assert!(parse_named_vector_space("v float32[8] l2 extra").is_err());
+        assert!(parse_named_vector_space("1bad float32[8]").is_err());
+    }
+
+    #[test]
+    fn column_name_validation() {
+        assert!(is_valid_column_name("_x9"));
+        assert!(is_valid_column_name("Embedding$1"));
+        assert!(!is_valid_column_name(""));
+        assert!(!is_valid_column_name("9x"));
+        assert!(!is_valid_column_name("has space"));
+    }
+
+    #[test]
+    fn element_sizes() {
+        assert_eq!(VectorType::Float32.element_size(), 4);
+        assert_eq!(VectorType::BFloat16.element_size(), 2);
+        assert_eq!(VectorType::Float16.element_size(), 2);
+    }
+}

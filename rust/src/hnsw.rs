@@ -76,6 +76,7 @@ extern "C" {
     fn vl_hnsw_get_ef(index: *mut VlHnsw) -> usize;
     fn vl_hnsw_set_ef(index: *mut VlHnsw, ef: usize);
     fn vl_hnsw_per_vector_data_size(index: *mut VlHnsw) -> usize;
+    fn vl_hnsw_current_count(index: *mut VlHnsw) -> usize;
     fn vl_free_err(err: *mut c_char);
 }
 
@@ -97,10 +98,12 @@ pub struct Space {
 unsafe impl Send for Space {}
 
 impl Space {
-    pub fn new(dist_func: DistFunc, dim: usize, data_size: usize) -> Space {
+    pub fn new(dist_func: DistFunc, dim: usize, data_size: usize) -> Result<Space, String> {
         let ptr = unsafe { vl_hnsw_space_create(dist_func, dim, data_size) };
-        assert!(!ptr.is_null(), "space allocation failed");
-        Space { ptr }
+        if ptr.is_null() {
+            return Err("failed to allocate hnsw space".to_string());
+        }
+        Ok(Space { ptr })
     }
 }
 
@@ -234,8 +237,13 @@ impl Hnsw {
         k: usize,
         filter: &RowidFilter,
     ) -> Result<Vec<(f32, u64)>, String> {
-        let mut distances = vec![0f32; k];
-        let mut labels = vec![0u64; k];
+        // A search can never return more results than there are elements in the
+        // index, so cap the requested `k` at the current element count before
+        // allocating. This prevents an attacker-controlled `k` (e.g.
+        // knn_param(v, 2000000000)) from forcing a multi-gigabyte allocation.
+        let capacity = k.min(self.current_count());
+        let mut distances = vec![0f32; capacity];
+        let mut labels = vec![0u64; capacity];
         let mut err: *mut c_char = std::ptr::null_mut();
 
         let (cb, ctx): (Option<VlFilterFunc>, *mut c_void) = match filter {
@@ -250,7 +258,7 @@ impl Hnsw {
             vl_hnsw_search(
                 self.ptr,
                 query.as_ptr() as *const c_void,
-                k,
+                capacity,
                 cb,
                 ctx,
                 distances.as_mut_ptr(),
@@ -283,6 +291,9 @@ impl Hnsw {
     }
     pub fn per_vector_data_size(&self) -> usize {
         unsafe { vl_hnsw_per_vector_data_size(self.ptr) }
+    }
+    pub fn current_count(&self) -> usize {
+        unsafe { vl_hnsw_current_count(self.ptr) }
     }
 }
 

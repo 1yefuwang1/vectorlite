@@ -2,6 +2,7 @@
 name = "vectorlite"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.70"
 description = "Rust port of the vectorlite SQLite extension virtual table"
 license = "Apache-2.0"
 
@@ -16,8 +17,15 @@ vectorlite-sqlite-sys = { path = "vectorlite-sqlite-sys" }
 [build-dependencies]
 cc = "1"
 
+# Abort on panic so a Rust panic can never unwind across an `extern "C"` FFI
+# boundary into SQLite/hnswlib (which would be undefined behavior). `cargo test`
+# still builds its harness with unwind, so unit tests are unaffected.
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 opt-level = 3
+panic = "abort"
 
 [workspace]
 members = ["vectorlite-sqlite-sys"]

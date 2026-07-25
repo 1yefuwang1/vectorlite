@@ -60,19 +60,20 @@ Then build and deploy the Rust extension:
 
 `build.rs` is platform-agnostic: it scans `build/*/vcpkg_installed/*/` for the
 installed triplet (`x64-linux`, `arm64-osx`, `x64-windows-static-md-release`,
-…), uses the right static-archive names (`.a` / `.lib`), and emits the correct
-per-linker flags (GNU `--no-gc-sections`, MSVC `/OPT:NOREF`, ld64 no-op). The
-only native libraries linked are `hwy` and `sqlite3` — `abseil`, `re2` and
-`rapidjson` are not needed because that logic was ported to Rust.
+…) and uses the right static-archive name (`.a` / `.lib`) for highway. The only
+native library linked is `hwy` (plus `pthread`/`dl`/`m` on Linux for the C++
+core's threading) — `sqlite3`, `abseil`, `re2` and `rapidjson` are not linked:
+SQLite is provided by the host at load time, and the other logic was ported to
+Rust.
 
 ## Notes
 
-- The full SQLite amalgamation is **statically linked** into the library (the
-  vcpkg static `sqlite3`, whole-archived and kept past the linker's dead-code
-  stripping), mirroring the C++ build (~3.2 MB). The embedded SQLite symbols are
-  not exported, so they cannot interpose the host's SQLite; the extension still
-  operates on the host connection through the `sqlite3_api_routines` table, per
-  the loadable-extension contract.
+- SQLite is **not** linked into the library. A loadable extension never calls
+  SQLite directly — every call goes through the `sqlite3_api_routines` table the
+  host passes at load time (the loadable-extension contract) — so the library
+  has no undefined SQLite symbols and needs no embedded copy. This keeps the
+  artifact small (~0.6 MB) and identical across Linux, macOS and Windows; the
+  host process supplies SQLite when it loads the extension.
 - The SQLite extension-API bindings are **pre-generated and committed** in the
   `vectorlite-sqlite-sys` crate (`src/bindings.rs`), so the normal build needs
   **no libclang**. Refresh them after a SQLite header change with

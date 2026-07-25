@@ -103,3 +103,53 @@ impl IndexOptions {
         Ok(options)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_options() {
+        let o = IndexOptions::parse(
+            "hnsw(max_elements=1000, M=32, ef_construction=100, random_seed=7, allow_replace_deleted=false)",
+        )
+        .unwrap();
+        assert_eq!(o.max_elements, 1000);
+        assert_eq!(o.m, 32);
+        assert_eq!(o.ef_construction, 100);
+        assert_eq!(o.random_seed, 7);
+        assert!(!o.allow_replace_deleted);
+    }
+
+    #[test]
+    fn applies_defaults_for_unspecified_options() {
+        let o = IndexOptions::parse("hnsw(max_elements=10)").unwrap();
+        assert_eq!(o.max_elements, 10);
+        assert_eq!(o.m, 16);
+        assert_eq!(o.ef_construction, 200);
+        assert_eq!(o.random_seed, 100);
+        assert!(o.allow_replace_deleted);
+    }
+
+    #[test]
+    fn requires_max_elements() {
+        assert!(IndexOptions::parse("hnsw(M=16)").is_err());
+        assert!(IndexOptions::parse("hnsw()").is_err());
+    }
+
+    #[test]
+    fn rejects_non_hnsw_and_malformed() {
+        assert!(IndexOptions::parse("flat(max_elements=1)").is_err());
+        assert!(IndexOptions::parse("hnsw(max_elements)").is_err());
+        assert!(IndexOptions::parse("hnsw(max_elements=1, bogus=2)").is_err());
+        assert!(IndexOptions::parse("hnsw(max_elements=notanumber)").is_err());
+    }
+
+    #[test]
+    fn bool_spellings() {
+        assert_eq!(parse_bool("Yes"), Some(true));
+        assert_eq!(parse_bool("0"), Some(false));
+        assert_eq!(parse_bool("OFF"), Some(false));
+        assert_eq!(parse_bool("maybe"), None);
+    }
+}

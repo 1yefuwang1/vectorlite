@@ -36,6 +36,100 @@ jobs:
           python-version: '3.11'
       - run: python scripts/check_version.py
 
+  rust_port:
+    name: Rust port (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create vcpkg binary cache directory
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-binary-cache
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # MSVC environment (and the /arch:AVX-capable toolchain) for the Windows
+      # build; a no-op on Linux.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.6'
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+        with:
+          version: 1.11.1
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy rustfmt
+
+      # The Rust build reuses the vcpkg headers/libs (highway) produced by the
+      # CMake configure step, so install the C++ dependencies first.
+      - name: Bootstrap vcpkg and install C++ dependencies
+        run: |
+          git submodule update --init --recursive
+          python bootstrap_vcpkg.py
+          cmake --preset release
+
+      - name: rustfmt
+        working-directory: rust
+        run: cargo fmt --all --check
+
+      - name: clippy
+        working-directory: rust
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        working-directory: rust
+        run: cargo test
+
+      # build.sh detects the platform (Linux/macOS/Windows) and deploys the
+      # correct artifact (.so/.dylib/.dll) into the Python package.
+      - name: Build and deploy the Rust extension
+        run: sh rust/build.sh
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+
+      # uv-managed CPython 3.14 has loadable SQLite extensions enabled; resolve
+      # its interpreter path (differs between Unix and Windows layouts).
+      - name: Set up Python 3.14 test environment
+        run: |
+          uv python install 3.14
+          uv venv --python 3.14 .venv-test
+          if [ -f .venv-test/bin/python ]; then
+            echo "TEST_PYTHON=$(pwd)/.venv-test/bin/python" >> "$GITHUB_ENV"
+          else
+            echo "TEST_PYTHON=$(pwd)/.venv-test/Scripts/python.exe" >> "$GITHUB_ENV"
+          fi
+
+      # Python integration regression suite, run against the Rust-built
+      # extension on each OS.
+      - name: Python integration tests against the Rust extension
+        run: |
+          uv pip install --python "$TEST_PYTHON" pytest numpy
+          PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test
+
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

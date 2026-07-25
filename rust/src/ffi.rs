@@ -14,6 +14,7 @@
 )]
 
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub mod sys {
     pub use vectorlite_sqlite_sys::*;
@@ -22,18 +23,19 @@ pub mod sys {
 pub use sys::*;
 
 /// The host-provided API routine table. Set exactly once from the extension
-/// entry point before any other SQLite call is made.
-static mut API: *const sqlite3_api_routines = std::ptr::null();
+/// entry point before any other SQLite call is made. Stored in an `AtomicPtr`
+/// rather than a `static mut` to avoid the shared-mutable-static footgun.
+static API: AtomicPtr<sqlite3_api_routines> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Stores the API routine table. Called from `sqlite3_extension_init`.
 pub unsafe fn set_api(api: *const sqlite3_api_routines) {
-    API = api;
+    API.store(api as *mut sqlite3_api_routines, Ordering::Release);
 }
 
 #[inline]
 fn api() -> &'static sqlite3_api_routines {
     // Safe in practice: set_api runs before any wrapper is used.
-    unsafe { &*API }
+    unsafe { &*API.load(Ordering::Acquire) }
 }
 
 /// The `SQLITE_TRANSIENT` sentinel destructor: tells SQLite to copy the buffer.
@@ -68,24 +70,22 @@ pub unsafe fn value_pointer(v: *mut sqlite3_value, t: *const c_char) -> *mut c_v
 
 /// Returns the bytes of a blob/text value as a slice (empty if NULL/zero-length).
 pub unsafe fn value_blob_slice(v: *mut sqlite3_value) -> Vec<u8> {
-    let n = value_bytes(v);
-    if n <= 0 {
-        return Vec::new();
-    }
+    // Fetch the blob pointer first so any implicit type conversion happens
+    // before value_bytes() is read (per SQLite's documented call ordering).
     let p = value_blob(v) as *const u8;
-    if p.is_null() {
+    let n = value_bytes(v);
+    if n <= 0 || p.is_null() {
         return Vec::new();
     }
     std::slice::from_raw_parts(p, n as usize).to_vec()
 }
 
 pub unsafe fn value_text_string(v: *mut sqlite3_value) -> String {
-    let n = value_bytes(v);
-    if n <= 0 {
-        return String::new();
-    }
+    // Fetch the text pointer first so any implicit type conversion happens
+    // before value_bytes() is read (per SQLite's documented call ordering).
     let p = value_text(v);
-    if p.is_null() {
+    let n = value_bytes(v);
+    if n <= 0 || p.is_null() {
         return String::new();
     }
     let bytes = std::slice::from_raw_parts(p, n as usize);

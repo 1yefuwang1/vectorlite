@@ -68,7 +68,7 @@ impl Index {
         }
         let data_size = dim * vector_type.element_size();
         let dist_func = ops::dist_func_for(distance_type, vector_type);
-        let space = Space::new(dist_func, dim, data_size);
+        let space = Space::new(dist_func, dim, data_size)?;
         let index = Hnsw::create(
             &space,
             max_elements,

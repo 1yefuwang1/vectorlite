@@ -16,8 +16,8 @@ pub const KNN_PARAM_TYPE: &[u8] = b"vectorlite_knn_param\0";
 /// Parameters carried from `knn_param(...)` to the BestIndex/Filter machinery.
 pub struct KnnParam {
     pub query_vector: Vec<f32>,
-    pub k: u32,
-    pub ef: Option<u32>,
+    pub k: u64,
+    pub ef: Option<u64>,
 }
 
 unsafe extern "C" fn knn_param_destroy(p: *mut c_void) {
@@ -47,7 +47,7 @@ pub unsafe extern "C" fn knn_param(
     if argc != 2 && argc != 3 {
         ffi::result_error(
             ctx,
-            "invalid number of paramters to knn_param(). 2 or 3 is expected",
+            "invalid number of parameters to knn_param(). 2 or 3 is expected",
         );
         return;
     }
@@ -73,25 +73,25 @@ pub unsafe extern "C" fn knn_param(
         }
     };
 
-    let k = ffi::value_int(arg(argv, 1));
+    let k = ffi::value_int64(arg(argv, 1));
     if k <= 0 {
         ffi::result_error(ctx, "k should be greater than 0");
         return;
     }
 
-    let mut ef: Option<u32> = None;
+    let mut ef: Option<u64> = None;
     if argc == 3 {
-        let e = ffi::value_int(arg(argv, 2));
+        let e = ffi::value_int64(arg(argv, 2));
         if e <= 0 {
             ffi::result_error(ctx, "ef should be greater than 0");
             return;
         }
-        ef = Some(e as u32);
+        ef = Some(e as u64);
     }
 
     let param = Box::new(KnnParam {
         query_vector,
-        k: k as u32,
+        k: k as u64,
         ef,
     });
     ffi::result_pointer(
@@ -124,7 +124,7 @@ pub unsafe extern "C" fn vector_distance(
         return;
     }
     if ffi::value_type(arg(argv, 2)) != ffi::SQLITE_TEXT as c_int {
-        ffi::result_error(ctx, "vectors_distance expects space type of type text");
+        ffi::result_error(ctx, "vector_distance expects space type of type text");
         return;
     }
 
@@ -209,7 +209,10 @@ pub unsafe extern "C" fn vector_to_json(
     }
     let blob = ffi::value_blob_slice(arg(argv, 0));
     match vector::blob_to_f32(&blob) {
-        Ok(v) => ffi::result_text(ctx, &vector::to_json(&v)),
+        Ok(v) => match vector::to_json(&v) {
+            Ok(json) => ffi::result_text(ctx, &json),
+            Err(e) => ffi::result_error(ctx, &e),
+        },
         Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}")),
     }
 }

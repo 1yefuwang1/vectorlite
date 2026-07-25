@@ -97,6 +97,10 @@ void vl_hnsw_set_ef(VlHnsw* index, size_t ef);
 // (label_offset_ - offsetData_). Used by the caller to detect a load mismatch.
 size_t vl_hnsw_per_vector_data_size(VlHnsw* index);
 
+// Current number of elements in the index (including those marked deleted).
+// Used by the caller to cap `k` before allocating result buffers.
+size_t vl_hnsw_current_count(VlHnsw* index);
+
 void vl_free_err(char* err);
 
 #ifdef __cplusplus

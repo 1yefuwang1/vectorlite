@@ -41,12 +41,8 @@ fn main() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let msvc = target_env == "msvc";
 
-    // Platform-specific static archive names produced by vcpkg.
-    let (hwy_marker, sqlite_marker) = if msvc {
-        ("hwy.lib", "sqlite3.lib")
-    } else {
-        ("libhwy.a", "libsqlite3.a")
-    };
+    // Platform-specific static archive name for highway produced by vcpkg.
+    let hwy_marker = if msvc { "hwy.lib" } else { "libhwy.a" };
 
     let (vcpkg_include, lib_dir) = find_vcpkg(&repo_root, hwy_marker)
         .expect("could not locate a vcpkg_installed triplet with hnswlib headers and the highway static lib; build the CMake project first");
@@ -79,19 +75,16 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=hwy");
 
-    // Statically embed the full SQLite amalgamation, mirroring the C++ build.
-    // The extension still talks to the host database through the
-    // sqlite3_api_routines table (loadable-extension contract); nothing here
-    // references SQLite symbols directly, so whole-archive is required to pull
-    // the whole library in rather than have the linker drop it as unused.
-    if !lib_dir.join(sqlite_marker).exists() {
-        panic!(
-            "could not locate {sqlite_marker} next to the highway lib; build the CMake project first"
-        );
-    }
-    println!("cargo:rustc-link-lib=static:+whole-archive=sqlite3");
+    // SQLite is deliberately NOT linked in. A loadable extension never calls
+    // SQLite directly: every call goes through the sqlite3_api_routines table
+    // the host passes at load time (the loadable-extension contract), so the
+    // library has no undefined SQLite symbols to resolve and needs no embedded
+    // copy. This keeps the artifact small (~0.6 MB) and identical across
+    // platforms; the host process provides SQLite at load time.
 
-    // SQLite's amalgamation needs a few platform-specific system libraries.
+    // The C++ core (hnswlib's std::thread/std::mutex, libstdc++/highway) needs a
+    // few platform system libraries on Linux. glibc >= 2.34 folds these into
+    // libc, but link them explicitly so older toolchains resolve them too.
     match target_os.as_str() {
         "linux" | "android" => {
             println!("cargo:rustc-link-lib=dylib=pthread");
@@ -99,22 +92,8 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=m");
         }
         // macOS provides pthread/dl/m via libSystem (linked automatically).
-        // Windows (MSVC) needs no extra libs for the default SQLite build.
+        // Windows (MSVC) needs no extra libs.
         _ => {}
-    }
-
-    // The whole-archive above pulls every SQLite object in, but release builds
-    // ask the linker to drop unreferenced code (the extension references the
-    // embedded SQLite only indirectly, through the host API table). Tell each
-    // linker flavour to keep it so the full SQLite stays embedded.
-    if msvc {
-        println!("cargo:rustc-link-arg-cdylib=/OPT:NOREF");
-    } else if target_os == "macos" || target_os == "ios" {
-        // ld64 does not dead-strip a dylib unless asked, and the whole-archive
-        // force_load already pulled every object in, so nothing extra is needed.
-    } else {
-        // GNU ld / lld.
-        println!("cargo:rustc-link-arg-cdylib=-Wl,--no-gc-sections");
     }
 
     // SQLite extension API bindings live in the vendored vectorlite-sqlite-sys
