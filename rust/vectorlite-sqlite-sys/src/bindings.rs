@@ -2,7 +2,6 @@
 
 pub const SQLITE_ENABLE_UNLOCK_NOTIFY: u32 = 1;
 pub const SQLITE_ENABLE_COLUMN_METADATA: u32 = 1;
-pub const SQLITE_OS_UNIX: u32 = 1;
 pub const SQLITE_VERSION: &[u8; 7] = b"3.51.2\0";
 pub const SQLITE_VERSION_NUMBER: u32 = 3051002;
 pub const SQLITE_SOURCE_ID: &[u8; 85] =
@@ -494,7 +493,6 @@ pub const SQLITE_CARRAY_INT64: u32 = 1;
 pub const SQLITE_CARRAY_DOUBLE: u32 = 2;
 pub const SQLITE_CARRAY_TEXT: u32 = 3;
 pub const SQLITE_CARRAY_BLOB: u32 = 4;
-pub type va_list = __builtin_va_list;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct sqlite3 {
@@ -1854,12 +1852,7 @@ pub struct sqlite3_api_routines {
     pub value_type: ::std::option::Option<
         unsafe extern "C" fn(arg1: *mut sqlite3_value) -> ::std::os::raw::c_int,
     >,
-    pub vmprintf: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *const ::std::os::raw::c_char,
-            arg2: *mut __va_list_tag,
-        ) -> *mut ::std::os::raw::c_char,
-    >,
+    pub(crate) vmprintf: ::std::option::Option<unsafe extern "C" fn()>,
     pub overload_function: ::std::option::Option<
         unsafe extern "C" fn(
             arg1: *mut sqlite3,
@@ -2242,14 +2235,7 @@ pub struct sqlite3_api_routines {
             arg2: *const ::std::os::raw::c_char,
         ) -> *const ::std::os::raw::c_char,
     >,
-    pub xvsnprintf: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: ::std::os::raw::c_int,
-            arg2: *mut ::std::os::raw::c_char,
-            arg3: *const ::std::os::raw::c_char,
-            arg4: *mut __va_list_tag,
-        ) -> *mut ::std::os::raw::c_char,
-    >,
+    pub(crate) xvsnprintf: ::std::option::Option<unsafe extern "C" fn()>,
     pub wal_checkpoint_v2: ::std::option::Option<
         unsafe extern "C" fn(
             arg1: *mut sqlite3,
@@ -2471,13 +2457,7 @@ pub struct sqlite3_api_routines {
     pub str_appendf: ::std::option::Option<
         unsafe extern "C" fn(arg1: *mut sqlite3_str, zFormat: *const ::std::os::raw::c_char, ...),
     >,
-    pub str_vappendf: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *mut sqlite3_str,
-            zFormat: *const ::std::os::raw::c_char,
-            arg2: *mut __va_list_tag,
-        ),
-    >,
+    pub(crate) str_vappendf: ::std::option::Option<unsafe extern "C" fn()>,
     pub str_append: ::std::option::Option<
         unsafe extern "C" fn(
             arg1: *mut sqlite3_str,
@@ -2713,12 +2693,3 @@ pub type sqlite3_loadext_entry = ::std::option::Option<
         pThunk: *const sqlite3_api_routines,
     ) -> ::std::os::raw::c_int,
 >;
-pub type __builtin_va_list = [__va_list_tag; 1usize];
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct __va_list_tag {
-    pub gp_offset: ::std::os::raw::c_uint,
-    pub fp_offset: ::std::os::raw::c_uint,
-    pub overflow_arg_area: *mut ::std::os::raw::c_void,
-    pub reg_save_area: *mut ::std::os::raw::c_void,
-}

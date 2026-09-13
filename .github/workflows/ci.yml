@@ -37,17 +37,18 @@ jobs:
       - run: python scripts/check_version.py
 
   rust_port:
-    name: Rust port (${{ matrix.os }})
+    name: Rust port (${{ matrix.os }}, stable)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
     defaults:
       run:
         shell: bash
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
 
@@ -97,16 +98,37 @@ jobs:
 
       - name: clippy
         working-directory: rust
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::missing_safety_doc
 
       - name: Unit tests
         working-directory: rust
-        run: cargo test
+        run: cargo test --locked --workspace
+
+      - name: Check SQLite bindings against native C ABI
+        working-directory: rust
+        run: cargo test --locked -p vectorlite-sqlite-sys --features abi-check
+
+      - name: Install libclang for binding regeneration
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Check regenerated bindings without changing tracked sources
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: rust
+        run: |
+          cargo test --locked -p vectorlite-sqlite-sys --features regenerate,abi-check
+          git diff --exit-code -- vectorlite-sqlite-sys/src/bindings.rs
 
       # build.sh detects the platform (Linux/macOS/Windows) and deploys the
       # correct artifact (.so/.dylib/.dll) into the Python package.
       - name: Build and deploy the Rust extension
+        if: matrix.os != 'windows-latest'
         run: sh rust/build.sh
+
+      - name: Build and deploy the Rust extension (PowerShell)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./rust/build.ps1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -128,7 +150,7 @@ jobs:
       - name: Python integration tests against the Rust extension
         run: |
           uv pip install --python "$TEST_PYTHON" pytest numpy
-          PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test
+          PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
 
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
@@ -356,4 +378,3 @@ jobs:
         run: |
           mv package.json.tpl package.json
           npm publish --workspaces --access public
-

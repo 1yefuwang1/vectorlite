@@ -1,98 +1,193 @@
-//! The vectorlite virtual-table module. Mirrors `virtual_table.cpp`: it owns the
-//! SQLite glue (xCreate/xConnect/xBestIndex/xFilter/xUpdate/xColumn/...) and
-//! delegates all numeric work to the C++ core via `crate::core`.
+//! SQLite callbacks for vectorlite. Callbacks validate the host's arguments and
+//! delegate policy to safe helpers; numeric work lives in `crate::core`.
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use std::cell::UnsafeCell;
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
+use std::rc::Rc;
 
-use crate::core::{Index, SearchFilter};
+use crate::core::{Index, SearchFilter, SearchResult};
 use crate::ffi::{
     self, sqlite3, sqlite3_context, sqlite3_index_info, sqlite3_module, sqlite3_value,
-    sqlite3_vtab, sqlite3_vtab_cursor,
+    sqlite3_vtab, sqlite3_vtab_cursor, Value,
 };
 use crate::index_options::IndexOptions;
 use crate::registry::{IndexEntry, Registry, RegistryKey};
 use crate::scalar::{self, KnnParam, KNN_PARAM_TYPE};
 use crate::vector;
-use crate::vector_space::parse_named_vector_space;
+use crate::vector_space::{parse_named_vector_space, NamedVectorSpace};
 
 const COL_VECTOR: c_int = 0;
 const COL_DISTANCE: c_int = 1;
 const COL_OPERATION: c_int = 2;
 const COL_PATH: c_int = 3;
-
-// xFindFunction return code identifying the knn_search constraint.
 const FUNC_KNN: c_int = ffi::SQLITE_INDEX_CONSTRAINT_FUNCTION as c_int;
 
-// idxStr short names, matching constraint.h.
-const SN_KNN: &str = "ks";
-const SN_IN: &str = "in";
-const SN_EQ: &str = "eq";
-
+/// SQLite owns the header and can write it while Rust holds shared references
+/// to the table state. `UnsafeCell` explicitly permits those writes. `repr(C)`
+/// and the first-field layout make a VTab pointer a valid sqlite3_vtab pointer.
+/// Callbacks are serialized by the connection; the registry outlives every VTab.
 #[repr(C)]
 pub struct VTab {
-    base: sqlite3_vtab,
+    base: UnsafeCell<sqlite3_vtab>,
     registry: *mut Registry,
     schema: String,
     table: String,
+    // Retaining the entry avoids registry lookups and key allocations in row
+    // callbacks, while the registry retains it across xDisconnect/xConnect.
+    entry: Rc<IndexEntry>,
 }
 
 #[repr(C)]
 pub struct Cursor {
     base: sqlite3_vtab_cursor,
-    result: Vec<(f32, u64)>,
+    result: Vec<SearchResult>,
     current: usize,
+}
+
+#[derive(Debug)]
+struct VTabError {
+    code: c_int,
+    message: String,
+}
+
+impl VTabError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            code: ffi::SQLITE_ERROR as c_int,
+            message: message.into(),
+        }
+    }
+
+    fn with_code(code: c_int, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<&str> for VTabError {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
 }
 
 impl VTab {
     fn key(&self) -> RegistryKey {
         (self.schema.clone(), self.table.clone())
     }
-    unsafe fn registry(&self) -> &Registry {
-        &*self.registry
-    }
-    unsafe fn entry(&self) -> Option<&IndexEntry> {
-        self.registry().find(&self.key())
-    }
-}
 
-/// Looks up this table's registry entry, reporting a graceful vtab error (rather
-/// than panicking across the FFI boundary) if it is somehow missing.
-unsafe fn entry_or_vtab_err(vtab: &VTab, p_vtab: *mut sqlite3_vtab) -> Result<&IndexEntry, c_int> {
-    match vtab.entry() {
-        Some(e) => Ok(e),
-        None => {
-            set_vtab_err(
-                p_vtab,
-                "internal error: vectorlite index is missing from the registry",
+    fn report(&self, error: VTabError) -> c_int {
+        // SAFETY: only the externally mutable header is accessed. SQLite
+        // serializes callbacks, owns the existing error allocation, and accepts
+        // a replacement allocated by its own allocator. No header reference is
+        // kept across this call, and the Rust state is outside the UnsafeCell.
+        unsafe {
+            ffi::set_err(
+                std::ptr::addr_of_mut!((*self.base.get()).zErrMsg),
+                &error.message,
             );
-            Err(ffi::SQLITE_ERROR as c_int)
         }
+        error.code
     }
 }
 
-unsafe fn set_vtab_err(vtab: *mut sqlite3_vtab, msg: &str) {
-    let base = &mut *vtab;
-    set_vtab_err_field(&mut base.zErrMsg, msg);
-}
-
-unsafe fn set_vtab_err_field(field: &mut *mut c_char, msg: &str) {
-    if !field.is_null() {
-        ffi::sqlite_free(*field as *mut c_void);
+impl Drop for VTab {
+    fn drop(&mut self) {
+        let header = self.base.get_mut();
+        // SAFETY: disconnect/destroy return ownership of this table to us;
+        // zErrMsg is either null or a live allocation from SQLite's allocator.
+        unsafe { ffi::sqlite_free(header.zErrMsg.cast()) };
+        header.zErrMsg = std::ptr::null_mut();
     }
-    *field = ffi::sqlite_strdup(msg);
 }
 
+/// # Safety
+/// `p` is a NUL-terminated string supplied for the current SQLite callback and
+/// remains valid for the returned borrow.
 unsafe fn cstr<'a>(p: *const c_char) -> &'a str {
-    CStr::from_ptr(p).to_str().unwrap_or("")
-}
-
-unsafe fn uarg(argv: *mut *mut sqlite3_value, i: usize) -> *mut sqlite3_value {
-    *argv.add(i)
+    // SAFETY: guaranteed by this helper's caller.
+    unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
 }
 
 // ---- create / connect ----
 
+struct TableDefinition {
+    space: NamedVectorSpace,
+    options: IndexOptions,
+    vector_space_str: String,
+    index_options_str: String,
+}
+
+impl TableDefinition {
+    fn parse(vector_space_str: String, index_options_str: String) -> Result<Self, VTabError> {
+        let space = parse_named_vector_space(&vector_space_str).map_err(|error| {
+            VTabError::new(format!(
+                "Invalid vector space: {vector_space_str}. Reason: {error}"
+            ))
+        })?;
+        let options = IndexOptions::parse(&index_options_str).map_err(|error| {
+            VTabError::new(format!(
+                "Invalid index_options {index_options_str}. Reason: {error}"
+            ))
+        })?;
+        Ok(Self {
+            space,
+            options,
+            vector_space_str,
+            index_options_str,
+        })
+    }
+}
+
+fn find_or_create_entry(
+    registry: &mut Registry,
+    is_create: bool,
+    key: RegistryKey,
+    definition: TableDefinition,
+) -> Result<Rc<IndexEntry>, VTabError> {
+    let TableDefinition {
+        space,
+        options,
+        vector_space_str,
+        index_options_str,
+    } = definition;
+    if !is_create {
+        if let Some(existing) = registry.find(&key) {
+            if existing.vector_space_str == vector_space_str
+                && existing.index_options_str == index_options_str
+            {
+                return Ok(existing);
+            }
+        }
+    }
+    let index = Index::create(
+        space.dim,
+        space.distance_type,
+        space.vector_type,
+        options.max_elements,
+        options.m,
+        options.ef_construction,
+        options.random_seed,
+        options.allow_replace_deleted,
+    )
+    .map_err(|error| VTabError::new(format!("Failed to create virtual table: {error}")))?;
+    Ok(registry.insert(
+        key,
+        IndexEntry {
+            index,
+            space,
+            vector_space_str,
+            index_options_str,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 unsafe fn init_vtab(
     is_create: bool,
     db: *mut sqlite3,
@@ -102,112 +197,81 @@ unsafe fn init_vtab(
     pp_vtab: *mut *mut sqlite3_vtab,
     pz_err: *mut *mut c_char,
 ) -> c_int {
-    let rc = ffi::vtab_config_constraint_support(db);
+    // SAFETY: this helper is called only from xCreate/xConnect with SQLite's db.
+    let rc = unsafe { ffi::vtab_config_constraint_support(db) };
     if rc != ffi::SQLITE_OK as c_int {
         return rc;
     }
-
-    const MODULE_PARAM_OFFSET: usize = 3;
-    if argc as usize != 2 + MODULE_PARAM_OFFSET {
-        ffi::set_err(
-            pz_err,
-            &format!(
-                "vectorlite expects 2 arguments (a vector space and index options), got {}. \
-                 The index file path argument has been removed; use INSERT INTO \
-                 <table>(operation, path) VALUES('save', <path>) to persist an index and \
-                 INSERT INTO <table>(operation, path) VALUES('load', <path>) to restore one.",
-                argc as usize - MODULE_PARAM_OFFSET
-            ),
+    const MODULE_PARAM_OFFSET: c_int = 3;
+    if argc != 2 + MODULE_PARAM_OFFSET {
+        let message = format!(
+            "vectorlite expects 2 arguments (a vector space and index options), got {}. \
+             The index file path argument has been removed; use INSERT INTO \
+             <table>(operation, path) VALUES('save', <path>) to persist an index and \
+             INSERT INTO <table>(operation, path) VALUES('load', <path>) to restore one.",
+            argc.saturating_sub(MODULE_PARAM_OFFSET)
         );
+        // SAFETY: SQLite supplies the writable constructor error output.
+        unsafe { ffi::set_err(pz_err, &message) };
         return ffi::SQLITE_ERROR as c_int;
     }
-
-    let schema = cstr(*argv.add(1)).to_string();
-    let table = cstr(*argv.add(2)).to_string();
-    let vector_space_str = cstr(*argv.add(MODULE_PARAM_OFFSET)).to_string();
-    let index_options_str = cstr(*argv.add(1 + MODULE_PARAM_OFFSET)).to_string();
-
-    let space = match parse_named_vector_space(&vector_space_str) {
-        Ok(s) => s,
-        Err(e) => {
-            ffi::set_err(
-                pz_err,
-                &format!("Invalid vector space: {vector_space_str}. Reason: {e}"),
-            );
-            return ffi::SQLITE_ERROR as c_int;
+    // SAFETY: argc was checked; SQLite supplies argc valid C string pointers.
+    let (schema, table, vector_space_str, index_options_str) = unsafe {
+        (
+            cstr(*argv.add(1)).to_owned(),
+            cstr(*argv.add(2)).to_owned(),
+            cstr(*argv.add(3)).to_owned(),
+            cstr(*argv.add(4)).to_owned(),
+        )
+    };
+    let definition = match TableDefinition::parse(vector_space_str, index_options_str) {
+        Ok(definition) => definition,
+        Err(error) => {
+            // SAFETY: pz_err is SQLite's writable error output.
+            unsafe { ffi::set_err(pz_err, &error.message) };
+            return error.code;
         }
     };
-
-    let options = match IndexOptions::parse(&index_options_str) {
-        Ok(o) => o,
-        Err(e) => {
-            ffi::set_err(
-                pz_err,
-                &format!("Invalid index_options {index_options_str}. Reason: {e}"),
-            );
-            return ffi::SQLITE_ERROR as c_int;
-        }
-    };
-
     let declare_sql = format!(
         "CREATE TABLE X({}, distance REAL hidden, operation TEXT hidden, path TEXT hidden)",
-        space.vector_name
+        definition.space.vector_name
     );
-    let rc = ffi::declare_vtab(db, &declare_sql);
+    // SAFETY: called from the constructor with its live connection handle.
+    // Declare before changing the registry so a failed schema leaves it intact.
+    let rc = unsafe { ffi::declare_vtab(db, &declare_sql) };
     if rc != ffi::SQLITE_OK as c_int {
         return rc;
     }
-
-    let registry = p_aux as *mut Registry;
-    let key: RegistryKey = (schema.clone(), table.clone());
-
-    // On connect/reparse, reuse an existing matching index; otherwise build fresh.
-    let mut need_build = true;
-    if !is_create {
-        if let Some(existing) = (*registry).find(&key) {
-            if existing.vector_space_str == vector_space_str
-                && existing.index_options_str == index_options_str
-            {
-                need_build = false;
-            }
+    let registry = p_aux.cast::<Registry>();
+    // SAFETY: the module owns a Registry in pAux until every table disconnects.
+    // No SQLite calls occur while this mutable registry borrow is held.
+    let entry = match find_or_create_entry(
+        unsafe { &mut *registry },
+        is_create,
+        (schema.clone(), table.clone()),
+        definition,
+    ) {
+        Ok(entry) => entry,
+        Err(error) => {
+            // SAFETY: pz_err is SQLite's writable error output.
+            unsafe { ffi::set_err(pz_err, &error.message) };
+            return error.code;
         }
-    }
-
-    if need_build {
-        let index = match Index::create(
-            space.dim,
-            space.distance_type,
-            space.vector_type,
-            options.max_elements,
-            options.m,
-            options.ef_construction,
-            options.random_seed,
-            options.allow_replace_deleted,
-        ) {
-            Ok(i) => i,
-            Err(e) => {
-                ffi::set_err(pz_err, &format!("Failed to create virtual table: {e}"));
-                return ffi::SQLITE_ERROR as c_int;
-            }
-        };
-        (*registry).insert(
-            key,
-            IndexEntry {
-                index,
-                space,
-                vector_space_str,
-                index_options_str,
-            },
-        );
-    }
-
+    };
     let vtab = Box::new(VTab {
-        base: std::mem::zeroed(),
+        base: UnsafeCell::new(sqlite3_vtab {
+            pModule: std::ptr::null(),
+            nRef: 0,
+            zErrMsg: std::ptr::null_mut(),
+        }),
         registry,
         schema,
         table,
+        entry,
     });
-    *pp_vtab = Box::into_raw(vtab) as *mut sqlite3_vtab;
+    // SAFETY: SQLite supplies a writable output slot and takes ownership until
+    // xDisconnect/xDestroy. VTab's first field has sqlite3_vtab's layout.
+    unsafe { *pp_vtab = Box::into_raw(vtab).cast() };
     ffi::SQLITE_OK as c_int
 }
 
@@ -219,7 +283,8 @@ unsafe extern "C" fn x_create(
     pp_vtab: *mut *mut sqlite3_vtab,
     pz_err: *mut *mut c_char,
 ) -> c_int {
-    init_vtab(true, db, p_aux, argc, argv, pp_vtab, pz_err)
+    // SAFETY: forwards SQLite's constructor callback contract unchanged.
+    unsafe { init_vtab(true, db, p_aux, argc, argv, pp_vtab, pz_err) }
 }
 
 unsafe extern "C" fn x_connect(
@@ -230,37 +295,37 @@ unsafe extern "C" fn x_connect(
     pp_vtab: *mut *mut sqlite3_vtab,
     pz_err: *mut *mut c_char,
 ) -> c_int {
-    init_vtab(false, db, p_aux, argc, argv, pp_vtab, pz_err)
+    // SAFETY: forwards SQLite's constructor callback contract unchanged.
+    unsafe { init_vtab(false, db, p_aux, argc, argv, pp_vtab, pz_err) }
 }
 
 unsafe extern "C" fn x_disconnect(p_vtab: *mut sqlite3_vtab) -> c_int {
-    let vtab = Box::from_raw(p_vtab as *mut VTab);
-    if !vtab.base.zErrMsg.is_null() {
-        ffi::sqlite_free(vtab.base.zErrMsg as *mut c_void);
-    }
-    drop(vtab);
+    // SAFETY: SQLite returns the live Box allocated by init_vtab exactly once,
+    // after its cursors close; the registry retains the index for reconnect.
+    drop(unsafe { Box::from_raw(p_vtab.cast::<VTab>()) });
     ffi::SQLITE_OK as c_int
 }
 
 unsafe extern "C" fn x_destroy(p_vtab: *mut sqlite3_vtab) -> c_int {
-    let vtab = Box::from_raw(p_vtab as *mut VTab);
-    let key = vtab.key();
-    (&mut *vtab.registry).erase(&key);
-    if !vtab.base.zErrMsg.is_null() {
-        ffi::sqlite_free(vtab.base.zErrMsg as *mut c_void);
-    }
+    // SAFETY: SQLite transfers the table allocation back exactly once.
+    let vtab = unsafe { Box::from_raw(p_vtab.cast::<VTab>()) };
+    // SAFETY: pAux outlives this table; serialized callbacks and the retained
+    // entry ensure no registry reference is live during this mutation.
+    unsafe { &mut *vtab.registry }.erase(&vtab.key());
     drop(vtab);
     ffi::SQLITE_OK as c_int
 }
 
 unsafe extern "C" fn x_rename(p_vtab: *mut sqlite3_vtab, z_new: *const c_char) -> c_int {
-    let vtab = &mut *(p_vtab as *mut VTab);
-    let new_table = cstr(z_new).to_string();
+    // SAFETY: SQLite provides exclusive callback access to this live table.
+    let vtab = unsafe { &mut *p_vtab.cast::<VTab>() };
+    // SAFETY: z_new is a valid callback-scoped C string.
+    let new_table = unsafe { cstr(z_new) }.to_owned();
     let old_key = vtab.key();
     let new_key = (vtab.schema.clone(), new_table.clone());
-    // `registry` is a raw pointer to the connection-owned registry; deref it
-    // directly for the mutable call rather than laundering `&mut` out of `&self`.
-    (*vtab.registry).rename(&old_key, new_key);
+    // SAFETY: the module registry remains live and no registry borrow is kept
+    // in VTab (only its independently owned Rc entry).
+    unsafe { &mut *vtab.registry }.rename(&old_key, new_key);
     vtab.table = new_table;
     ffi::SQLITE_OK as c_int
 }
@@ -276,22 +341,27 @@ unsafe extern "C" fn x_open(
         result: Vec::new(),
         current: 0,
     });
-    *pp_cursor = Box::into_raw(cursor) as *mut sqlite3_vtab_cursor;
+    // SAFETY: SQLite supplies the output slot and retains ownership until
+    // xClose. Cursor is repr(C) with sqlite3_vtab_cursor as its first field.
+    unsafe { *pp_cursor = Box::into_raw(cursor).cast() };
     ffi::SQLITE_OK as c_int
 }
 
 unsafe extern "C" fn x_close(p_cur: *mut sqlite3_vtab_cursor) -> c_int {
-    drop(Box::from_raw(p_cur as *mut Cursor));
+    // SAFETY: SQLite closes the allocation from xOpen exactly once.
+    drop(unsafe { Box::from_raw(p_cur.cast::<Cursor>()) });
     ffi::SQLITE_OK as c_int
 }
 
 unsafe extern "C" fn x_eof(p_cur: *mut sqlite3_vtab_cursor) -> c_int {
-    let cursor = &*(p_cur as *mut Cursor);
+    // SAFETY: this callback receives a live cursor allocated by xOpen.
+    let cursor = unsafe { &*p_cur.cast::<Cursor>() };
     (cursor.current >= cursor.result.len()) as c_int
 }
 
 unsafe extern "C" fn x_next(p_cur: *mut sqlite3_vtab_cursor) -> c_int {
-    let cursor = &mut *(p_cur as *mut Cursor);
+    // SAFETY: SQLite serializes access to this live cursor for the callback.
+    let cursor = unsafe { &mut *p_cur.cast::<Cursor>() };
     if cursor.current < cursor.result.len() {
         cursor.current += 1;
     }
@@ -299,9 +369,11 @@ unsafe extern "C" fn x_next(p_cur: *mut sqlite3_vtab_cursor) -> c_int {
 }
 
 unsafe extern "C" fn x_rowid(p_cur: *mut sqlite3_vtab_cursor, p_rowid: *mut i64) -> c_int {
-    let cursor = &*(p_cur as *mut Cursor);
-    if cursor.current < cursor.result.len() {
-        *p_rowid = cursor.result[cursor.current].1 as i64;
+    // SAFETY: SQLite provides a live cursor and writable rowid output.
+    let cursor = unsafe { &*p_cur.cast::<Cursor>() };
+    if let Some(row) = cursor.result.get(cursor.current) {
+        // SAFETY: p_rowid is writable for this callback.
+        unsafe { *p_rowid = row.rowid as i64 };
         ffi::SQLITE_OK as c_int
     } else {
         ffi::SQLITE_ERROR as c_int
@@ -313,45 +385,47 @@ unsafe extern "C" fn x_column(
     ctx: *mut sqlite3_context,
     n: c_int,
 ) -> c_int {
-    let cursor = &*(p_cur as *mut Cursor);
-    if cursor.current >= cursor.result.len() {
+    // SAFETY: p_cur and its owning table remain live throughout the callback.
+    let cursor = unsafe { &*p_cur.cast::<Cursor>() };
+    let Some(row) = cursor.result.get(cursor.current) else {
         return ffi::SQLITE_ERROR as c_int;
-    }
-    let (dist, rowid) = cursor.result[cursor.current];
-
-    if n == COL_DISTANCE {
-        ffi::result_double(ctx, dist as f64);
-        return ffi::SQLITE_OK as c_int;
-    }
-    if n == COL_VECTOR {
-        let vtab = &*(cursor.base.pVtab as *mut VTab);
-        let entry = match vtab.entry() {
-            Some(e) => e,
-            None => {
-                ffi::result_error(
-                    ctx,
-                    "internal error: vectorlite index is missing from the registry",
-                );
-                return ffi::SQLITE_ERROR as c_int;
-            }
-        };
-        match entry.index.get_vector(rowid) {
-            Some(v) => {
-                ffi::result_blob(ctx, &vector::f32_to_blob(&v));
-                ffi::SQLITE_OK as c_int
-            }
-            None => {
-                ffi::result_error(ctx, &format!("Can't find vector with rowid {rowid}"));
-                ffi::SQLITE_ERROR as c_int
+    };
+    match n {
+        COL_DISTANCE => {
+            // SAFETY: ctx is the callback's live result context.
+            unsafe { ffi::result_double(ctx, row.distance as f64) };
+        }
+        COL_VECTOR => {
+            // SAFETY: SQLite keeps the parent table alive until xClose.
+            let vtab = unsafe { &*cursor.base.pVtab.cast::<VTab>() };
+            match vtab.entry.index.get_vector(row.rowid) {
+                Some(v) => {
+                    // SAFETY: SQLite copies these bytes before return.
+                    unsafe { ffi::result_blob(ctx, &vector::blob_from_f32(&v)) };
+                }
+                None => {
+                    // SAFETY: ctx is the callback's live result context.
+                    unsafe {
+                        ffi::result_error(
+                            ctx,
+                            &format!("Can't find vector with rowid {}", row.rowid),
+                        )
+                    };
+                    return ffi::SQLITE_ERROR as c_int;
+                }
             }
         }
-    } else if n == COL_OPERATION || n == COL_PATH {
-        ffi::result_null(ctx);
-        ffi::SQLITE_OK as c_int
-    } else {
-        ffi::result_error(ctx, &format!("Invalid column index: {n}"));
-        ffi::SQLITE_ERROR as c_int
+        COL_OPERATION | COL_PATH => {
+            // SAFETY: ctx is the callback's live result context.
+            unsafe { ffi::result_null(ctx) };
+        }
+        _ => {
+            // SAFETY: ctx is the callback's live result context.
+            unsafe { ffi::result_error(ctx, &format!("Invalid column index: {n}")) };
+            return ffi::SQLITE_ERROR as c_int;
+        }
     }
+    ffi::SQLITE_OK as c_int
 }
 
 // ---- best index ----
@@ -360,209 +434,328 @@ unsafe extern "C" fn x_best_index(
     p_vtab: *mut sqlite3_vtab,
     info: *mut sqlite3_index_info,
 ) -> c_int {
-    let info = &mut *info;
+    // SAFETY: SQLite supplies a live table and exclusive planning structure.
+    let vtab = unsafe { &*p_vtab.cast::<VTab>() };
+    // SAFETY: info is exclusively accessible in this planning callback.
+    let info = unsafe { &mut *info };
     let mut argv_index = 0;
-    let mut short_names: Vec<&str> = Vec::new();
-
-    for i in 0..info.nConstraint as isize {
-        let constraint = &*info.aConstraint.offset(i);
-        if constraint.usable == 0 {
+    let mut short_names = Vec::new();
+    for i in 0..info.nConstraint as usize {
+        // SAFETY: SQLite supplies nConstraint initialized constraint entries.
+        // Copy the fields so no element reference crosses the vtab_in call.
+        let (usable, column, op) = unsafe {
+            let constraint = &*info.aConstraint.add(i);
+            (
+                constraint.usable,
+                constraint.iColumn,
+                constraint.op as c_int,
+            )
+        };
+        if usable == 0 {
             continue;
         }
-        let column = constraint.iColumn;
-        let usage = &mut *info.aConstraintUsage.offset(i);
-
-        if constraint.op as c_int == FUNC_KNN && column == COL_VECTOR {
+        let short_name = if op == FUNC_KNN && column == COL_VECTOR {
+            info.estimatedCost = 100.0;
+            Some("ks")
+        } else if column == -1 {
+            // SAFETY: the extension API is initialized before any callback.
+            if unsafe { ffi::libversion_number() } < 3038000 {
+                return vtab.report(VTabError::new(
+                    "SQLite version is too old: sqlite version 3.38.0 or higher is required.",
+                ));
+            }
+            if op == ffi::SQLITE_INDEX_CONSTRAINT_EQ as c_int {
+                // SAFETY: called only in xBestIndex, after checking the API's
+                // minimum version, using an in-bounds constraint index.
+                if unsafe { ffi::vtab_in(info, i as c_int, 1) } != 0 {
+                    info.estimatedCost = 200.0;
+                    Some("in")
+                } else {
+                    info.estimatedCost = 100.0;
+                    Some("eq")
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(short_name) = short_name {
             argv_index += 1;
+            // SAFETY: aConstraintUsage has nConstraint writable entries.
+            let usage = unsafe { &mut *info.aConstraintUsage.add(i) };
             usage.argvIndex = argv_index;
             usage.omit = 1;
-            short_names.push(SN_KNN);
-            info.estimatedCost = 100.0;
-        } else if column == -1 {
-            if ffi::libversion_number() < 3038000 {
-                set_vtab_err(
-                    p_vtab,
-                    "SQLite version is too old: sqlite version 3.38.0 or higher is required.",
-                );
-                return ffi::SQLITE_ERROR as c_int;
-            }
-            if constraint.op as c_int == ffi::SQLITE_INDEX_CONSTRAINT_EQ as c_int {
-                let can_vtab_in = ffi::vtab_in(info, i as c_int, 1) != 0;
-                argv_index += 1;
-                usage.argvIndex = argv_index;
-                usage.omit = 1;
-                if can_vtab_in {
-                    short_names.push(SN_IN);
-                    info.estimatedCost = 200.0;
-                } else {
-                    short_names.push(SN_EQ);
-                    info.estimatedCost = 100.0;
-                }
-            }
+            short_names.push(short_name);
         }
     }
-
     if short_names.is_empty() {
-        set_vtab_err(p_vtab, "No valid constraint found in where clause");
-        return ffi::SQLITE_CONSTRAINT as c_int;
+        return vtab.report(VTabError::with_code(
+            ffi::SQLITE_CONSTRAINT as c_int,
+            "No valid constraint found in where clause",
+        ));
     }
-
-    let idx_str: String = short_names.concat();
-    let p = ffi::sqlite_strdup(&idx_str);
-    if p.is_null() {
-        set_vtab_err(p_vtab, "Failed to allocate memory for idxStr");
-        return ffi::SQLITE_NOMEM as c_int;
+    // SAFETY: initialized SQLite allocator; SQLite frees this plan string.
+    let plan = unsafe { ffi::sqlite_strdup(&short_names.concat()) };
+    if plan.is_null() {
+        return vtab.report(VTabError::with_code(
+            ffi::SQLITE_NOMEM as c_int,
+            "Failed to allocate memory for idxStr",
+        ));
     }
-    info.idxStr = p;
+    info.idxStr = plan;
     info.needToFreeIdxStr = 1;
-    // idxNum is no longer used as a length (x_filter reads idxStr via CStr); it
-    // only needs to be > 0 so x_filter treats this as a chosen plan.
-    info.idxNum = short_names.len() as c_int;
+    info.idxNum = argv_index;
     ffi::SQLITE_OK as c_int
 }
 
 // ---- filter ----
 
-unsafe extern "C" fn x_filter(
-    p_cur: *mut sqlite3_vtab_cursor,
-    idx_num: c_int,
-    idx_str: *const c_char,
-    _argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) -> c_int {
-    let cursor = &mut *(p_cur as *mut Cursor);
-    let p_vtab = cursor.base.pVtab;
-    let vtab = &*(p_vtab as *mut VTab);
-    let entry = match entry_or_vtab_err(vtab, p_vtab) {
-        Ok(e) => e,
-        Err(rc) => return rc,
-    };
+#[derive(Debug, PartialEq)]
+enum Constraint {
+    Knn,
+    In,
+    Eq,
+}
 
-    // idxStr is the NUL-terminated concatenation of 2-char constraint short
-    // names built in x_best_index. Read it via CStr so its length is not coupled
-    // to idxNum (which is used here only as a "a plan was chosen" guard).
-    let codes: Vec<u8> = if idx_str.is_null() || idx_num <= 0 {
-        Vec::new()
-    } else {
-        CStr::from_ptr(idx_str).to_bytes().to_vec()
-    };
-
-    let mut knn: Option<&KnnParam> = None;
-    let mut rowid_in: Option<std::collections::HashSet<u64>> = None;
-    let mut rowid_eq: Option<u64> = None;
-
-    let mut i = 0usize;
-    let mut arg_index = 0usize;
-    while i + 1 < codes.len() {
-        let code = [codes[i], codes[i + 1]];
-        let value = uarg(argv, arg_index);
-        match &code {
-            b"ks" => {
-                let p = ffi::value_pointer(value, KNN_PARAM_TYPE.as_ptr() as *const c_char)
-                    as *const KnnParam;
-                if p.is_null() {
-                    set_vtab_err(
-                        p_vtab,
-                        "Failed to materialize constraint: knn_param() should be used for the 2nd param of knn_search()",
-                    );
-                    return ffi::SQLITE_ERROR as c_int;
-                }
-                if knn.is_some() {
-                    set_vtab_err(p_vtab, "only one knn_search constraint is allowed");
-                    return ffi::SQLITE_ERROR as c_int;
-                }
-                knn = Some(&*p);
-            }
-            b"in" => {
-                if rowid_in.is_some() || rowid_eq.is_some() {
-                    set_vtab_err(p_vtab, "only one rowid constraint is allowed");
-                    return ffi::SQLITE_ERROR as c_int;
-                }
-                let mut ids = std::collections::HashSet::new();
-                let mut rowid_value: *mut sqlite3_value = std::ptr::null_mut();
-                let mut rc = ffi::vtab_in_first(value, &mut rowid_value);
-                while rc == ffi::SQLITE_OK as c_int && !rowid_value.is_null() {
-                    if ffi::value_type(rowid_value) != ffi::SQLITE_INTEGER as c_int {
-                        set_vtab_err(p_vtab, "rowid must be of type INTEGER");
-                        return ffi::SQLITE_ERROR as c_int;
-                    }
-                    ids.insert(ffi::value_int64(rowid_value) as u64);
-                    rc = ffi::vtab_in_next(value, &mut rowid_value);
-                }
-                rowid_in = Some(ids);
-            }
-            b"eq" => {
-                if rowid_in.is_some() || rowid_eq.is_some() {
-                    set_vtab_err(p_vtab, "only one rowid constraint is allowed");
-                    return ffi::SQLITE_ERROR as c_int;
-                }
-                if ffi::value_type(value) != ffi::SQLITE_INTEGER as c_int {
-                    set_vtab_err(p_vtab, "rowid must be of type INTEGER");
-                    return ffi::SQLITE_ERROR as c_int;
-                }
-                rowid_eq = Some(ffi::value_int64(value) as u64);
-            }
-            _ => {
-                set_vtab_err(p_vtab, "unknown constraint short name");
-                return ffi::SQLITE_ERROR as c_int;
-            }
-        }
-        i += 2;
-        arg_index += 1;
+fn parse_plan(idx_num: c_int, codes: &[u8], argc: c_int) -> Result<Vec<Constraint>, VTabError> {
+    if argc <= 0
+        || idx_num != argc
+        || !codes.len().is_multiple_of(2)
+        || codes.len() / 2 != argc as usize
+    {
+        return Err(VTabError::new(
+            "invalid query constraint plan or argument count",
+        ));
     }
+    codes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|code| match code {
+            b"ks" => Ok(Constraint::Knn),
+            b"in" => Ok(Constraint::In),
+            b"eq" => Ok(Constraint::Eq),
+            _ => Err(VTabError::new("unknown constraint short name")),
+        })
+        .collect()
+}
 
-    let result: Result<Vec<(f32, u64)>, String> = if let Some(knn) = knn {
-        if knn.query_vector.len() != entry.space.dim {
-            set_vtab_err(
-                p_vtab,
-                &format!(
-                    "query vector's dimension({}) doesn't match {}'s dimension: {}",
-                    knn.query_vector.len(),
-                    entry.space.vector_name,
-                    entry.space.dim
-                ),
-            );
-            return ffi::SQLITE_ERROR as c_int;
+fn in_step_status(code: c_int, has_value: bool) -> Result<bool, VTabError> {
+    match code {
+        code if code == ffi::SQLITE_DONE as c_int => Ok(false),
+        code if code == ffi::SQLITE_OK as c_int && has_value => Ok(true),
+        code if code == ffi::SQLITE_OK as c_int => Err(VTabError::new(
+            "IN iterator returned no value without SQLITE_DONE",
+        )),
+        code => Err(VTabError::with_code(
+            code,
+            format!("Failed to iterate rowid IN constraint (SQLite error {code})"),
+        )),
+    }
+}
+
+/// The token is constructed only for an all-at-once IN argument inside xFilter.
+/// Items copy the rowid before advancing, so SQLite's short-lived value pointer
+/// cannot escape the iterator. Any terminal error is delivered as an Err item.
+struct InRowids<'value, 'callback> {
+    value: &'value mut Value<'callback>,
+    started: bool,
+    done: bool,
+}
+
+impl<'value, 'callback> InRowids<'value, 'callback> {
+    /// # Safety
+    /// `value` is the current xFilter argument selected by xBestIndex for
+    /// all-at-once IN processing; this iterator must stay in that callback.
+    unsafe fn new(value: &'value mut Value<'callback>) -> Self {
+        Self {
+            value,
+            started: false,
+            done: false,
         }
-        let filter = if let Some(ref ids) = rowid_in {
+    }
+}
+
+impl Iterator for InRowids<'_, '_> {
+    type Item = Result<u64, VTabError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let mut rowid_value = std::ptr::null_mut();
+        // SAFETY: construction records the all-at-once IN callback contract.
+        // No returned value survives this method or the next iterator call.
+        let code = unsafe {
+            if self.started {
+                ffi::vtab_in_next(self.value.as_ptr(), &mut rowid_value)
+            } else {
+                ffi::vtab_in_first(self.value.as_ptr(), &mut rowid_value)
+            }
+        };
+        self.started = true;
+        match in_step_status(code, !rowid_value.is_null()) {
+            Ok(false) => {
+                self.done = true;
+                None
+            }
+            Err(error) => {
+                self.done = true;
+                Some(Err(error))
+            }
+            Ok(true) => {
+                // SAFETY: SQLITE_OK provided a protected non-null value valid
+                // until the next step, and only integer access occurs here.
+                let value = unsafe { Value::from_raw(rowid_value) };
+                if value.kind() != ffi::SQLITE_INTEGER as c_int {
+                    self.done = true;
+                    Some(Err(VTabError::new("rowid must be of type INTEGER")))
+                } else {
+                    Some(Ok(value.int64() as u64))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct Constraints<'a> {
+    knn: Option<&'a KnnParam>,
+    rowid_in: Option<HashSet<u64>>,
+    rowid_eq: Option<u64>,
+}
+
+/// # Safety
+/// `plan` must describe the values supplied by SQLite to the current xFilter,
+/// as selected by this module's xBestIndex. KnnParam pointers must remain live
+/// until the returned constraints have been consumed within this callback.
+unsafe fn materialize_constraints<'a>(
+    plan: &[Constraint],
+    values: &mut [Value<'a>],
+) -> Result<Constraints<'a>, VTabError> {
+    let mut constraints = Constraints::default();
+    for (code, value) in plan.iter().zip(values.iter_mut()) {
+        match code {
+            Constraint::Knn => {
+                if constraints.knn.is_some() {
+                    return Err(VTabError::new("only one knn_search constraint is allowed"));
+                }
+                // SAFETY: this stable tag belongs to scalar::knn_param, whose
+                // destructor keeps the pointed-to KnnParam alive in this value.
+                let pointer =
+                    unsafe { value.pointer(KNN_PARAM_TYPE.as_ptr().cast()) }.cast::<KnnParam>();
+                if pointer.is_null() {
+                    return Err(VTabError::new("Failed to materialize constraint: knn_param() should be used for the 2nd param of knn_search()"));
+                }
+                // SAFETY: the producer/tag pair guarantees type and alignment;
+                // the borrowed object is consumed before xFilter returns.
+                constraints.knn = Some(unsafe { &*pointer });
+            }
+            Constraint::In | Constraint::Eq => {
+                if constraints.rowid_in.is_some() || constraints.rowid_eq.is_some() {
+                    return Err(VTabError::new("only one rowid constraint is allowed"));
+                }
+                if *code == Constraint::In {
+                    // SAFETY: this checked plan code corresponds to xBestIndex's
+                    // successful all-at-once IN selection for this argument.
+                    constraints.rowid_in =
+                        Some(unsafe { InRowids::new(value) }.collect::<Result<_, _>>()?);
+                } else {
+                    if value.kind() != ffi::SQLITE_INTEGER as c_int {
+                        return Err(VTabError::new("rowid must be of type INTEGER"));
+                    }
+                    constraints.rowid_eq = Some(value.int64() as u64);
+                }
+            }
+        }
+    }
+    Ok(constraints)
+}
+
+fn query_rows(
+    entry: &IndexEntry,
+    constraints: Constraints<'_>,
+) -> Result<Vec<SearchResult>, VTabError> {
+    if let Some(knn) = constraints.knn {
+        if knn.query_vector.len() != entry.space.dim {
+            return Err(VTabError::new(format!(
+                "query vector's dimension({}) doesn't match {}'s dimension: {}",
+                knn.query_vector.len(),
+                entry.space.vector_name,
+                entry.space.dim
+            )));
+        }
+        let filter = if let Some(ref ids) = constraints.rowid_in {
             SearchFilter::In(ids)
-        } else if let Some(eq) = rowid_eq {
+        } else if let Some(eq) = constraints.rowid_eq {
             SearchFilter::Equals(eq)
         } else {
             SearchFilter::None
         };
-        entry.index.search(
-            &knn.query_vector,
-            knn.k as usize,
-            knn.ef.map(|e| e as usize),
-            filter,
-        )
+        let k =
+            usize::try_from(knn.k).map_err(|_| VTabError::new("k exceeds the supported range"))?;
+        let ef = knn
+            .ef
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| VTabError::new("ef exceeds the supported range"))?;
+        entry
+            .index
+            .search(&knn.query_vector, k, ef, filter)
+            .map_err(|error| VTabError::new(format!("Failed to execute query due to: {error}")))
     } else {
         let mut out = Vec::new();
-        if let Some(ids) = rowid_in {
+        if let Some(ids) = constraints.rowid_in {
             for id in ids {
                 if entry.index.contains(id) {
-                    out.push((0.0f32, id));
+                    out.push(SearchResult::new(0.0, id));
                 }
             }
-        } else if let Some(eq) = rowid_eq {
+        } else if let Some(eq) = constraints.rowid_eq {
             if entry.index.contains(eq) {
-                out.push((0.0f32, eq));
+                out.push(SearchResult::new(0.0, eq));
             }
         }
         Ok(out)
-    };
+    }
+}
 
+unsafe extern "C" fn x_filter(
+    p_cur: *mut sqlite3_vtab_cursor,
+    idx_num: c_int,
+    idx_str: *const c_char,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) -> c_int {
+    // SAFETY: SQLite provides exclusive access to the live cursor.
+    let cursor = unsafe { &mut *p_cur.cast::<Cursor>() };
+    // SAFETY: SQLite keeps the cursor's parent table alive during the callback.
+    let vtab = unsafe { &*cursor.base.pVtab.cast::<VTab>() };
+    cursor.result.clear();
+    cursor.current = 0;
+    let codes = if idx_str.is_null() {
+        &[][..]
+    } else {
+        // SAFETY: SQLite supplies the NUL-terminated plan created by xBestIndex.
+        unsafe { CStr::from_ptr(idx_str) }.to_bytes()
+    };
+    let plan = match parse_plan(idx_num, codes, argc) {
+        Ok(plan) => plan,
+        Err(error) => return vtab.report(error),
+    };
+    // SAFETY: positive argc was checked against the plan. SQLite supplies this
+    // many protected values, used exclusively within the current callback.
+    let values = unsafe { ffi::arguments(argc, argv) };
+    // SAFETY: plan and values come from xBestIndex and this xFilter invocation;
+    // both IN iteration and the KnnParam borrow end before this callback exits.
+    let result = unsafe { materialize_constraints(&plan, values) }
+        .and_then(|constraints| query_rows(&vtab.entry, constraints));
     match result {
         Ok(rows) => {
             cursor.result = rows;
-            cursor.current = 0;
             ffi::SQLITE_OK as c_int
         }
-        Err(e) => {
-            set_vtab_err(p_vtab, &format!("Failed to execute query due to: {e}"));
-            ffi::SQLITE_ERROR as c_int
-        }
+        Err(error) => vtab.report(error),
     }
 }
 
@@ -577,93 +770,125 @@ unsafe extern "C" fn x_find_function(
     >,
     pp_arg: *mut *mut c_void,
 ) -> c_int {
-    if cstr(z_name) == "knn_search" {
-        *px_func = Some(scalar::knn_search);
-        *pp_arg = std::ptr::null_mut();
-        return FUNC_KNN;
+    // SAFETY: SQLite supplies a valid NUL-terminated function name.
+    if unsafe { cstr(z_name) } == "knn_search" {
+        // SAFETY: both output pointers are writable for this callback.
+        unsafe {
+            *px_func = Some(scalar::knn_search);
+            *pp_arg = std::ptr::null_mut();
+        }
+        FUNC_KNN
+    } else {
+        0
     }
-    0
 }
 
 // ---- update (insert / delete / update / persistence) ----
 
-unsafe fn execute_persistence(
-    vtab: &VTab,
-    p_vtab: *mut sqlite3_vtab,
-    argv: *mut *mut sqlite3_value,
-) -> c_int {
-    let op_value = uarg(argv, (2 + COL_OPERATION) as usize);
-    let operation = ffi::value_text_string(op_value);
-
-    let path_value = uarg(argv, (2 + COL_PATH) as usize);
-    if ffi::value_type(path_value) != ffi::SQLITE_TEXT as c_int {
-        set_vtab_err(
-            p_vtab,
-            &format!("path must be provided as TEXT for '{operation}' operation"),
-        );
-        return ffi::SQLITE_ERROR as c_int;
+fn execute_persistence(entry: &IndexEntry, values: &mut [Value<'_>]) -> Result<i64, VTabError> {
+    let operation = values[(2 + COL_OPERATION) as usize].text()?.to_owned();
+    let path_value = &mut values[(2 + COL_PATH) as usize];
+    if path_value.kind() != ffi::SQLITE_TEXT as c_int {
+        return Err(VTabError::new(format!(
+            "path must be provided as TEXT for '{operation}' operation"
+        )));
     }
-    let path = ffi::value_text_string(path_value);
-
-    let entry = match entry_or_vtab_err(vtab, p_vtab) {
-        Ok(e) => e,
-        Err(rc) => return rc,
-    };
-    let result = match operation.as_str() {
-        "save" => entry.index.save(&path),
-        "load" => entry.index.load(&path),
+    let path = path_value.text()?;
+    match operation.as_str() {
+        "save" => entry.index.save(path),
+        "load" => entry.index.load(path),
         _ => {
-            set_vtab_err(
-                p_vtab,
-                &format!("unknown operation '{operation}'; expected 'save' or 'load'"),
-            );
-            return ffi::SQLITE_ERROR as c_int;
-        }
-    };
-    match result {
-        Ok(()) => ffi::SQLITE_OK as c_int,
-        Err(e) => {
-            set_vtab_err(p_vtab, &format!("{operation} failed: {e}"));
-            ffi::SQLITE_ERROR as c_int
+            return Err(VTabError::new(format!(
+                "unknown operation '{operation}'; expected 'save' or 'load'"
+            )))
         }
     }
+    .map_err(|error| VTabError::new(format!("{operation} failed: {error}")))?;
+    Ok(0)
 }
 
-unsafe fn insert_or_update_vector(
+fn insert_or_update_vector(
     entry: &IndexEntry,
-    p_vtab: *mut sqlite3_vtab,
-    value: *mut sqlite3_value,
+    value: &mut Value<'_>,
     rowid: u64,
-) -> c_int {
-    if ffi::value_type(value) != ffi::SQLITE_BLOB as c_int {
-        set_vtab_err(p_vtab, "vector must be of type Blob");
-        return ffi::SQLITE_ERROR as c_int;
+) -> Result<(), VTabError> {
+    if value.kind() != ffi::SQLITE_BLOB as c_int {
+        return Err(VTabError::new("vector must be of type Blob"));
     }
-    let blob = ffi::value_blob_slice(value);
-    let vec = match vector::blob_to_f32(&blob) {
-        Ok(v) => v,
-        Err(e) => {
-            set_vtab_err(p_vtab, &format!("Failed to perform insertion due to: {e}"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-    };
+    let vec = vector::view_from_blob(value.blob()?)
+        .map_err(|error| VTabError::new(format!("Failed to perform insertion due to: {error}")))?;
     if vec.len() != entry.space.dim {
-        set_vtab_err(
-            p_vtab,
-            &format!(
-                "Dimension mismatch: vector's dimension {}, table's dimension {}",
-                vec.len(),
-                entry.space.dim
-            ),
-        );
-        return ffi::SQLITE_ERROR as c_int;
+        return Err(VTabError::new(format!(
+            "Dimension mismatch: vector's dimension {}, table's dimension {}",
+            vec.len(),
+            entry.space.dim
+        )));
     }
-    match entry.index.add(&vec, rowid) {
-        Ok(()) => ffi::SQLITE_OK as c_int,
-        Err(e) => {
-            set_vtab_err(p_vtab, &format!("Failed to insert row {rowid} due to: {e}"));
-            ffi::SQLITE_ERROR as c_int
+    entry
+        .index
+        .add(&vec, rowid)
+        .map_err(|error| VTabError::new(format!("Failed to insert row {rowid} due to: {error}")))
+}
+
+fn update(
+    entry: &IndexEntry,
+    values: &mut [Value<'_>],
+    insert_rowid: Option<i64>,
+) -> Result<i64, VTabError> {
+    if values.len() != 1 && values.len() != 6 {
+        return Err(VTabError::new("invalid update argument count"));
+    }
+    let argv0_type = values[0].kind();
+    let null = ffi::SQLITE_NULL as c_int;
+    let integer = ffi::SQLITE_INTEGER as c_int;
+    if values.len() > 1 && argv0_type == null {
+        if values[(2 + COL_OPERATION) as usize].kind() == ffi::SQLITE_TEXT as c_int {
+            return execute_persistence(entry, values);
         }
+        if values[1].kind() == null {
+            return Err(VTabError::new("rowid must be specified during insertion"));
+        }
+        let raw_rowid = insert_rowid.ok_or_else(|| VTabError::new("missing insertion rowid"))?;
+        if raw_rowid < 0 {
+            return Err(VTabError::new(format!("rowid {raw_rowid} out of range")));
+        }
+        let rowid = raw_rowid as u64;
+        if entry.index.contains(rowid) {
+            return Err(VTabError::new(format!("row {rowid} already exists")));
+        }
+        insert_or_update_vector(entry, &mut values[2], rowid)?;
+        Ok(raw_rowid)
+    } else if values.len() == 1 && argv0_type != null {
+        let raw_rowid = values[0].int64();
+        if raw_rowid < 0 {
+            return Err(VTabError::new(format!("rowid {raw_rowid} out of range")));
+        }
+        entry.index.mark_delete(raw_rowid as u64).map_err(|error| {
+            VTabError::new(format!("Delete failed with rowid {raw_rowid}: {error}"))
+        })?;
+        Ok(raw_rowid)
+    } else if values.len() > 1 && argv0_type != null {
+        if argv0_type != integer {
+            return Err(VTabError::new("rowid must be of type INTEGER"));
+        }
+        if values[1].kind() != integer {
+            return Err(VTabError::new("target rowid must be of type INTEGER"));
+        }
+        let source_rowid = values[0].int64();
+        if source_rowid != values[1].int64() {
+            return Err(VTabError::new("rowid cannot be changed"));
+        }
+        if source_rowid < 0 {
+            return Err(VTabError::new(format!("rowid {source_rowid} out of range")));
+        }
+        let rowid = source_rowid as u64;
+        if !entry.index.contains(rowid) {
+            return Err(VTabError::new(format!("rowid {source_rowid} not found")));
+        }
+        insert_or_update_vector(entry, &mut values[2], rowid)?;
+        Ok(source_rowid)
+    } else {
+        Err(VTabError::new("Operation not supported for now"))
     }
 }
 
@@ -673,99 +898,42 @@ unsafe extern "C" fn x_update(
     argv: *mut *mut sqlite3_value,
     p_rowid: *mut i64,
 ) -> c_int {
-    let vtab = &*(p_vtab as *mut VTab);
-    let argv0_type = ffi::value_type(uarg(argv, 0));
-    let null = ffi::SQLITE_NULL as c_int;
-    let integer = ffi::SQLITE_INTEGER as c_int;
-
-    if argc > 1 && argv0_type == null {
-        // INSERT.
-        // A non-NULL operation column means a save/load command, not a vector.
-        if ffi::value_type(uarg(argv, (2 + COL_OPERATION) as usize)) == ffi::SQLITE_TEXT as c_int {
-            *p_rowid = 0;
-            return execute_persistence(vtab, p_vtab, argv);
-        }
-        if ffi::value_type(uarg(argv, 1)) == null {
-            set_vtab_err(p_vtab, "rowid must be specified during insertion");
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        let raw_rowid = ffi::value_int64(uarg(argv, 1));
-        if raw_rowid < 0 {
-            set_vtab_err(p_vtab, &format!("rowid {raw_rowid} out of range"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        let rowid = raw_rowid as u64;
-        *p_rowid = raw_rowid;
-
-        let entry = match entry_or_vtab_err(vtab, p_vtab) {
-            Ok(e) => e,
-            Err(rc) => return rc,
-        };
-        if entry.index.contains(rowid) {
-            set_vtab_err(p_vtab, &format!("row {rowid} already exists"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        insert_or_update_vector(entry, p_vtab, uarg(argv, 2), rowid)
-    } else if argc == 1 && argv0_type != null {
-        // DELETE.
-        let raw_rowid = ffi::value_int64(uarg(argv, 0));
-        if raw_rowid < 0 {
-            set_vtab_err(p_vtab, &format!("rowid {raw_rowid} out of range"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        let entry = match entry_or_vtab_err(vtab, p_vtab) {
-            Ok(e) => e,
-            Err(rc) => return rc,
-        };
-        match entry.index.mark_delete(raw_rowid as u64) {
-            Ok(()) => ffi::SQLITE_OK as c_int,
-            Err(e) => {
-                set_vtab_err(
-                    p_vtab,
-                    &format!("Delete failed with rowid {raw_rowid}: {e}"),
-                );
-                ffi::SQLITE_ERROR as c_int
-            }
-        }
-    } else if argc > 1 && argv0_type != null {
-        // UPDATE.
-        if argv0_type != integer {
-            set_vtab_err(p_vtab, "rowid must be of type INTEGER");
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        if ffi::value_type(uarg(argv, 1)) != integer {
-            set_vtab_err(p_vtab, "target rowid must be of type INTEGER");
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        let source_rowid = ffi::value_int64(uarg(argv, 0));
-        let target_rowid = ffi::value_int64(uarg(argv, 1));
-        if source_rowid != target_rowid {
-            set_vtab_err(p_vtab, "rowid cannot be changed");
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        if source_rowid < 0 {
-            set_vtab_err(p_vtab, &format!("rowid {source_rowid} out of range"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        let rowid = source_rowid as u64;
-        let entry = match entry_or_vtab_err(vtab, p_vtab) {
-            Ok(e) => e,
-            Err(rc) => return rc,
-        };
-        if !entry.index.contains(rowid) {
-            set_vtab_err(p_vtab, &format!("rowid {source_rowid} not found"));
-            return ffi::SQLITE_ERROR as c_int;
-        }
-        insert_or_update_vector(entry, p_vtab, uarg(argv, 2), rowid)
+    // SAFETY: SQLite provides this module's live table for the callback.
+    let vtab = unsafe { &*p_vtab.cast::<VTab>() };
+    if argc != 1 && argc != 6 {
+        return vtab.report(VTabError::new("invalid update argument count"));
+    }
+    // SAFETY: SQLite supplies the checked number of protected callback values.
+    let values = unsafe { ffi::arguments(argc, argv) };
+    let insert_rowid = if argc == 6
+        && values[0].kind() == ffi::SQLITE_NULL as c_int
+        && values[(2 + COL_OPERATION) as usize].kind() != ffi::SQLITE_TEXT as c_int
+    {
+        // SAFETY: preserve SQLite's existing insertion-rowid coercion before
+        // borrowing any argument views, including potentially aliased values.
+        Some(unsafe { ffi::value_int64(values[1].as_ptr()) })
     } else {
-        set_vtab_err(p_vtab, "Operation not supported for now");
-        ffi::SQLITE_ERROR as c_int
+        None
+    };
+    match update(&vtab.entry, values, insert_rowid) {
+        Ok(rowid) => {
+            // SQLite only requires p_rowid for inserts; do not assume it is
+            // writable for DELETE callbacks (argc == 1).
+            if argc > 1 && !p_rowid.is_null() {
+                // SAFETY: SQLite supplies a writable rowid output for inserts.
+                unsafe { *p_rowid = rowid };
+            }
+            ffi::SQLITE_OK as c_int
+        }
+        Err(error) => vtab.report(error),
     }
 }
 
 // ---- module definition ----
 
 struct ModuleWrap(sqlite3_module);
+// SAFETY: this static module contains immutable function pointers and null
+// optional hooks. SQLite only reads it; per-connection state is stored in pAux.
 unsafe impl Sync for ModuleWrap {}
 
 static MODULE: ModuleWrap = ModuleWrap(sqlite3_module {
@@ -797,5 +965,41 @@ static MODULE: ModuleWrap = ModuleWrap(sqlite3_module {
 });
 
 pub fn module_ptr() -> *const sqlite3_module {
-    &MODULE.0 as *const sqlite3_module
+    &MODULE.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_requires_matching_counts_and_known_codes() {
+        assert_eq!(
+            parse_plan(2, b"ksin", 2).unwrap(),
+            vec![Constraint::Knn, Constraint::In]
+        );
+        assert_eq!(parse_plan(1, b"eq", 1).unwrap(), vec![Constraint::Eq]);
+        for (number, codes, count) in [
+            (0, &b""[..], 0),
+            (1, &b"ks"[..], 0),
+            (1, &b"ksin"[..], 1),
+            (2, &b"ks"[..], 2),
+            (1, &b"k"[..], 1),
+            (1, &b"xx"[..], 1),
+            (-1, &b"eq"[..], -1),
+        ] {
+            assert!(parse_plan(number, codes, count).is_err());
+        }
+    }
+
+    #[test]
+    fn in_iteration_distinguishes_completion_from_errors() {
+        assert!(in_step_status(ffi::SQLITE_OK as c_int, true).unwrap());
+        assert!(!in_step_status(ffi::SQLITE_DONE as c_int, false).unwrap());
+        assert!(in_step_status(ffi::SQLITE_OK as c_int, false).is_err());
+        for code in [ffi::SQLITE_NOMEM, ffi::SQLITE_ERROR, ffi::SQLITE_INTERRUPT] {
+            let error = in_step_status(code as c_int, false).unwrap_err();
+            assert_eq!(error.code, code as c_int);
+        }
+    }
 }

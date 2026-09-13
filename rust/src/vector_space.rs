@@ -2,6 +2,8 @@
 //! `my_embedding float32[384] cosine`. Mirrors `vector_space.cpp` /
 //! `NamedVectorSpace::FromString` and `util.cpp::IsValidColumnName`.
 
+use crate::half::{Bf16Bits, F16Bits};
+
 /// Distance metric. Discriminants must match `VlDistanceType` in core_shim.h.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
@@ -24,8 +26,8 @@ impl VectorType {
     pub fn element_size(self) -> usize {
         match self {
             VectorType::Float32 => 4,
-            VectorType::BFloat16 => 2,
-            VectorType::Float16 => 2,
+            VectorType::BFloat16 => std::mem::size_of::<Bf16Bits>(),
+            VectorType::Float16 => std::mem::size_of::<F16Bits>(),
         }
     }
 }

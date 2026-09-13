@@ -15,7 +15,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-cargo build --release
+cargo build --locked --release
 
 # cdylib artifact name and deployed name vary by platform.
 case "$(uname -s)" in

@@ -41,8 +41,6 @@ minimal generic adapters needed to expose those two through a C ABI.
 
 ## Building
 
-## Building
-
 The build reuses the vcpkg headers/libraries produced by the C++ CMake build, so
 run the C++ build once first (it sets up `build/<preset>/vcpkg_installed/<triplet>`):
 
@@ -58,13 +56,42 @@ Then build and deploy the Rust extension:
 | macOS | `sh rust/build.sh` | `vectorlite.dylib` |
 | Windows | `rust\build.ps1` (PowerShell) or `sh rust/build.sh` in Git Bash | `vectorlite.dll` |
 
-`build.rs` is platform-agnostic: it scans `build/*/vcpkg_installed/*/` for the
-installed triplet (`x64-linux`, `arm64-osx`, `x64-windows-static-md-release`,
-…) and uses the right static-archive name (`.a` / `.lib`) for highway. The only
-native library linked is `hwy` (plus `pthread`/`dl`/`m` on Linux for the C++
-core's threading) — `sqlite3`, `abseil`, `re2` and `rapidjson` are not linked:
-SQLite is provided by the host at load time, and the other logic was ported to
-Rust.
+The Rust port supports the **latest stable Rust release**. The repository's
+`rust-toolchain.toml` selects `stable` and includes rustfmt and Clippy. Update
+your installed stable toolchain before building:
+
+```sh
+rustup update stable
+```
+
+Build with the committed lockfile (`cargo build --locked --release`) to use the
+verified dependency versions. Older Rust releases are not part of the support
+policy; code and dependency updates are validated against current stable.
+
+`build.rs` selects a vcpkg triplet matching Cargo's `TARGET`, including the CPU
+architecture, operating system and C runtime family. It prefers the matching
+CMake preset (`build/dev` for Cargo debug, `build/release` for release), then
+requires a unique compatible installation among the remaining build trees and
+`vcpkg/installed`. Ambiguous or incompatible installations fail with an error.
+To select an installation explicitly, set the full triplet directory:
+
+```sh
+export VECTORLITE_VCPKG_TRIPLET_DIR="$PWD/build/release/vcpkg_installed/arm64-osx"
+sh rust/build.sh
+```
+
+Supported triplet names follow vcpkg's architecture/platform names, optionally
+ending in `-release`. Windows MSVC uses static libraries with the dynamic CRT
+(`x64-windows-static-md` or `x64-windows-static-md-release`); Linux musl and GNU
+libc installations are kept distinct. Cross builds also need a compatible C++
+compiler/linker configured for Cargo and `cc`. The deployment scripts target the
+native platform and default Cargo output directory.
+
+The C++ shim enables standard exception unwinding on MSVC (`/EHsc`). Native
+headers, the Highway archive and vcpkg package metadata are tracked so native
+changes invalidate the Rust build. The linked native dependencies are Highway
+and the C++ runtime (plus `pthread`/`dl`/`m` on Linux); SQLite is supplied by the
+host process.
 
 ## Notes
 
@@ -72,19 +99,50 @@ Rust.
   SQLite directly — every call goes through the `sqlite3_api_routines` table the
   host passes at load time (the loadable-extension contract) — so the library
   has no undefined SQLite symbols and needs no embedded copy. This keeps the
-  artifact small (~0.6 MB) and identical across Linux, macOS and Windows; the
+  artifact small; the
   host process supplies SQLite when it loads the extension.
-- The SQLite extension-API bindings are **pre-generated and committed** in the
-  `vectorlite-sqlite-sys` crate (`src/bindings.rs`), so the normal build needs
-  **no libclang**. Refresh them after a SQLite header change with
-  `cargo build -p vectorlite-sqlite-sys --features regenerate` (that step needs
-  libclang; if absent, drop a `libclang.so` at `rust/.libclang/` and export
-  `LIBCLANG_PATH`).
+- The SQLite extension-API bindings are **pre-generated and committed**, so
+  normal builds need **no libclang**. The unused `va_list` function-pointer slots
+  are private opaque entries; platform-specific varargs types are not exposed.
+  To generate and test native target bindings after a SQLite header change:
+
+  ```sh
+  cd rust
+  cargo test --locked -p vectorlite-sqlite-sys --features regenerate,abi-check
+  ```
+
+  This needs libclang (set `LIBCLANG_PATH` when it is not discoverable). It uses
+  the same target-aware vcpkg selection and writes `bindings.rs` into Cargo's
+  `OUT_DIR`, reported by the build. The generated file is used for that build;
+  tracked sources are never changed automatically. Refreshing the committed
+  bindings is an explicit reviewed copy from the generated output.
+  On macOS, use the Command Line Tools libclang with
+  `LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib`; newer Homebrew
+  LLVM releases may require a newer bindgen than the pinned generator supports.
+- Rust persistence uses a versioned envelope recording dimension, element type,
+  distance metric, normalization and native word size/endianness. Loading
+  incompatible descriptors or an older raw HNSW file fails before replacing the
+  live index. Raw files from earlier Rust/C++ builds must be reopened with the
+  matching older extension and their vectors and rowids reinserted into the new
+  extension. Successful saves replace the destination atomically using a
+  temporary file in the same directory.
 
 ## Testing
 
-The port passes the existing Python integration suite:
+CI builds and tests the latest stable Rust on Linux, Windows, Apple Silicon
+macOS and Intel macOS. Native ABI checks compare the Rust layouts and API
+offsets used by the extension against the installed SQLite C headers.
 
 ```sh
-PYTHONPATH=bindings/python python -m pytest bindings/python/vectorlite_py/test
+cd rust
+cargo test --locked --workspace
+cargo test --locked -p vectorlite-sqlite-sys --features abi-check
+```
+
+After deploying the Rust extension with its build script, run the Python suite
+from the repository root. The root C++ build script also deploys its own library,
+so rerun the Rust build script afterward when testing the Rust port:
+
+```sh
+PYTHONPATH=bindings/python python -m pytest bindings/python/vectorlite_py/test rust/tests
 ```

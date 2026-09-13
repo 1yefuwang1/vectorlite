@@ -1,75 +1,82 @@
-// By default this build script does nothing: the bindings are committed in
-// src/bindings.rs. With `--features regenerate` it re-runs bindgen against the
-// vcpkg sqlite3ext.h and rewrites src/bindings.rs (requires libclang).
+#[cfg(any(feature = "regenerate", feature = "abi-check"))]
+#[path = "../build_support.rs"]
+mod build_support;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    #[cfg(feature = "regenerate")]
-    regenerate::run();
+    println!("cargo:rerun-if-changed=../build_support.rs");
+    #[cfg(any(feature = "regenerate", feature = "abi-check"))]
+    {
+        use std::{env, path::PathBuf};
+        println!("cargo:rerun-if-env-changed=VECTORLITE_VCPKG_TRIPLET_DIR");
+        let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+        let override_dir = env::var_os("VECTORLITE_VCPKG_TRIPLET_DIR").map(PathBuf::from);
+        build_support::watch_discovery(repo_root, override_dir.is_some());
+        let triplet = build_support::find_vcpkg(
+            repo_root,
+            &env::var("TARGET").unwrap(),
+            &env::var("PROFILE").unwrap(),
+            override_dir.as_deref(),
+            &["include/sqlite3.h", "include/sqlite3ext.h"],
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let include = triplet.join("include");
+        for header in ["sqlite3.h", "sqlite3ext.h"] {
+            println!("cargo:rerun-if-changed={}", include.join(header).display());
+        }
+        #[cfg(feature = "regenerate")]
+        regenerate(&include);
+        #[cfg(feature = "abi-check")]
+        {
+            println!("cargo:rerun-if-changed=tests/abi_check.c");
+            cc::Build::new()
+                .include(include)
+                .file("tests/abi_check.c")
+                .compile("vectorlite_sqlite_abi_check");
+        }
+    }
 }
 
 #[cfg(feature = "regenerate")]
-mod regenerate {
-    use std::env;
-    use std::path::{Path, PathBuf};
-
-    fn find_dir(repo_root: &Path, candidates: &[&str], marker: &str) -> Option<PathBuf> {
-        for cand in candidates {
-            let dir = repo_root.join(cand);
-            if dir.join(marker).exists() {
-                return Some(dir);
-            }
-        }
-        None
+fn regenerate(include: &std::path::Path) {
+    use std::{env, path::PathBuf};
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let wrapper = out_dir.join("wrapper.h");
+    std::fs::write(&wrapper, "#include \"sqlite3ext.h\"\n").unwrap();
+    let bindings = bindgen::Builder::default()
+        .header(wrapper.to_string_lossy())
+        .clang_arg(format!("-I{}", include.display()))
+        .allowlist_type("sqlite3.*")
+        .allowlist_var("SQLITE_.*")
+        .blocklist_item("SQLITE_OS_.*")
+        .blocklist_type("va_list|__builtin_va_list|__va_list_tag")
+        .blocklist_function(".*")
+        .layout_tests(false)
+        .formatter(bindgen::Formatter::Prettyplease)
+        .generate()
+        .expect("unable to generate SQLite bindings")
+        .to_string();
+    // The extension never uses these va_list APIs. Preserve their table slots,
+    // but make them private opaque function pointers instead of publishing a
+    // platform-dependent calling convention in the committed bindings.
+    let mut bindings = bindings;
+    for name in ["vmprintf", "xvsnprintf", "str_vappendf"] {
+        let marker = format!("    pub {name}:");
+        let start = bindings.find(&marker).expect(
+            "SQLite API layout was not generated; use a libclang supported by bindgen (on macOS, the Command Line Tools libclang)",
+        );
+        let end =
+            start + bindings[start + marker.len()..].find("\n    pub ").unwrap() + marker.len();
+        bindings.replace_range(
+            start..end,
+            &format!("    pub(crate) {name}: ::std::option::Option<unsafe extern \"C\" fn()>,"),
+        );
     }
-
-    pub fn run() {
-        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-        // rust/vectorlite-sqlite-sys -> rust -> repo root
-        let repo_root = manifest_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-
-        let include_candidates = [
-            "build/dev/vcpkg_installed/x64-linux/include",
-            "build/release/vcpkg_installed/x64-linux/include",
-            "vcpkg/packages/sqlite3_x64-linux/include",
-        ];
-        let sqlite_include = find_dir(&repo_root, &include_candidates, "sqlite3ext.h")
-            .expect("could not locate sqlite3ext.h in vcpkg include dirs");
-
-        let wrapper = PathBuf::from(env::var("OUT_DIR").unwrap()).join("wrapper.h");
-        std::fs::write(&wrapper, "#include \"sqlite3ext.h\"\n").unwrap();
-
-        let mut builder = bindgen::Builder::default()
-            .header(wrapper.to_str().unwrap())
-            .clang_arg(format!("-I{}", sqlite_include.display()));
-
-        // libclang may not ship its builtin headers (stdarg.h, ...).
-        for builtin in [
-            "/usr/lib/llvm-18/lib/clang/18/include",
-            "/usr/lib/gcc/x86_64-linux-gnu/13/include",
-            "/usr/lib/gcc/x86_64-linux-gnu/12/include",
-            "/usr/lib/gcc/x86_64-linux-gnu/11/include",
-        ] {
-            if Path::new(builtin).join("stdarg.h").exists() {
-                builder = builder.clang_arg(format!("-I{}", builtin));
-                break;
-            }
-        }
-
-        let bindings = builder
-            .allowlist_type("sqlite3.*")
-            .allowlist_var("SQLITE_.*")
-            .blocklist_function(".*")
-            .layout_tests(false)
-            .generate()
-            .expect("unable to generate sqlite bindings");
-
-        bindings
-            .write_to_file(manifest_dir.join("src/bindings.rs"))
-            .expect("couldn't write src/bindings.rs");
-    }
+    let output = out_dir.join("bindings.rs");
+    std::fs::write(&output, bindings).expect("could not write generated bindings");
+    println!(
+        "cargo:warning=Generated target bindings at {}",
+        output.display()
+    );
 }

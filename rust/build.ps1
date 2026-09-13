@@ -6,7 +6,10 @@
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
-cargo build --release
+cargo build --locked --release
+if ($LASTEXITCODE -ne 0) {
+    throw "Cargo build failed with exit code $LASTEXITCODE; extension was not deployed."
+}
 
 Copy-Item "target/release/vectorlite.dll" `
     "../bindings/python/vectorlite_py/vectorlite.dll" -Force

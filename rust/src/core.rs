@@ -4,48 +4,55 @@
 //! data-size check and save/load orchestration. It calls hnswlib and `ops`
 //! only through their FFI wrappers (`hnsw.rs`, `ops.rs`).
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use std::borrow::Cow;
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
 
+use crate::half::{Bf16Bits, F16Bits};
 use crate::hnsw::{Hnsw, Space};
 use crate::ops;
 use crate::vector_space::{DistanceType, VectorType};
 
-pub use crate::hnsw::RowidFilter as SearchFilter;
+pub use crate::hnsw::{RowidFilter as SearchFilter, SearchResult};
 
-/// Reinterprets a typed slice as its raw bytes (native layout) for the index,
-/// which stores opaque per-vector byte blobs.
-fn as_bytes<T>(v: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
-}
-fn as_bytes_mut<T>(v: &mut [T]) -> &mut [u8] {
-    unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, std::mem::size_of_val(v)) }
-}
-
-/// A vector encoded into the index's stored element type.
-enum Stored {
-    F32(Vec<f32>),
-    U16(Vec<u16>),
+/// A vector encoded into the index's stored element type. Unmodified f32
+/// input is borrowed, so L2/IP insertions and queries do not copy it again.
+enum Stored<'a> {
+    F32(Cow<'a, [f32]>),
+    F16(Vec<F16Bits>),
+    Bf16(Vec<Bf16Bits>),
 }
 
-impl Stored {
+impl Stored<'_> {
     fn bytes(&self) -> &[u8] {
         match self {
-            Stored::F32(v) => as_bytes(v),
-            Stored::U16(v) => as_bytes(v),
+            Stored::F32(v) => bytemuck::cast_slice(v),
+            Stored::F16(v) => bytemuck::cast_slice(v),
+            Stored::Bf16(v) => bytemuck::cast_slice(v),
         }
     }
 }
 
+// Version 1 envelope: magic, little-endian version and dimension, element,
+// metric, normalization, native-layout identifier, and raw payload byte length.
+// Legacy untyped HNSW files are rejected: their element/metric cannot be inferred.
+const FILE_MAGIC: &[u8; 8] = b"VLTIDX01";
+const HEADER_LEN: usize = 32;
+
 pub struct Index {
     // Interior mutability so `load` can swap the underlying hnswlib index behind
     // a shared reference (the registry hands out `&IndexEntry`). SQLite
-    // serialises access per connection, so no locking is required. Declared
-    // before `space` so it is dropped first (hnswlib caches the space pointer).
+    // serialises access per connection, so no locking is required. Each Hnsw
+    // retains its own space owner, including during an index replacement.
     index: RefCell<Hnsw>,
     space: Space,
     dim: usize,
     vector_type: VectorType,
+    distance_type: DistanceType,
     normalize: bool,
     max_elements: usize,
     allow_replace_deleted: bool,
@@ -66,9 +73,7 @@ impl Index {
         if dim == 0 {
             return Err("Dimension must be greater than 0".to_string());
         }
-        let data_size = dim * vector_type.element_size();
-        let dist_func = ops::dist_func_for(distance_type, vector_type);
-        let space = Space::new(dist_func, dim, data_size)?;
+        let space = Space::new(distance_type, vector_type, dim)?;
         let index = Hnsw::create(
             &space,
             max_elements,
@@ -82,6 +87,7 @@ impl Index {
             space,
             dim,
             vector_type,
+            distance_type,
             normalize: distance_type == DistanceType::Cosine,
             max_elements,
             allow_replace_deleted,
@@ -89,36 +95,43 @@ impl Index {
     }
 
     /// Quantizes and/or normalizes an f32 vector into the stored element type.
-    fn encode(&self, v: &[f32]) -> Stored {
-        match self.vector_type {
+    fn encode<'a>(&self, v: &'a [f32]) -> Result<Stored<'a>, String> {
+        if v.len() != self.dim {
+            return Err(format!(
+                "dimension mismatch: expected {}, got {}",
+                self.dim,
+                v.len()
+            ));
+        }
+        Ok(match self.vector_type {
             VectorType::Float32 => {
-                let mut buf = v.to_vec();
+                let mut buf = Cow::Borrowed(v);
                 if self.normalize {
-                    ops::normalize_f32(&mut buf);
+                    ops::normalize_f32(buf.to_mut());
                 }
                 Stored::F32(buf)
             }
             VectorType::BFloat16 => {
-                let mut buf = vec![0u16; self.dim];
+                let mut buf = vec![Bf16Bits::default(); self.dim];
                 ops::quantize_bf16(v, &mut buf);
                 if self.normalize {
                     ops::normalize_bf16(&mut buf);
                 }
-                Stored::U16(buf)
+                Stored::Bf16(buf)
             }
             VectorType::Float16 => {
-                let mut buf = vec![0u16; self.dim];
+                let mut buf = vec![F16Bits::default(); self.dim];
                 ops::quantize_f16(v, &mut buf);
                 if self.normalize {
                     ops::normalize_f16(&mut buf);
                 }
-                Stored::U16(buf)
+                Stored::F16(buf)
             }
-        }
+        })
     }
 
     pub fn add(&self, v: &[f32], rowid: u64) -> Result<(), String> {
-        let stored = self.encode(v);
+        let stored = self.encode(v)?;
         self.index
             .borrow()
             .add_point(stored.bytes(), rowid, self.allow_replace_deleted)
@@ -139,14 +152,14 @@ impl Index {
         match self.vector_type {
             VectorType::Float32 => {
                 let mut buf = vec![0f32; self.dim];
-                if !index.get_data(rowid, as_bytes_mut(&mut buf)) {
+                if !index.get_data(rowid, bytemuck::cast_slice_mut(&mut buf)) {
                     return None;
                 }
                 Some(buf)
             }
             VectorType::BFloat16 => {
-                let mut raw = vec![0u16; self.dim];
-                if !index.get_data(rowid, as_bytes_mut(&mut raw)) {
+                let mut raw = vec![Bf16Bits::default(); self.dim];
+                if !index.get_data(rowid, bytemuck::cast_slice_mut(&mut raw)) {
                     return None;
                 }
                 let mut out = vec![0f32; self.dim];
@@ -154,8 +167,8 @@ impl Index {
                 Some(out)
             }
             VectorType::Float16 => {
-                let mut raw = vec![0u16; self.dim];
-                if !index.get_data(rowid, as_bytes_mut(&mut raw)) {
+                let mut raw = vec![F16Bits::default(); self.dim];
+                if !index.get_data(rowid, bytemuck::cast_slice_mut(&mut raw)) {
                     return None;
                 }
                 let mut out = vec![0f32; self.dim];
@@ -174,8 +187,8 @@ impl Index {
         k: usize,
         ef_override: Option<usize>,
         filter: SearchFilter,
-    ) -> Result<Vec<(f32, u64)>, String> {
-        let stored = self.encode(query);
+    ) -> Result<Vec<SearchResult>, String> {
+        let stored = self.encode(query)?;
         let index = self.index.borrow();
         let saved_ef = index.get_ef();
         if let Some(ef) = ef_override {
@@ -186,39 +199,103 @@ impl Index {
         result
     }
 
+    fn descriptor(&self) -> [u8; 24] {
+        let mut descriptor = [0u8; 24];
+        descriptor[..8].copy_from_slice(FILE_MAGIC);
+        descriptor[8..12].copy_from_slice(&1u32.to_le_bytes());
+        descriptor[12..20].copy_from_slice(&(self.dim as u64).to_le_bytes());
+        descriptor[20] = self.vector_type as u8;
+        descriptor[21] = self.distance_type as u8;
+        descriptor[22] = u8::from(self.normalize);
+        // HNSW payloads retain their native layout; reject incompatible hosts.
+        descriptor[23] =
+            (std::mem::size_of::<usize>() as u8) * 2 + u8::from(cfg!(target_endian = "big"));
+        descriptor
+    }
+
+    /// Writes a versioned, typed index to a sibling temporary file, checks and
+    /// syncs every write, and atomically replaces the destination on success.
     pub fn save(&self, path: &str) -> Result<(), String> {
         if path.is_empty() {
             return Err("path must not be empty".to_string());
         }
-        self.index.borrow().save(path)
+        self.save_to(Path::new(path))
+            .map_err(|e| format!("failed to save index: {e}"))
     }
 
-    /// Replaces the in-memory index with one loaded from `path`. The table's
-    /// configured max_elements and allow_replace_deleted are preserved. On any
-    /// error the current index is left unchanged; a per-vector data-size
-    /// mismatch (wrong dimension or element type) is rejected.
+    fn save_to(&self, path: &Path) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        // Closing the named payload file before native code opens it also works
+        // on Windows. TempPath removes it on every success/error return.
+        let payload = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| e.to_string())?
+            .into_temp_path();
+        let payload_path = payload
+            .to_str()
+            .ok_or_else(|| "temporary path is not UTF-8".to_string())?;
+        self.index.borrow().save(payload_path)?;
+        let mut input = File::open(&payload).map_err(|e| e.to_string())?;
+        let payload_len = input.metadata().map_err(|e| e.to_string())?.len();
+        let mut output = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        output
+            .write_all(&self.descriptor())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&payload_len.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        let written = std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        if written != payload_len {
+            return Err("native payload length changed during save".to_string());
+        }
+        output.flush().map_err(|e| e.to_string())?;
+        output.as_file().sync_all().map_err(|e| e.to_string())?;
+        output.persist(path).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Replaces the in-memory index only after validating the versioned vector
+    /// descriptor and the native payload. To migrate legacy untyped files,
+    /// export vectors and rowids with the old extension, then reinsert them with
+    /// this version and save again; their format cannot be inferred safely.
     pub fn load(&self, path: &str) -> Result<(), String> {
         if path.is_empty() {
             return Err("path must not be empty".to_string());
         }
-        if !Path::new(path).exists() {
-            return Err(format!("index file does not exist: {path}"));
+        let mut input = File::open(path).map_err(|e| format!("cannot open index file: {e}"))?;
+        let mut header = [0u8; HEADER_LEN];
+        input.read_exact(&mut header).map_err(|_| {
+            "unsupported or truncated index; for legacy untyped HNSW files, export vectors and rowids with the old extension and reinsert them with this version"
+                .to_string()
+        })?;
+        if &header[..8] != FILE_MAGIC {
+            return Err(
+                "unsupported index format; for legacy untyped HNSW files, export vectors and rowids with the old extension and reinsert them with this version"
+                    .to_string(),
+            );
+        }
+        if header[..24] != self.descriptor() {
+            return Err("index descriptor mismatch: version, dimension, element type, metric, normalization, and native layout must match the table".to_string());
+        }
+        let payload_len =
+            u64::from_le_bytes(header[24..32].try_into().expect("fixed header width"));
+        if payload_len.checked_add(HEADER_LEN as u64)
+            != Some(input.metadata().map_err(|e| e.to_string())?.len())
+        {
+            return Err("index payload length does not match the envelope".to_string());
         }
         let new_index = Hnsw::load(
             &self.space,
-            path,
+            input.take(payload_len),
+            payload_len,
             self.max_elements,
             self.allow_replace_deleted,
         )?;
-
-        let expected = self.dim * self.vector_type.element_size();
-        let file_size = new_index.per_vector_data_size();
-        if file_size != expected {
-            return Err(format!(
-                "index data size mismatch: file has {file_size} bytes per vector, table expects {expected}"
-            ));
+        if new_index.per_vector_data_size() != self.dim * self.vector_type.element_size() {
+            return Err("native index data size does not match the table".to_string());
         }
-
         *self.index.borrow_mut() = new_index;
         Ok(())
     }
@@ -247,3 +324,7 @@ pub fn distance(a: &[f32], b: &[f32], distance_type: DistanceType) -> Option<f32
 pub fn best_target() -> String {
     ops::best_target()
 }
+
+#[cfg(test)]
+#[path = "core_tests.rs"]
+mod tests;

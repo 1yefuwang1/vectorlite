@@ -6,6 +6,7 @@
 //! module's `pAux` and is dropped when the module is unregistered.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::core::Index;
 use crate::vector_space::NamedVectorSpace;
@@ -24,7 +25,11 @@ pub struct IndexEntry {
 
 #[derive(Default)]
 pub struct Registry {
-    handles: HashMap<RegistryKey, Box<IndexEntry>>,
+    // Each connected VTab retains an Rc too. Disconnect can therefore release
+    // the wrapper without deleting the index, and callbacks need no map lookup.
+    // SQLite serializes this connection's callbacks; no cross-thread Rust
+    // ownership or Send/Sync implementation is needed for the registry.
+    handles: HashMap<RegistryKey, Rc<IndexEntry>>,
 }
 
 impl Registry {
@@ -34,13 +39,16 @@ impl Registry {
         }
     }
 
-    pub fn find(&self, key: &RegistryKey) -> Option<&IndexEntry> {
-        self.handles.get(key).map(|b| b.as_ref())
+    pub fn find(&self, key: &RegistryKey) -> Option<Rc<IndexEntry>> {
+        self.handles.get(key).cloned()
     }
 
-    /// Stores `entry` under `key`, replacing any existing entry.
-    pub fn insert(&mut self, key: RegistryKey, entry: IndexEntry) {
-        self.handles.insert(key, Box::new(entry));
+    /// Stores `entry` under `key`, returning the retained handle for its VTab.
+    /// Existing wrappers retain their own entry if this name is replaced.
+    pub fn insert(&mut self, key: RegistryKey, entry: IndexEntry) -> Rc<IndexEntry> {
+        let entry = Rc::new(entry);
+        self.handles.insert(key, Rc::clone(&entry));
+        entry
     }
 
     pub fn erase(&mut self, key: &RegistryKey) {

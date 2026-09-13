@@ -1,37 +1,46 @@
-//! Scalar SQL functions: vector_distance, vector_from_json, vector_to_json,
-//! knn_search (a BestIndex marker), knn_param and vectorlite_info.
-//! Mirrors `sqlite_functions.cpp` and the knn helpers in `virtual_table.cpp`.
+//! SQL scalar callbacks. Raw SQLite arguments are wrapped once at entry; all
+//! validation, vector conversion and numerical policy below use safe Rust.
 
 use std::os::raw::{c_char, c_int, c_void};
 
 use crate::core;
-use crate::ffi::{self, sqlite3_context, sqlite3_value};
+use crate::ffi::{self, sqlite3_context, sqlite3_value, Context, Value};
 use crate::vector;
 use crate::vector_space::parse_distance_type;
 
-/// Pointer-type tag shared by knn_param (producer) and the knn_search
-/// constraint (consumer). Must be a stable, NUL-terminated string.
+/// Shared producer/consumer tag for SQLite's owned KNN parameter pointer.
 pub const KNN_PARAM_TYPE: &[u8] = b"vectorlite_knn_param\0";
 
-/// Parameters carried from `knn_param(...)` to the BestIndex/Filter machinery.
 pub struct KnnParam {
     pub query_vector: Vec<f32>,
     pub k: u64,
     pub ef: Option<u64>,
 }
 
-unsafe extern "C" fn knn_param_destroy(p: *mut c_void) {
-    if !p.is_null() {
-        drop(Box::from_raw(p as *mut KnnParam));
+unsafe extern "C" fn knn_param_destroy(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        // SAFETY: SQLite calls this destructor exactly once on the Box pointer
+        // transferred by knn_param_impl through sqlite3_result_pointer.
+        unsafe { drop(Box::from_raw(ptr.cast::<KnnParam>())) };
     }
 }
 
-unsafe fn arg(argv: *mut *mut sqlite3_value, i: usize) -> *mut sqlite3_value {
-    *argv.add(i)
+/// Generates only the FFI adapter; implementations receive scoped safe values.
+macro_rules! scalar {
+    ($name:ident, $implementation:ident) => {
+        pub unsafe extern "C" fn $name(
+            ctx: *mut sqlite3_context,
+            argc: c_int,
+            argv: *mut *mut sqlite3_value,
+        ) {
+            // SAFETY: SQLite invokes this registered callback with a live
+            // context and protected arguments valid for this invocation.
+            unsafe { ffi::scalar_callback(ctx, argc, argv, $implementation) }
+        }
+    };
 }
 
-/// `knn_search(vector, knn_param(...))` — a marker consulted by xFindFunction /
-/// xBestIndex; it is never actually evaluated as a row function.
+// knn_search is a planner marker. SQLite evaluates it through xFilter.
 pub unsafe extern "C" fn knn_search(
     _ctx: *mut sqlite3_context,
     _argc: c_int,
@@ -39,193 +48,126 @@ pub unsafe extern "C" fn knn_search(
 ) {
 }
 
-pub unsafe extern "C" fn knn_param(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    if argc != 2 && argc != 3 {
-        ffi::result_error(
-            ctx,
-            "invalid number of parameters to knn_param(). 2 or 3 is expected",
-        );
-        return;
-    }
-    if ffi::value_type(arg(argv, 0)) != ffi::SQLITE_BLOB as c_int {
-        ffi::result_error(ctx, "vector(1st param of knn_param) should be of type Blob");
-        return;
-    }
-    if ffi::value_type(arg(argv, 1)) != ffi::SQLITE_INTEGER as c_int {
-        ffi::result_error(ctx, "k(2nd param of knn_param) should be of type INTEGER");
-        return;
-    }
-    if argc == 3 && ffi::value_type(arg(argv, 2)) != ffi::SQLITE_INTEGER as c_int {
-        ffi::result_error(ctx, "ef(3rd param of knn_param) should be of type INTEGER");
-        return;
-    }
+scalar!(knn_param, knn_param_impl);
+scalar!(vector_distance, vector_distance_impl);
+scalar!(vector_from_json, vector_from_json_impl);
+scalar!(vector_to_json, vector_to_json_impl);
+scalar!(vectorlite_info, vectorlite_info_impl);
 
-    let blob = ffi::value_blob_slice(arg(argv, 0));
-    let query_vector = match vector::blob_to_f32(&blob) {
-        Ok(v) => v,
-        Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}"));
-            return;
-        }
-    };
-
-    let k = ffi::value_int64(arg(argv, 1));
+fn knn_param_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err("invalid number of parameters to knn_param(). 2 or 3 is expected".into());
+    }
+    if args[0].kind() != ffi::SQLITE_BLOB as c_int {
+        return Err("vector(1st param of knn_param) should be of type Blob".into());
+    }
+    if args[1].kind() != ffi::SQLITE_INTEGER as c_int {
+        return Err("k(2nd param of knn_param) should be of type INTEGER".into());
+    }
+    let k = args[1].int64();
     if k <= 0 {
-        ffi::result_error(ctx, "k should be greater than 0");
-        return;
+        return Err("k should be greater than 0".into());
     }
-
-    let mut ef: Option<u64> = None;
-    if argc == 3 {
-        let e = ffi::value_int64(arg(argv, 2));
-        if e <= 0 {
-            ffi::result_error(ctx, "ef should be greater than 0");
-            return;
+    let ef = if args.len() == 3 {
+        if args[2].kind() != ffi::SQLITE_INTEGER as c_int {
+            return Err("ef(3rd param of knn_param) should be of type INTEGER".into());
         }
-        ef = Some(e as u64);
-    }
-
-    let param = Box::new(KnnParam {
+        let ef = args[2].int64();
+        if ef <= 0 {
+            return Err("ef should be greater than 0".into());
+        }
+        Some(ef as u64)
+    } else {
+        None
+    };
+    // KNN parameters outlive this callback, so retain exactly one owned vector.
+    let query_vector = vector::view_from_blob(args[0].blob()?)
+        .map_err(|error| format!("Failed to parse vector due to: {error}"))?
+        .into_owned();
+    let parameter = Box::new(KnnParam {
         query_vector,
         k: k as u64,
         ef,
     });
-    ffi::result_pointer(
-        ctx,
-        Box::into_raw(param) as *mut c_void,
-        KNN_PARAM_TYPE.as_ptr() as *const c_char,
-        Some(knn_param_destroy),
-    );
+    // SAFETY: the static tag is NUL-terminated and shared with xFilter. SQLite
+    // owns this Box until its value is released, using the matching destructor.
+    unsafe {
+        ctx.pointer(
+            Box::into_raw(parameter).cast::<c_void>(),
+            KNN_PARAM_TYPE.as_ptr().cast::<c_char>(),
+            Some(knn_param_destroy),
+        );
+    }
+    Ok(())
 }
 
-pub unsafe extern "C" fn vector_distance(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    if argc != 3 {
-        ffi::result_error(
-            ctx,
-            &format!("vector_distance expects 3 arguments but {argc} provided"),
-        );
-        return;
-    }
-    let t0 = ffi::value_type(arg(argv, 0));
-    let t1 = ffi::value_type(arg(argv, 1));
-    if t0 != ffi::SQLITE_BLOB as c_int || t1 != ffi::SQLITE_BLOB as c_int {
-        ffi::result_error(
-            ctx,
-            &format!("vector_distance expects vectors of type blob but found {t0} and {t1}"),
-        );
-        return;
-    }
-    if ffi::value_type(arg(argv, 2)) != ffi::SQLITE_TEXT as c_int {
-        ffi::result_error(ctx, "vector_distance expects space type of type text");
-        return;
-    }
-
-    let space_str = ffi::value_text_string(arg(argv, 2));
-    let distance_type = match parse_distance_type(&space_str) {
-        Some(d) => d,
-        None => {
-            ffi::result_error(ctx, &format!("Failed to parse space type: {space_str}"));
-            return;
-        }
+fn vector_distance_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
+    let count = args.len();
+    let [first, second, metric] = args else {
+        return Err(format!(
+            "vector_distance expects 3 arguments but {count} provided"
+        ));
     };
+    if first.kind() != ffi::SQLITE_BLOB as c_int || second.kind() != ffi::SQLITE_BLOB as c_int {
+        return Err(format!(
+            "vector_distance expects vectors of type blob but found {} and {}",
+            first.kind(),
+            second.kind()
+        ));
+    }
+    if metric.kind() != ffi::SQLITE_TEXT as c_int {
+        return Err("vector_distance expects space type of type text".into());
+    }
+    let metric = metric.text()?;
+    let distance_type = parse_distance_type(metric)
+        .ok_or_else(|| format!("Failed to parse space type: {metric}"))?;
+    let first = vector::view_from_blob(first.blob()?)
+        .map_err(|error| format!("Failed to parse 1st vector due to: {error}"))?;
+    let second = vector::view_from_blob(second.blob()?)
+        .map_err(|error| format!("Failed to parse 2nd vector due to: {error}"))?;
+    let distance = core::distance(&first, &second, distance_type)
+        .ok_or_else(|| format!("Dimension mismatch: {} != {}", first.len(), second.len()))?;
+    ctx.double(distance as f64);
+    Ok(())
+}
 
-    let b0 = ffi::value_blob_slice(arg(argv, 0));
-    let v0 = match vector::blob_to_f32(&b0) {
-        Ok(v) => v,
-        Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse 1st vector due to: {e}"));
-            return;
-        }
+fn vector_from_json_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
+    let count = args.len();
+    let [json] = args else {
+        return Err(format!(
+            "vector_from_json expects 1 argument but {count} provided"
+        ));
     };
-    let b1 = ffi::value_blob_slice(arg(argv, 1));
-    let v1 = match vector::blob_to_f32(&b1) {
-        Ok(v) => v,
-        Err(e) => {
-            ffi::result_error(ctx, &format!("Failed to parse 2nd vector due to: {e}"));
-            return;
-        }
+    if json.kind() != ffi::SQLITE_TEXT as c_int {
+        return Err("vector_from_json expects a JSON string".into());
+    }
+    let values = vector::from_json(json.text()?)
+        .map_err(|error| format!("Failed to parse vector due to: {error}"))?;
+    ctx.blob(&vector::blob_from_f32(&values));
+    Ok(())
+}
+
+fn vector_to_json_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
+    let count = args.len();
+    let [blob] = args else {
+        return Err(format!(
+            "vector_to_json expects 1 argument but {count} provided"
+        ));
     };
-
-    if v0.len() != v1.len() {
-        ffi::result_error(
-            ctx,
-            &format!("Dimension mismatch: {} != {}", v0.len(), v1.len()),
-        );
-        return;
+    if blob.kind() != ffi::SQLITE_BLOB as c_int {
+        return Err("vector_to_json expects vector of type blob".into());
     }
-
-    match core::distance(&v0, &v1, distance_type) {
-        Some(d) => ffi::result_double(ctx, d as f64),
-        None => ffi::result_error(ctx, "Invalid distance type"),
-    }
+    let values = vector::view_from_blob(blob.blob()?)
+        .map_err(|error| format!("Failed to parse vector due to: {error}"))?;
+    ctx.text(&vector::to_json(&values)?);
+    Ok(())
 }
 
-pub unsafe extern "C" fn vector_from_json(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    if argc != 1 {
-        ffi::result_error(
-            ctx,
-            &format!("vector_from_json expects 1 argument but {argc} provided"),
-        );
-        return;
-    }
-    if ffi::value_type(arg(argv, 0)) != ffi::SQLITE_TEXT as c_int {
-        ffi::result_error(ctx, "vector_from_json expects a JSON string");
-        return;
-    }
-    let json = ffi::value_text_string(arg(argv, 0));
-    match vector::from_json(&json) {
-        Ok(v) => ffi::result_blob(ctx, &vector::f32_to_blob(&v)),
-        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}")),
-    }
-}
-
-pub unsafe extern "C" fn vector_to_json(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    if argc != 1 {
-        ffi::result_error(
-            ctx,
-            &format!("vector_to_json expects 1 argument but {argc} provided"),
-        );
-        return;
-    }
-    if ffi::value_type(arg(argv, 0)) != ffi::SQLITE_BLOB as c_int {
-        ffi::result_error(ctx, "vector_to_json expects vector of type blob");
-        return;
-    }
-    let blob = ffi::value_blob_slice(arg(argv, 0));
-    match vector::blob_to_f32(&blob) {
-        Ok(v) => match vector::to_json(&v) {
-            Ok(json) => ffi::result_text(ctx, &json),
-            Err(e) => ffi::result_error(ctx, &e),
-        },
-        Err(e) => ffi::result_error(ctx, &format!("Failed to parse vector due to: {e}")),
-    }
-}
-
-pub unsafe extern "C" fn vectorlite_info(
-    ctx: *mut sqlite3_context,
-    _argc: c_int,
-    _argv: *mut *mut sqlite3_value,
-) {
-    let info = format!(
+fn vectorlite_info_impl(ctx: &Context, _args: &mut [Value<'_>]) -> Result<(), String> {
+    ctx.text(&format!(
         "vectorlite extension version {}. Best SIMD target in use: {}",
         env!("CARGO_PKG_VERSION"),
         core::best_target()
-    );
-    ffi::result_text(ctx, &info);
+    ));
+    Ok(())
 }

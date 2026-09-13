@@ -1,37 +1,8 @@
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Finds a vcpkg-installed triplet directory (produced by the CMake build) that
-/// contains both the C++ headers and the requested static library. Triplet- and
-/// platform-agnostic: it scans `build/<preset>/vcpkg_installed/<triplet>/` and
-/// `vcpkg/installed/<triplet>/` for any triplet that satisfies both markers.
-/// Returns `(include_dir, lib_dir)`.
-fn find_vcpkg(repo_root: &Path, static_lib_marker: &str) -> Option<(PathBuf, PathBuf)> {
-    let mut installed_roots: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = fs::read_dir(repo_root.join("build")) {
-        for entry in rd.flatten() {
-            installed_roots.push(entry.path().join("vcpkg_installed"));
-        }
-    }
-    installed_roots.push(repo_root.join("vcpkg/installed"));
-
-    for root in installed_roots {
-        let rd = match fs::read_dir(&root) {
-            Ok(rd) => rd,
-            Err(_) => continue,
-        };
-        for entry in rd.flatten() {
-            let triplet = entry.path();
-            let include = triplet.join("include");
-            let lib = triplet.join("lib");
-            if include.join("hnswlib/hnswlib.h").exists() && lib.join(static_lib_marker).exists() {
-                return Some((include, lib));
-            }
-        }
-    }
-    None
-}
+mod build_support;
+use build_support::find_vcpkg;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -40,12 +11,38 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let msvc = target_env == "msvc";
+    if msvc
+        && env::var("CARGO_CFG_TARGET_FEATURE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|feature| feature == "crt-static")
+    {
+        panic!("Vectorlite's MSVC vcpkg triplets use the dynamic CRT; remove the crt-static target feature");
+    }
 
     // Platform-specific static archive name for highway produced by vcpkg.
     let hwy_marker = if msvc { "hwy.lib" } else { "libhwy.a" };
 
-    let (vcpkg_include, lib_dir) = find_vcpkg(&repo_root, hwy_marker)
-        .expect("could not locate a vcpkg_installed triplet with hnswlib headers and the highway static lib; build the CMake project first");
+    let target = env::var("TARGET").unwrap();
+    let profile = env::var("PROFILE").unwrap();
+    let override_dir = env::var_os("VECTORLITE_VCPKG_TRIPLET_DIR").map(PathBuf::from);
+    println!("cargo:rerun-if-env-changed=VECTORLITE_VCPKG_TRIPLET_DIR");
+    build_support::watch_discovery(&repo_root, override_dir.is_some());
+    let lib_marker = format!("lib/{hwy_marker}");
+    let triplet = find_vcpkg(
+        &repo_root,
+        &target,
+        &profile,
+        override_dir.as_deref(),
+        &[
+            "include/hnswlib/hnswlib.h",
+            "include/hwy/highway.h",
+            &lib_marker,
+        ],
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let vcpkg_include = triplet.join("include");
+    let lib_dir = triplet.join("lib");
 
     let vectorlite_src = repo_root.join("vectorlite");
     let ops_cpp = vectorlite_src.join("ops/ops.cpp");
@@ -63,10 +60,16 @@ fn main() {
         .include(vectorlite_src.join("ops"))
         .include(&vcpkg_include)
         .include(manifest_dir.join("cpp"))
-        .warnings(false);
+        .warnings(profile == "debug");
     if msvc {
-        // Matches the C++ CMake build's MSVC flags; the SIMD baseline needs AVX.
-        build.flag("/arch:AVX");
+        // hnswlib relies on RAII cleanup when its operations throw.
+        build.flag("/EHsc");
+        if matches!(
+            env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
+            Ok("x86" | "x86_64")
+        ) {
+            build.flag("/arch:AVX");
+        }
     } else {
         build.flag_if_supported("-fPIC");
     }
@@ -79,8 +82,7 @@ fn main() {
     // SQLite directly: every call goes through the sqlite3_api_routines table
     // the host passes at load time (the loadable-extension contract), so the
     // library has no undefined SQLite symbols to resolve and needs no embedded
-    // copy. This keeps the artifact small (~0.6 MB) and identical across
-    // platforms; the host process provides SQLite at load time.
+    // copy. The host process provides SQLite at load time on every platform.
 
     // The C++ core (hnswlib's std::thread/std::mutex, libstdc++/highway) needs a
     // few platform system libraries on Linux. glibc >= 2.34 folds these into
@@ -102,5 +104,20 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/core_shim.cpp");
     println!("cargo:rerun-if-changed=cpp/core_shim.h");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed={}", ops_cpp.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        vectorlite_src.join("ops/ops.h").display()
+    );
+    for path in [
+        vcpkg_include.join("hnswlib"),
+        vcpkg_include.join("hwy"),
+        lib_dir.join(hwy_marker),
+        triplet.parent().unwrap().join("vcpkg/status"),
+    ] {
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
