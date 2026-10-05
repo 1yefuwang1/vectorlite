@@ -126,8 +126,8 @@ void ValidateLinks(std::ifstream& input, size_t maximum, size_t count,
   }
 }
 
-void ValidateFile(const char* path, size_t data_size,
-                  size_t requested_capacity) {
+size_t ValidateFile(const char* path, size_t data_size,
+                    size_t requested_capacity) {
   std::ifstream input;
   input.exceptions(std::ios::failbit | std::ios::badbit);
   input.open(path, std::ios::binary);
@@ -167,8 +167,11 @@ void ValidateFile(const char* path, size_t data_size,
   ValidateCapacity(saved_capacity, stride);
   if (count > saved_capacity)
     throw std::runtime_error("index count exceeds capacity");
-  ValidateCapacity(
-      requested_capacity < count ? saved_capacity : requested_capacity, stride);
+  // The saved capacity is not proportional to file size and is controlled by
+  // the file. Allocate only what the table requested or the loaded rows need.
+  const size_t load_capacity =
+      requested_capacity < count ? count : requested_capacity;
+  ValidateCapacity(load_capacity, stride);
   if ((count == 0 &&
        (max_level != -1 ||
         entry != std::numeric_limits<hnswlib::tableint>::max())) ||
@@ -209,6 +212,7 @@ void ValidateFile(const char* path, size_t data_size,
       ValidateLinks(input, m, count, level, levels);
     }
   }
+  return load_capacity;
 }
 
 void SaveChecked(hnswlib::HierarchicalNSW<float>& index, const char* path) {
@@ -345,9 +349,10 @@ VlHnsw* vl_hnsw_load(VlSpace* space, const char* path, size_t max_elements,
                      int allow_replace_deleted, char** err) {
   auto* s = reinterpret_cast<SpaceAdapter*>(space);
   try {
-    ValidateFile(path, s->get_data_size(), max_elements);
+    const size_t load_capacity =
+        ValidateFile(path, s->get_data_size(), max_elements);
     auto* index = new hnswlib::HierarchicalNSW<float>(
-        s, std::string(path), /*nmslib=*/false, max_elements,
+        s, std::string(path), /*nmslib=*/false, load_capacity,
         allow_replace_deleted != 0);
     return reinterpret_cast<VlHnsw*>(index);
   } catch (const std::exception& ex) {

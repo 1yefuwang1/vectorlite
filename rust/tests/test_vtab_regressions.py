@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 import sqlite3
+import stat
+import struct
 import subprocess
 import sys
 
@@ -64,6 +66,95 @@ def test_registry_survives_reparse_rename_and_recreation(conn):
     conn.execute("DROP TABLE renamed")
     conn.execute("CREATE VIRTUAL TABLE renamed USING vectorlite(embedding float32[2], hnsw(max_elements=8))")
     assert conn.execute("SELECT rowid FROM renamed WHERE rowid=1").fetchall() == []
+
+
+def test_load_ignores_untrusted_saved_capacity(conn, tmp_path):
+    index_path = tmp_path / "capacity.bin"
+    conn.execute(
+        "CREATE VIRTUAL TABLE source USING "
+        "vectorlite(embedding float32[2], hnsw(max_elements=8))"
+    )
+    for rowid in (10, 11, 12):
+        conn.execute(
+            "INSERT INTO source(rowid,embedding) "
+            "VALUES(?,vector_from_json('[1,2]'))",
+            (rowid,),
+        )
+    conn.execute(
+        "INSERT INTO source(operation,path) VALUES('save',?)",
+        (str(index_path),),
+    )
+
+    # The versioned envelope is 32 bytes. The raw HNSW payload begins with
+    # offsetLevel0_ followed by max_elements_, both native-size words. Inflate
+    # only max_elements_ so a tiny valid file advertises excessive spare capacity.
+    word_size = struct.calcsize("P")
+    with index_path.open("r+b") as index_file:
+        index_file.seek(32 + word_size)
+        index_file.write((1_000_000).to_bytes(word_size, sys.byteorder))
+
+    conn.execute(
+        "CREATE VIRTUAL TABLE loaded USING "
+        "vectorlite(embedding float32[2], hnsw(max_elements=2))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(operation,path) VALUES('load',?)",
+        (str(index_path),),
+    )
+    assert conn.execute(
+        "SELECT rowid FROM loaded WHERE rowid IN (10,11,12) ORDER BY rowid"
+    ).fetchall() == [(10,), (11,), (12,)]
+
+    # Loading must allocate only max(configured capacity, element count), not
+    # the untrusted max_elements_ stored in the payload.
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute(
+            "INSERT INTO loaded(rowid,embedding) "
+            "VALUES(13,vector_from_json('[3,4]'))"
+        )
+    assert conn.execute(
+        "SELECT rowid FROM loaded WHERE rowid IN (10,11,12) ORDER BY rowid"
+    ).fetchall() == [(10,), (11,), (12,)]
+
+
+def test_vtab_is_direct_only(conn, tmp_path):
+    index_path = tmp_path / "trigger-save.bin"
+    quoted_path = str(index_path).replace("'", "''")
+    conn.execute("CREATE TABLE ordinary(value)")
+    conn.execute(
+        "CREATE TRIGGER save_from_schema AFTER INSERT ON ordinary BEGIN "
+        f"INSERT INTO v(operation,path) VALUES('save','{quoted_path}'); "
+        "END"
+    )
+
+    with pytest.raises(sqlite3.DatabaseError):
+        conn.execute("INSERT INTO ordinary VALUES(1)")
+    assert not index_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix mode bits are not available on Windows")
+def test_save_preserves_existing_unix_mode(conn, tmp_path):
+    index_path = tmp_path / "index.bin"
+    index_path.write_bytes(b"old contents")
+    os.chmod(index_path, 0o640)
+
+    conn.execute(
+        "INSERT INTO v(operation,path) VALUES('save',?)",
+        (str(index_path),),
+    )
+    assert stat.S_IMODE(index_path.stat().st_mode) == 0o640
+
+    conn.execute(
+        "CREATE VIRTUAL TABLE restored USING "
+        "vectorlite(embedding float32[2], hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO restored(operation,path) VALUES('load',?)",
+        (str(index_path),),
+    )
+    assert conn.execute(
+        "SELECT rowid FROM restored WHERE rowid=1"
+    ).fetchall() == [(1,)]
 
 
 def test_native_capacity_error_releases_locks_for_retry(extension_path):

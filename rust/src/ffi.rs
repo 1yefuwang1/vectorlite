@@ -313,6 +313,12 @@ pub unsafe fn vtab_config_constraint_support(db: *mut sqlite3) -> c_int {
     unsafe { (api_field!(vtab_config))(db, SQLITE_VTAB_CONSTRAINT_SUPPORT as c_int, 1 as c_int) }
 }
 
+pub unsafe fn vtab_config_directonly(db: *mut sqlite3) -> c_int {
+    // SAFETY: the caller supplies a live database during xCreate/xConnect;
+    // SQLITE_VTAB_DIRECTONLY takes no variadic argument.
+    unsafe { (api_field!(vtab_config))(db, SQLITE_VTAB_DIRECTONLY as c_int) }
+}
+
 pub unsafe fn libversion_number() -> c_int {
     // SAFETY: the caller supplies valid SQLite arguments with the documented
     // callback lifetime; set_api validated the dispatched function pointers.

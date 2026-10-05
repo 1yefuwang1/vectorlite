@@ -228,6 +228,13 @@ impl Index {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
+        #[cfg(unix)]
+        let destination_permissions = match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
+            Ok(_) => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
         // Closing the named payload file before native code opens it also works
         // on Windows. TempPath removes it on every success/error return.
         let payload = tempfile::NamedTempFile::new_in(parent)
@@ -249,6 +256,13 @@ impl Index {
         let written = std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
         if written != payload_len {
             return Err("native payload length changed during save".to_string());
+        }
+        #[cfg(unix)]
+        if let Some(permissions) = destination_permissions {
+            output
+                .as_file()
+                .set_permissions(permissions)
+                .map_err(|e| e.to_string())?;
         }
         output.flush().map_err(|e| e.to_string())?;
         output.as_file().sync_all().map_err(|e| e.to_string())?;

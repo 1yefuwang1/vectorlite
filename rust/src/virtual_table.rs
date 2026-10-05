@@ -25,6 +25,7 @@ const COL_DISTANCE: c_int = 1;
 const COL_OPERATION: c_int = 2;
 const COL_PATH: c_int = 3;
 const FUNC_KNN: c_int = ffi::SQLITE_INDEX_CONSTRAINT_FUNCTION as c_int;
+const SQLITE_VTAB_DIRECTONLY_MIN_VERSION: c_int = 3_031_000;
 
 /// SQLite owns the header and can write it while Rust holds shared references
 /// to the table state. `UnsafeCell` explicitly permits those writes. `repr(C)`
@@ -201,6 +202,16 @@ unsafe fn init_vtab(
     let rc = unsafe { ffi::vtab_config_constraint_support(db) };
     if rc != ffi::SQLITE_OK as c_int {
         return rc;
+    }
+    // DIRECTONLY prevents a database schema from invoking the save/load command
+    // channel through a trigger or view. Older SQLite hosts do not know this op.
+    // SAFETY: extension initialization validated this host API entry.
+    if unsafe { ffi::libversion_number() } >= SQLITE_VTAB_DIRECTONLY_MIN_VERSION {
+        // SAFETY: called during xCreate/xConnect with SQLite's live connection.
+        let rc = unsafe { ffi::vtab_config_directonly(db) };
+        if rc != ffi::SQLITE_OK as c_int {
+            return rc;
+        }
     }
     const MODULE_PARAM_OFFSET: c_int = 3;
     if argc != 2 + MODULE_PARAM_OFFSET {
