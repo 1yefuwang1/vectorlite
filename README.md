@@ -4,6 +4,8 @@
 # Overview
 Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. It provides fast vector search capabilities with a SQL interface and runs on every language with a SQLite driver.
 
+**Rust is the main and only extension implementation.** The Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. Native C++ is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim; the ops tests and benchmarks remain native. CMake and scikit-build-core invoke Cargo for normal source and wheel builds. Public package names and `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames are unchanged. See the [architecture and contributor guide](<rust/README.md>).
+
 For motivation and background of this project, please check [here](https://dev.to/yefuwang/introducing-vectorlite-a-fast-and-tunable-vector-search-extension-for-sqlite-4dcl).
 
 Below is an example of using it in sqlite CLI shell:
@@ -77,6 +79,8 @@ select rowid from my_table order by vector_distance({query_vector}, embedding, '
 The core of vectorlite is the [virtual table](https://www.sqlite.org/vtab.html) module, which is used to hold vector index and way faster than brute force approach at the cost of not being 100% accurate.
 A vectorlite table can be created using:
 
+SQL vector inputs and outputs are little-endian float32 blobs. The declared storage type can be `float32`, `float16` or `bfloat16`; half-precision tables quantize on insert/query and dequantize when reading the vector column. Supported metrics are `l2` (squared L2), `ip` and `cosine` (normalized inner-product distance).
+
 ```sql
 -- Required fields: table_name, vector_name, dimension, max_elements
 -- Optional fields:
@@ -97,7 +101,13 @@ insert into {table_name}(operation, path) values ('save', '/path/to/index.bin');
 -- current in-memory index; on any error the existing index is left unchanged.
 insert into {table_name}(operation, path) values ('load', '/path/to/index.bin');
 ```
-On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is held per database connection and survives schema changes (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections) for the life of the connection. It is lost when the connection closes unless you explicitly save it.
+New saves use a **versioned envelope** recording the vector dimension, element type (`float32`, `float16` or `bfloat16`), distance metric, normalization policy and native word size/endianness. These must match the receiving table on load. A successful save atomically replaces the destination; a failed load leaves the live index unchanged.
+
+Loading also accepts **legacy raw HNSW files** from older Vectorlite builds or hnswlib. Raw files have no Vectorlite schema descriptor, so the receiving table's declaration is authoritative. The per-vector byte size and native layout must match, but equal-width types or dimensions with the same total byte size cannot be distinguished. Loading does not convert or re-normalize vectors or rebuild the graph: declare the intended schema. To upgrade, load the raw file and save again to write a versioned envelope.
+
+The receiving table's `max_elements` and `allow_replace_deleted` control capacity and deleted-slot reuse after loading. Capacity is at least the loaded element count; use a larger `max_elements` to allow growth. Other graph-construction parameters come from the saved graph.
+
+The in-memory index is held per database connection and survives schema reparses (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections). It is lost when the connection closes unless you explicitly save it. On SQLite **3.31 or newer**, vectorlite tables are direct-only: application SQL can access them, but views and triggers cannot.
 
 Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
 
@@ -114,7 +124,8 @@ The following functions should be only used when querying a vectorlite table
 -- returns knn_parameter that will be passed to knn_search(). 
 -- vector_blob: vector to search
 -- k: how many nearest neighbors to search for
--- ef: optional. A HNSW parameter that controls speed-accuracy trade-off. Defaults to 10 at first. If set to another value x, it will remain x if not specified again in another query within a single db connection.
+-- ef: optional, positive HNSW speed/accuracy parameter. Defaults to 10.
+-- An override applies only to this query; later queries without ef use the default.
 knn_param(vector_blob, k, ef)
 -- Should only be used in the `where clause` in a `select` statement to tell vectorlite to speed up the query using HNSW index
 -- vector_name should match the vectorlite table's definition
@@ -127,6 +138,8 @@ select rowid, distance from my_vectorlite_table where knn_search(vector_name, kn
 ```
 
 ## Benchmark
+**Historical results:** the figures, raw tables and performance summaries below were recorded before the Rust-primary migration. They are preserved as measurements of that earlier build, not newly verified Rust results. Recorded build paths are provenance, not a requirement to build an old C++ extension. Use the current [benchmark instructions](<benchmark/README.md>) to measure a release build of the Rust implementation.
+
 Please note only small datasets(with 3000 or 20000 vectors) are used because it would be unfair to benchmark against [sqlite-vec](https://github.com/asg017/sqlite-vec) using larger datasets. Sqlite-vec only uses brute-force, which doesn't scale with large datasets, while vectorlite uses ANN(approximate nearest neighbors), which scales to large datasets at the cost of not being 100% accurate.
 
 How the benchmark is done:
@@ -367,7 +380,7 @@ The quickest way to get started is to install vectorlite using python.
 # Note: vectorlite-py not vectorlite. vectorlite is another project.
 pip install vectorlite-py numpy
 ```
-Vectorlite's metadata filter feature requires sqlite>=3.38. Python 3.14's built-in `sqlite3` module bundles SQLite 3.50.4 (>= 3.38), so no extra driver is needed. Vectorlite still works with older sqlite versions if metadata filter support is not required.
+Use a Python build with loadable SQLite extensions enabled. Vectorlite requires SQLite >= 3.20; rowid lookups and metadata filtering require SQLite >= 3.38. Python 3.14 with a recent bundled SQLite is recommended. On SQLite >= 3.31, access vectorlite tables directly from application SQL, not through views or triggers.
 Below is a minimal example of using vectorlite. It can also be found in the examples folder.
 
 ```python
@@ -397,7 +410,7 @@ for distance_type in ['l2', 'cosine', 'ip']:
 # generate some test data
 DIM = 32 # dimension of the vectors
 NUM_ELEMENTS = 10000 # number of vectors
-data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # Only float32 vectors are supported by vectorlite for now
+data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # SQL inputs use float32 blobs; stored types may also be float16/bfloat16.
 
 # Create a virtual table using vectorlite using l2 distance (default distance type) and default HNSW parameters
 cursor.execute(f'create virtual table my_table using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
@@ -432,35 +445,50 @@ conn.close()
 More examples can be found in examples and bindings/python/vectorlite_py/test folder.
 
 # Build Instructions
-If you want to contribute or compile vectorlite for your own platform, you can follow following instructions to build it.
+The source build uses **CMake -> Cargo** for the extension library and retains CMake's native ops tests and benchmarks. Python source installs and wheels use **scikit-build-core -> CMake -> Cargo**. No separate C++ extension build or Rust redeployment step is required. Prebuilt wheels and npm packages do not require Rust on the user's machine.
+
 ## Prerequisites
-1. CMake >= 3.22
-2. Ninja
-3. A C++ compiler in PATH that supports c++17
-4. Python3
+1. The latest stable Rust toolchain (`rustup update stable`); the repository selects stable in [rust-toolchain.toml](<rust-toolchain.toml>).
+2. CMake >= 3.22 and Ninja.
+3. C and C++ compilers in PATH with C++17 support (MSVC on Windows).
+4. Git and the initialized vcpkg submodule. CMake configuration installs hnswlib and Highway; `BUILD_TESTING=ON` selects the vcpkg `tests` feature for Google Test and SQLite headers/ABI checks. Wheel builds do not require those test dependencies.
+5. Python 3.14 or newer with loadable SQLite extensions enabled, plus pytest and NumPy, to run integration tests.
+
 ## Build
-### Build sqlite extension only
+### Build and test the SQLite extension
 ```shell
 git clone --recurse-submodules git@github.com:1yefuwang1/vectorlite.git
-
+cd vectorlite
+# Also needed when cloning without --recurse-submodules:
+git submodule update --init --recursive
 python3 bootstrap_vcpkg.py
 
-# install dependencies for running python tests
+# Install dependencies for the Python integration suites.
 python3 -m pip install -r requirements-dev.txt
 
-sh build.sh # for debug build
-sh build_release.sh # for release build
-
+sh build.sh         # Debug build and tests
+sh build_release.sh # Release build and tests
 ```
-`vecorlite.[so|dll|dylib]` can be found in `build/release/vectorlite` or `build/dev/vectorlite` folder
 
-### Build wheel
+These scripts build the Rust extension via CMake, run CTest (Rust unit tests, SQLite ABI checks and native ops tests), and run both Python integration suites against the built library. CMake deploys the library into the Python package automatically. The public `vectorlite.[so|dll|dylib]` artifact is also available under `build/dev/vectorlite` or `build/release/vectorlite`.
 
+For build-only iteration:
 ```shell
-python3 -m build -w
-
+cmake --preset release
+cmake --build build/release -j8
 ```
-vectorlite_py wheel can be found in `dist` folder
+
+### Build a wheel or install from source
+After initializing and bootstrapping vcpkg, use the same prerequisites above:
+```shell
+python3 -m pip install .
+# Or build a wheel without installing it:
+python3 -m pip wheel . --wheel-dir dist
+# Alternatively, with the Python build frontend installed:
+python3 -m build -w
+```
+
+The `vectorlite_py` wheel contains the same Rust-built extension with unchanged public filenames. Source archives omit Git submodules; when the local vcpkg toolchain is absent, CMake fetches and bootstraps the checkout pinned by `vcpkg.json` (Git and network access are required). See the [Rust contributor guide](<rust/README.md>) for direct Cargo commands, native dependency selection and optional SQLite binding regeneration.
 
 # Roadmap
 - [x] SIMD support for ARM platform
@@ -468,7 +496,7 @@ vectorlite_py wheel can be found in `dist` folder
 - [ ] Support Multi-vector document search and epsilon search
 - [ ] Support multi-threaded search
 - [ ] Release vectorlite to more package managers.
-- [ ] Support more vector types, e.g. float16, int8.
+- [ ] Support more vector types, e.g. int8.
 
 # Known limitations
 1. On a single query, a knn_search vector constraint can only be paired with at most one rowid constraint and vice versa. 
@@ -490,7 +518,7 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 
 select rowid, distance from my_table where knn_search(my_embedding, knn_param(vector_from_json('[1,2,3]'), 10)) or knn_search(my_embedding, knn_param(vector_from_json('[1,2,3]'), 10)) 
 ```
-2. Only float32 vectors are supported for now.
+2. Stored vectors may be `float32`, `float16` or `bfloat16`, but SQL vector inputs and outputs are always little-endian float32 blobs.
 3. ~~SIMD is only enabled on x86 platforms. Because the default implementation in hnswlib doesn't support SIMD on ARM. Vectorlite is 3x-4x slower on MacOS-ARM than MacOS-x64. I plan to improve it in the future.~~
 4. rowid in sqlite3 is of type int64_t and can be negative. However, rowid in a vectorlite table should be in this range `[0, min(max value of size_t, max value of int64_t)]`. The reason is rowid is used as `labeltype` in hnsw index, which has type `size_t`(usually 32-bit or 64-bit depending on the platform).
 5. Transaction is not supported.

@@ -10,16 +10,18 @@ import subprocess
 import sys
 
 import pytest
+import vectorlite_py
 
 
 @pytest.fixture
 def extension_path():
     suffix = "dll" if sys.platform == "win32" else "dylib" if sys.platform == "darwin" else "so"
-    prefix = "" if sys.platform == "win32" else "lib"
-    default = Path(__file__).resolve().parents[1] / "target" / "release" / f"{prefix}vectorlite.{suffix}"
+    # Use the same deployed/installed package artifact as the shared SQL suite.
+    # A direct Cargo output can still be selected explicitly for local checks.
+    default = Path(vectorlite_py.vectorlite_path()).with_suffix(f".{suffix}")
     library = Path(os.environ.get("VECTORLITE_RUST_EXTENSION", default))
-    if not library.exists():
-        pytest.skip(f"Rust extension is not built: {library}")
+    if not library.is_file():
+        pytest.fail(f"Vectorlite extension is not built or installed: {library}")
     return library.resolve()
 
 

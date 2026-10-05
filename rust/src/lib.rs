@@ -1,6 +1,6 @@
-//! Rust port of the vectorlite SQLite extension (virtual table + scalar
-//! functions). The numeric core (hnswlib + SIMD ops + quantization) stays in C++
-//! and is linked as a static library; this crate owns the SQLite glue.
+//! Vectorlite SQLite extension: virtual table, scalar functions, and index policy.
+//! The native hnswlib and Highway kernels are reached through a narrow C ABI;
+//! this crate is the main implementation and owns all SQLite integration.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]

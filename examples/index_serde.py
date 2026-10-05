@@ -87,7 +87,7 @@ print(f'time taken for calculating recall rate: {time_taken} seconds')
 # It can be achieved by passing ef to the 3rd argument of knn_param.
 # For more info on ef, please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md
 # The default value of ef is 10. In this example, we set ef to 32. 
-# Note: ef is not part of the index, modifying it is an imperative operation. If it is not set in later queries, it will always be 32.
+# The ef override is query-local; later queries without an override use 10.
 time_taken = timeit.timeit(lambda: test_recall('x', 'my_embedding', 32), number=1)
 print(f'time taken for calculating recall rate with ef=32: {time_taken} seconds')
 
@@ -134,10 +134,10 @@ assert os.path.exists(index_file_path) and os.path.getsize(index_file_path) > 0
 conn = create_connection()
 cur = conn.cursor()
 # We can explicitly load the saved index into a path-less vectorlite table.
-# When loading the index from the file, vector dimension MUST stay the same. But table name, vector name can be changed.
-# HNSW parameters can't be changed even if different values are set, they will be owverwritten by the value from the index file, 
-# except that max_elements can be increased.
-# Distance type can be changed too.
+# New versioned files require the same dimension, element type, and distance metric.
+# Table/vector names can change. Graph construction parameters come from the file,
+# while max_elements and allow_replace_deleted use the receiving table's settings.
+# Legacy raw hnswlib files instead use the declared schema when vector byte size matches.
 cur.execute(f'create virtual table table_reloaded using vectorlite(vec_reloaded float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS * 2}))')
 cur.execute('insert into table_reloaded(operation, path) values (?, ?)', ('load', index_file_path))
 print(f'index is loaded from {index_file_path} with higher max_elements.')

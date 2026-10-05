@@ -31,7 +31,7 @@ for distance_type in ['l2', 'cosine', 'ip']:
 # generate some test data
 DIM = 32 # dimension of the vectors
 NUM_ELEMENTS = 10000 # number of vectors
-data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # Only float32 vectors are supported by vectorlite for now
+data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # SQL inputs are float32 blobs; storage can also be float16/bfloat16
 
 # Create a virtual table using vectorlite using l2 distance (default distance type) and default HNSW parameters
 cursor.execute(f'create virtual table my_table using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')

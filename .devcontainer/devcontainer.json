@@ -6,8 +6,12 @@
     "customizations": {
         "vscode": {
             "extensions": [
+                "rust-lang.rust-analyzer",
                 "ms-vscode.cpptools-extension-pack"
-            ]
+            ],
+            "settings": {
+                "rust-analyzer.linkedProjects": ["rust/Cargo.toml"]
+            }
         }
     }
 }

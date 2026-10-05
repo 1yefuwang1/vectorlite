@@ -1,6 +1,8 @@
 # API reference
 Vectorlite provides the following APIs. 
 Please note vectorlite is currently in beta. There could be breaking changes.
+The SQL API is implemented by the Rust extension; the public `vectorlite` module and function names are unchanged. Loading requires SQLite >= 3.20, with SQLite >= 3.38 required for rowid lookup/filtering.
+
 ## Free-standing Application Defined SQL functions
 The following functions can be used in any context.
 ``` sql
@@ -25,6 +27,8 @@ select rowid from my_table order by vector_distance({query_vector}, embedding, '
 The core of vectorlite is the [virtual table](https://www.sqlite.org/vtab.html) module, which is used to hold vector index and way faster than brute force approach at the cost of not being 100% accurate.
 A vectorlite table can be created using:
 
+SQL vector inputs and outputs are little-endian float32 blobs. The declared storage type can be `float32`, `float16` or `bfloat16`; half-precision tables quantize on insert/query and dequantize when reading the vector column. Supported metrics are `l2` (squared L2), `ip` and `cosine` (normalized inner-product distance).
+
 ```sql
 -- Required fields: table_name, vector_name, dimension, max_elements
 -- Optional fields:
@@ -45,7 +49,13 @@ insert into {table_name}(operation, path) values ('save', '/path/to/index.bin');
 -- current in-memory index; on any error the existing index is left unchanged.
 insert into {table_name}(operation, path) values ('load', '/path/to/index.bin');
 ```
-On load the vector dimension and element type (e.g. `float32`) must match the file. The distance type may differ, and `max_elements` may be larger than the saved index to allow the table to grow after loading. The in-memory index is held per database connection and survives schema changes (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections) for the life of the connection. It is lost when the connection closes unless you explicitly save it.
+New saves use a **versioned envelope** recording the vector dimension, element type (`float32`, `float16` or `bfloat16`), distance metric, normalization policy and native word size/endianness. These must match the receiving table on load. A successful save atomically replaces the destination; a failed load leaves the live index unchanged.
+
+Loading also accepts **legacy raw HNSW files** from older Vectorlite builds or hnswlib. Raw files have no Vectorlite schema descriptor, so the receiving table's declaration is authoritative. The per-vector byte size and native layout must match, but equal-width types or dimensions with the same total byte size cannot be distinguished. Loading does not convert or re-normalize vectors or rebuild the graph: declare the intended schema. To upgrade, load the raw file and save again to write a versioned envelope.
+
+The receiving table's `max_elements` and `allow_replace_deleted` control capacity and deleted-slot reuse after loading. Capacity is at least the loaded element count; use a larger `max_elements` to allow growth. Other graph-construction parameters come from the saved graph.
+
+The in-memory index is held per database connection and survives schema reparses (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections). It is lost when the connection closes unless you explicitly save it. On SQLite **3.31 or newer**, vectorlite tables are direct-only: application SQL can access them, but views and triggers cannot.
 
 Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
 
@@ -62,7 +72,8 @@ The following functions should be only used when querying a vectorlite table
 -- returns knn_parameter that will be passed to knn_search(). 
 -- vector_blob: vector to search
 -- k: how many nearest neighbors to search for
--- ef: optional. A HNSW parameter that controls speed-accuracy trade-off. Defaults to 10 at first. If set to another value x, it will remain x if not specified again in another query within a single db connection.
+-- ef: optional, positive HNSW speed/accuracy parameter. Defaults to 10.
+-- An override applies only to this query; later queries without ef use the default.
 knn_param(vector_blob, k, ef)
 -- Should only be used in the `where clause` in a `select` statement to tell vectorlite to speed up the query using HNSW index
 -- vector_name should match the vectorlite table's definition

@@ -14,11 +14,30 @@ Each cell is benchmarked with `pytest-benchmark`, which auto-calibrates
 warm-up and round count and reports min / max / mean / median / stddev / IQR
 per cell.
 
+Local CMake builds now benchmark the **Rust implementation** of the SQLite
+extension, backed by the retained hnswlib/Highway native core. No separate C++
+virtual-table build or Rust deployment step is needed. The native ops
+microbenchmark remains a separate, opt-in executable, built from
+[ops_benchmark.cpp](<../vectorlite/ops/ops_benchmark.cpp>). Enable its native
+vcpkg benchmark dependency and CMake target explicitly:
+
+```bash
+cmake --preset release -DVECTORLITE_BUILD_BENCHMARKS=ON
+cmake --build build/release --target ops_benchmark -j8
+# Run from the repository root:
+build/release/vectorlite/ops/ops_benchmark
+```
+
+The figures and raw tables in the repository's [main README](<../README.md#benchmark>)
+are **historical measurements from before the Rust-primary migration**, not
+new Rust performance results. Keep their recorded artifact paths and numbers
+as provenance; rerun this suite to measure the current implementation.
+
 ## Requirements
 
-- **Python >= 3.10** (driven by NumPy 2.4 wheel availability; enforced
-  at session start by `benchmark/conftest.py` so wrong-Python runs fail
-  with a clear message instead of cryptic install errors)
+- **Python >= 3.14** to install the current `vectorlite_py` package and the
+  benchmark dependencies. The harness's older Python >= 3.10 guard in
+  [conftest.py](<conftest.py>) does not override package/dependency requirements.
 - A Python interpreter built with `--enable-loadable-sqlite-extensions`
   (standard on Homebrew, python.org installer, and modern Linux distro
   Pythons; see [SQLite driver](#sqlite-driver) below)
@@ -28,7 +47,7 @@ per cell.
 The benchmark uses Python's stdlib `sqlite3` module, which links against
 whatever SQLite the interpreter was built with. SQLite versions vary
 significantly across Python distributions, even at the same Python
-version. Vectorlite itself loads on virtually any SQLite, but its
+version. Vectorlite requires **SQLite >= 3.20**, and its
 metadata-filter (rowid pushdown) feature requires **SQLite >= 3.38** -
 the benchmark does not exercise that path, so any SQLite that loads
 the extension at all will run the benchmark. The session header reports
@@ -53,9 +72,10 @@ Empirically, here is what common Python distributions ship:
 | RHEL/Rocky/Alma 9 system Python     | 3.34            | no                         |
 | Official `python:3.X` Docker image  | tracks the Debian base; recent tags are fine | usually yes |
 
-**Rule of thumb:** Python 3.11+ from python.org, Homebrew, or pyenv is
-always fine. System Python on Linux is unreliable below
-Ubuntu 24.04 / Debian 12 / RHEL 10 / Alpine 3.19+.
+These distribution examples describe SQLite availability, not the current
+package's Python support floor. Use Python 3.14 or newer for the current
+`vectorlite_py` package, verify extension loading is enabled, and check the
+actual SQLite version instead of relying on a distribution name.
 
 To check what your interpreter has:
 
@@ -63,8 +83,8 @@ To check what your interpreter has:
 python -c "import sqlite3; print(sqlite3.sqlite_version)"
 ```
 
-If the version is too old and you cannot upgrade Python, upgrade to
-Python 3.14 or newer, whose built-in `sqlite3` bundles SQLite 3.50.4 (>= 3.38).
+If SQLite is too old or extension loading is disabled, use another Python
+3.14-or-newer build with a recent SQLite and loadable-extension support.
 
 ## Quick start
 
@@ -82,15 +102,28 @@ python benchmark/plot.py bench.json
 ## Choosing which vectorlite to benchmark
 
 By default the benchmark loads the vectorlite shared library shipped with
-the installed `vectorlite_py` wheel. To benchmark something else there are
-two equivalent options:
+the installed `vectorlite_py` wheel, which may be an older release. To measure
+the current Rust implementation, first build it through CMake:
+
+```bash
+git submodule update --init --recursive
+python3 bootstrap_vcpkg.py
+cmake --preset release
+cmake --build build/release -j8
+```
+
+This source build needs latest stable Rust, C/C++17 compilers, CMake >= 3.22,
+Ninja and vcpkg. CMake invokes Cargo and keeps the public library filename;
+there is no separate C++ virtual-table build. Use `.so` on Linux, `.dylib` on
+macOS or `.dll` on Windows in the path below. To select the library explicitly,
+there are two equivalent options:
 
 ```bash
 # Command-line flag (highest priority):
 pytest benchmark/test_benchmark.py \
     --vectorlite-path=build/release/vectorlite/vectorlite.dylib
 
-# Environment variable (also picked up by examples/ and tests/):
+# Environment variable (also picked up by the examples):
 VECTORLITE_PATH=build/release/vectorlite/vectorlite.dylib \
     pytest benchmark/test_benchmark.py
 ```
@@ -105,8 +138,9 @@ vectorlite: /path/to/build/release/vectorlite/vectorlite.dylib
 
 ### Don't benchmark a debug build
 
-`build/dev/vectorlite/vectorlite.dylib` exists right next to the release
-build and is roughly **10× slower**. The benchmark detects path patterns
+A debug artifact such as `build/dev/vectorlite/vectorlite.dylib` is not
+representative of release performance; the slowdown depends on the workload
+and toolchain. The benchmark detects path patterns
 that look like debug builds (`/build/dev/`, `/Debug/`, `/debug/`) and
 prints a `WARNING` line plus a Python `UserWarning`:
 

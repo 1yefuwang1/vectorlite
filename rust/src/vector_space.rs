@@ -1,10 +1,9 @@
-//! Parsing of the vector-space declaration string, e.g.
-//! `my_embedding float32[384] cosine`. Mirrors `vector_space.cpp` /
-//! `NamedVectorSpace::FromString` and `util.cpp::IsValidColumnName`.
+//! Parsing and lexical validation of vector-space declarations, e.g.
+//! `my_embedding float32[384] cosine`.
 
 use crate::half::{Bf16Bits, F16Bits};
 
-/// Distance metric. Discriminants must match `VlDistanceType` in core_shim.h.
+/// Distance metric. Discriminants are stable tags in the persistence descriptor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
 pub enum DistanceType {
@@ -13,7 +12,7 @@ pub enum DistanceType {
     Cosine = 2,
 }
 
-/// Stored element type. Discriminants must match `VlVectorType` in core_shim.h.
+/// Stored element type. Discriminants are stable tags in the persistence descriptor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
 pub enum VectorType {
@@ -62,9 +61,9 @@ fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Validates a SQLite column name: must start with a letter or underscore and
-/// contain only letters, digits, underscores or `$`. (Keyword rejection from
-/// the C++ version is omitted; it is not exercised by the test suite.)
+/// Validates a column name's lexical form: start with a letter or underscore,
+/// followed by letters, digits, underscores or `$`. SQLite handles contextual
+/// keywords when the virtual-table schema is declared.
 pub fn is_valid_column_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -74,8 +73,8 @@ pub fn is_valid_column_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
-/// Parses `<name> <type>[<dim>] [<distance>]`. Equivalent to the regex
-/// `^(\w+)\s+(\w+)\[(\d+)\]\s*(\w+)?\s*$` used by the C++ implementation.
+/// Parses `<name> <type>[<dim>] [<distance>]` with ASCII word tokens and
+/// optional leading/trailing whitespace.
 pub fn parse_named_vector_space(input: &str) -> Result<NamedVectorSpace, String> {
     let bytes = input.as_bytes();
     let n = bytes.len();
@@ -96,8 +95,8 @@ pub fn parse_named_vector_space(input: &str) -> Result<NamedVectorSpace, String>
         j
     };
 
-    // Leading whitespace is not allowed by the anchored regex, but the input is
-    // already trimmed by SQLite's argument handling; be lenient and skip it.
+    // SQLite trims its module arguments; tolerate leading whitespace for direct
+    // parser callers as well.
     i = skip_ws(i);
 
     // vector name

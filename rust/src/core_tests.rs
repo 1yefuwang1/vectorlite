@@ -31,6 +31,29 @@ fn index(vector_type: VectorType, metric: DistanceType) -> Index {
 }
 
 #[test]
+fn distance_matches_known_values_without_mutating_inputs() {
+    let first = [1., 2., 3.];
+    let second = [4., 5., 6.];
+    assert_eq!(distance(&first, &second, DistanceType::L2), Some(27.));
+    assert_eq!(
+        distance(&first, &second, DistanceType::InnerProduct),
+        Some(-31.)
+    );
+    let cosine = distance(&first, &second, DistanceType::Cosine).unwrap();
+    assert!((cosine - 0.025_368_2).abs() < 1e-6);
+    assert_eq!(first, [1., 2., 3.]);
+    assert_eq!(second, [4., 5., 6.]);
+    assert_eq!(distance(&first, &second[..2], DistanceType::L2), None);
+}
+
+#[test]
+fn distance_handles_empty_vectors() {
+    assert_eq!(distance(&[], &[], DistanceType::L2), Some(0.));
+    assert_eq!(distance(&[], &[], DistanceType::InnerProduct), Some(1.));
+    assert_eq!(distance(&[], &[], DistanceType::Cosine), Some(1.));
+}
+
+#[test]
 fn persistence_save_reports_missing_parent() {
     let dir = TestDirectory::new();
     let index = index(VectorType::Float32, DistanceType::L2);

@@ -1,5 +1,5 @@
-//! Conversions between SQLite blobs / JSON and f32 vectors. Mirrors the float
-//! specialisation of `vector.h` / `vector_view.h` used by the scalar functions.
+//! Conversions between SQLite blobs / JSON and f32 vectors used by the scalar
+//! functions and virtual table.
 
 use std::borrow::Cow;
 

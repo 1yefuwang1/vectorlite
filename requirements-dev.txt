@@ -1,1 +1,2 @@
 numpy>=1.22
+pytest>=8.4

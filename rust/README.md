@@ -1,12 +1,19 @@
-# vectorlite (Rust port)
+# vectorlite Rust implementation
 
-A Rust port of the vectorlite SQLite extension. **All virtual-table logic is in
-Rust** — the SQLite glue, constraint handling, per-connection index registry,
-vector-space/index-option parsing, quantization/normalization *decisions*, the
-rowid filter predicate, per-query `ef` handling, the load data-size check and
-save/load orchestration. C++ is reached **only via FFI, and only for two things:
-hnswlib and the SIMD `ops`** (Google Highway). `unsafe` is confined to the SQLite
-FFI boundary and the hnswlib/ops C ABI.
+This Cargo crate is the **main and only implementation** of the vectorlite
+SQLite extension. It owns the SQLite glue, constraint handling, per-connection
+index registry, vector-space/index-option parsing, quantization/normalization
+*decisions*, the rowid filter predicate, query-local `ef` overrides, load
+validation and save/load orchestration. C++ is reached **only via FFI, and only
+for hnswlib and the SIMD `ops`** (Google Highway), through a thin C ABI shim.
+The native ops CMake tests and benchmarks are retained; the superseded C++
+virtual-table implementation is not built or shipped. `unsafe` is confined to
+the SQLite FFI boundary and the hnswlib/ops C ABI.
+
+CMake and scikit-build-core remain the normal build and packaging entrypoints,
+and invoke Cargo for the extension library. The Python/npm package names and
+public `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames remain
+unchanged.
 
 ## Architecture
 
@@ -34,58 +41,108 @@ FFI boundary and the hnswlib/ops C ABI.
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The distance function hnswlib uses is a Rust `extern "C"` callback (`ops.rs`)
+The distance function hnswlib uses is a Rust `extern "C"` callback in
+[ops.rs](<src/ops.rs>)
 that forwards to `ops`; the rowid filter is a Rust predicate invoked through a
 trampoline. So the *only* C++ is hnswlib itself, the `ops` kernels, and the
 minimal generic adapters needed to expose those two through a C ABI.
 
 ## Building
 
-The build reuses the vcpkg headers/libraries produced by the C++ CMake build, so
-run the C++ build once first (it sets up `build/<preset>/vcpkg_installed/<triplet>`):
+The normal source build uses **CMake -> Cargo**; Python source installs and
+wheels use **scikit-build-core -> CMake -> Cargo**. CMake installs native
+dependencies through vcpkg, builds the Rust library and deploys it into the
+Python package. There is no prerequisite C++ extension build and no separate
+Rust deployment step afterward. Source archives omit Git submodules; if the local
+vcpkg toolchain is unavailable, CMake fetches and bootstraps the exact revision in
+`vcpkg.json`. Source-archive builds therefore require Git and network access.
 
-```sh
-sh build.sh            # at the repo root (configures vcpkg, builds C++)
-```
+### Prerequisites
 
-Then build and deploy the Rust extension:
+- The **latest stable Rust release**; [rust-toolchain.toml](<../rust-toolchain.toml>)
+  selects stable and includes rustfmt and Clippy.
+- C and C++17 compilers (MSVC with the dynamic CRT on Windows).
+- CMake >= 3.22, Ninja, Git and the vcpkg submodule.
+- Python 3.14 or newer with loadable SQLite extensions enabled, pytest and NumPy
+  for the integration suites.
 
-| Platform | Build + deploy | Artifact |
-|----------|----------------|----------|
-| Linux | `sh rust/build.sh` | `vectorlite.so` |
-| macOS | `sh rust/build.sh` | `vectorlite.dylib` |
-| Windows | `rust\build.ps1` (PowerShell) or `sh rust/build.sh` in Git Bash | `vectorlite.dll` |
-
-The Rust port supports the **latest stable Rust release**. The repository's
-`rust-toolchain.toml` selects `stable` and includes rustfmt and Clippy. Update
-your installed stable toolchain before building:
+From the repository root:
 
 ```sh
 rustup update stable
+git submodule update --init --recursive
+python3 bootstrap_vcpkg.py
+python3 -m pip install -r requirements-dev.txt
+
+sh build.sh          # Debug build + CTest + both Python suites
+sh build_release.sh  # Release build + the same tests
+
+# Build-only iteration:
+cmake --preset release
+cmake --build build/release -j8
+
+# Python packaging uses the same Rust implementation:
+python3 -m pip wheel . --wheel-dir dist
+# Or install directly from source:
+python3 -m pip install .
 ```
 
-Build with the committed lockfile (`cargo build --locked --release`) to use the
-verified dependency versions. Older Rust releases are not part of the support
-policy; code and dependency updates are validated against current stable.
+The public artifacts are `vectorlite.so` on Linux, `vectorlite.dylib` on macOS,
+and `vectorlite.dll` on Windows, under `build/<preset>/vectorlite` and deployed
+into `bindings/python/vectorlite_py/`.
 
-`build.rs` selects a vcpkg triplet matching Cargo's `TARGET`, including the CPU
-architecture, operating system and C runtime family. It prefers the matching
-CMake preset (`build/dev` for Cargo debug, `build/release` for release), then
-requires a unique compatible installation among the remaining build trees and
-`vcpkg/installed`. Ambiguous or incompatible installations fail with an error.
-To select an installation explicitly, set the full triplet directory:
+With `BUILD_TESTING=ON`, CMake selects the vcpkg `tests` feature for Google Test
+and SQLite headers, and registers Rust unit/SQLite ABI/native ops tests with
+root CTest. Wheel builds need only the runtime native dependencies. The retained
+ops microbenchmark is opt-in:
+
+```sh
+cmake --preset release -DVECTORLITE_BUILD_BENCHMARKS=ON
+cmake --build build/release --target ops_benchmark -j8
+```
+
+[build.sh](<build.sh>) and [build.ps1](<build.ps1>) in this directory are
+compatibility build-only shortcuts to the CMake release `vectorlite` target.
+Use the root scripts for the full build/test cycle.
+
+### Direct Cargo builds
+
+For Rust-only iteration, configure CMake once to install native dependencies,
+then invoke Cargo directly. Configuration does **not** require building an old
+C++ extension:
+
+```sh
+cmake --preset release
+cargo build --manifest-path rust/Cargo.toml --locked --release
+```
+
+A direct Cargo build uses its native `libvectorlite.so` / `libvectorlite.dylib`
+name on Unix (and `vectorlite.dll` on Windows) in `rust/target/release` by default.
+Use the normal CMake build to produce/deploy the public package filename.
+Build with the committed lockfile (`--locked`) to use the verified dependency
+versions. Older Rust releases are not part of the support policy; code and
+dependency updates are validated against current stable.
+
+The normal CMake build passes its exact vcpkg installation, compiler and Cargo
+target/output directory to Rust. For direct Cargo builds, [build.rs](<build.rs>)
+selects a vcpkg triplet matching Cargo's `TARGET`, including the CPU architecture,
+operating system and C runtime family. It prefers the matching CMake preset
+(`build/dev` for Cargo debug, `build/release` for release), then requires a unique
+compatible installation among the remaining build trees and `vcpkg/installed`.
+Ambiguous or incompatible installations fail with an error. To select an
+installation explicitly for direct Cargo, set the full triplet directory:
 
 ```sh
 export VECTORLITE_VCPKG_TRIPLET_DIR="$PWD/build/release/vcpkg_installed/arm64-osx"
-sh rust/build.sh
+cargo build --manifest-path rust/Cargo.toml --locked --release
 ```
 
 Supported triplet names follow vcpkg's architecture/platform names, optionally
 ending in `-release`. Windows MSVC uses static libraries with the dynamic CRT
 (`x64-windows-static-md` or `x64-windows-static-md-release`); Linux musl and GNU
-libc installations are kept distinct. Cross builds also need a compatible C++
-compiler/linker configured for Cargo and `cc`. The deployment scripts target the
-native platform and default Cargo output directory.
+libc installations are kept distinct. Cross builds also need a compatible
+native compiler/linker and an installed Rust target; configure CMake/Cargo for
+the same architecture and runtime.
 
 The C++ shim enables standard exception unwinding on MSVC (`/EHsc`). Native
 headers, the Highway archive and vcpkg package metadata are tracked so native
@@ -95,6 +152,12 @@ host process.
 
 ## Notes
 
+- SQLite >= 3.20 is required; rowid lookup/filtering requires SQLite >= 3.38.
+  On SQLite >= 3.31, virtual tables are direct-only and cannot be accessed from
+  views or triggers. Issue save/load commands directly from application SQL.
+- An explicit `knn_param(..., ef)` override is query-local; the previous index
+  setting is restored after the search. Queries without an override use the
+  default `ef` of 10, including after load.
 - SQLite is **not** linked into the library. A loadable extension never calls
   SQLite directly — every call goes through the `sqlite3_api_routines` table the
   host passes at load time (the loadable-extension contract) — so the library
@@ -150,16 +213,45 @@ CI builds and tests the latest stable Rust on Linux, Windows, Apple Silicon
 macOS and Intel macOS. Native ABI checks compare the Rust layouts and API
 offsets used by the extension against the installed SQLite C headers.
 
-```sh
-cd rust
-cargo test --locked --workspace
-cargo test --locked -p vectorlite-sqlite-sys --features abi-check
-```
-
-After deploying the Rust extension with its build script, run the Python suite
-from the repository root. The root C++ build script also deploys its own library,
-so rerun the Rust build script afterward when testing the Rust port:
+From the repository root, the normal scripts run CMake's Cargo-backed build,
+CTest (Rust unit tests, SQLite ABI checks and native ops tests), and both Python
+integration suites against the freshly built library:
 
 ```sh
-PYTHONPATH=bindings/python python -m pytest bindings/python/vectorlite_py/test rust/tests
+sh build.sh
+# Or use the release profile:
+sh build_release.sh
+
+# Rerun only the registered Rust/native tests:
+ctest --test-dir build/dev --output-on-failure
 ```
+
+For direct Cargo iteration after configuring native dependencies:
+
+```sh
+cargo fmt --manifest-path rust/Cargo.toml --all --check
+cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::missing_safety_doc
+cargo test --manifest-path rust/Cargo.toml --locked --workspace
+cargo test --manifest-path rust/Cargo.toml --locked -p vectorlite-sqlite-sys --features abi-check
+```
+
+Both Python suites default to the public library in the Python package, using
+`vectorlite_py.vectorlite_path()`. A missing artifact fails rather than skipping
+Rust regressions. After a normal CMake build/deployment, no override is needed:
+
+```sh
+PYTHONPATH=bindings/python python3 -m pytest --import-mode=importlib \
+  bindings/python/vectorlite_py/test rust/tests
+```
+
+`VECTORLITE_RUST_EXTENSION` remains an optional override for testing a direct
+Cargo artifact with the Rust-specific suite. For example, on macOS:
+
+```sh
+VECTORLITE_RUST_EXTENSION="$PWD/rust/target/release/libvectorlite.dylib" \
+  PYTHONPATH=bindings/python python3 -m pytest rust/tests
+```
+
+Use `libvectorlite.so` on Linux or `vectorlite.dll` on Windows. The binding
+suite still uses the package library, so keep its deployment current when
+running both suites together. No C++ virtual-table artifact is needed.

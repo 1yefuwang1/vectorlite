@@ -2,7 +2,7 @@
 name = "vectorlite"
 version = "0.3.0"
 edition = "2021"
-description = "Rust port of the vectorlite SQLite extension virtual table"
+description = "SQLite extension for fast HNSW vector search"
 license = "Apache-2.0"
 
 [lib]

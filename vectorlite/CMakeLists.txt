@@ -1,54 +1,115 @@
-configure_file(version.h.in version.h)
-message(STATUS "version.h generated to: ${PROJECT_BINARY_DIR}")
+# The SQLite extension is implemented in Rust. CMake supplies the native
+# dependencies, stages Cargo's cdylib under the public filename, and installs it
+# for scikit-build-core. The only C++ implementation retained here is SIMD ops.
+if(NOT VCPKG_INSTALLED_DIR OR NOT VCPKG_TARGET_TRIPLET)
+    message(FATAL_ERROR "Configure with the vcpkg toolchain to build Vectorlite")
+endif()
 
-find_path(RAPIDJSON_INCLUDE_DIRS rapidjson/rapidjson.h)
-message(STATUS "RapidJSON include dir: ${RAPIDJSON_INCLUDE_DIRS}")
-find_path(HNSWLIB_INCLUDE_DIRS hnswlib/hnswlib.h)
-message(STATUS "HNSWLIB include dir: ${HNSWLIB_INCLUDE_DIRS}")
+if(VCPKG_TARGET_TRIPLET MATCHES "^x64-")
+    set(_rust_arch x86_64)
+elseif(VCPKG_TARGET_TRIPLET MATCHES "^arm64-")
+    set(_rust_arch aarch64)
+elseif(VCPKG_TARGET_TRIPLET MATCHES "^x86-")
+    set(_rust_arch i686)
+elseif(VCPKG_TARGET_TRIPLET MATCHES "^arm-")
+    set(_rust_arch armv7)
+else()
+    message(FATAL_ERROR "Unsupported vcpkg architecture: ${VCPKG_TARGET_TRIPLET}")
+endif()
 
-message(STATUS "Compiling on ${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE)
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _osx_arch_count)
+    if(_osx_arch_count GREATER 1)
+        message(FATAL_ERROR "Build separate arm64/x86_64 artifacts; universal2 is not supported")
+    endif()
+    set(_rust_target "${_rust_arch}-apple-darwin")
+    set(_cargo_library libvectorlite.dylib)
+elseif(MSVC)
+    set(_rust_target "${_rust_arch}-pc-windows-msvc")
+    set(_cargo_library vectorlite.dll)
+elseif(MINGW)
+    set(_rust_target "${_rust_arch}-pc-windows-gnu")
+    set(_cargo_library vectorlite.dll)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(VCPKG_TARGET_TRIPLET MATCHES "-linux-musl")
+        set(_rust_target "${_rust_arch}-unknown-linux-musl")
+    else()
+        set(_rust_target "${_rust_arch}-unknown-linux-gnu")
+    endif()
+    set(_cargo_library libvectorlite.so)
+else()
+    message(FATAL_ERROR "Unsupported Vectorlite platform: ${CMAKE_SYSTEM_NAME}")
+endif()
 
-add_subdirectory(ops)
+set(VECTORLITE_RUST_TARGET "${_rust_target}" CACHE STRING "Cargo target triple")
+set(VECTORLITE_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo" CACHE PATH
+    "Cargo output directory for this CMake build")
+set(_cargo_profile "$<IF:$<CONFIG:Debug>,debug,release>")
+set(_cargo_artifact
+    "${VECTORLITE_CARGO_TARGET_DIR}/${VECTORLITE_RUST_TARGET}/${_cargo_profile}/${_cargo_library}")
+set(VECTORLITE_EXTENSION
+    "${CMAKE_CURRENT_BINARY_DIR}/vectorlite${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(_cargo_manifest "${PROJECT_SOURCE_DIR}/rust/Cargo.toml")
 
-add_library(vectorlite SHARED vectorlite.cpp virtual_table.cpp util.cpp vector_space.cpp index_options.cpp sqlite_functions.cpp constraint.cpp quantization.cpp index_registry.cpp)
-# remove the lib prefix to make the shared library name consistent on all platforms.
-set_target_properties(vectorlite PROPERTIES PREFIX "")
-target_include_directories(vectorlite PUBLIC ${RAPIDJSON_INCLUDE_DIRS} ${HNSWLIB_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
-target_link_libraries(vectorlite PRIVATE unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2 ops)
-# copy the shared library to the python package to make running integration tests easier
-add_custom_command(TARGET vectorlite POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:vectorlite> ${PROJECT_SOURCE_DIR}/bindings/python/vectorlite_py/$<TARGET_FILE_NAME:vectorlite>)
+# Isolated wheel build directories are not part of Cargo's normal discovery.
+# Always pass the exact installation chosen by this CMake toolchain.
+set(_cargo_environment
+    "CARGO_TARGET_DIR=${VECTORLITE_CARGO_TARGET_DIR}"
+    "VECTORLITE_VCPKG_TRIPLET_DIR=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}"
+    "CC=${CMAKE_C_COMPILER}"
+    "CXX=${CMAKE_CXX_COMPILER}")
+if(NOT MSVC)
+    list(APPEND _cargo_environment "AR=${CMAKE_AR}")
+endif()
+if(CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND _cargo_environment
+         "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+endif()
 
-# Install the vectorlite library for Python package (used by scikit-build-core)
 if(SKBUILD)
-    install(TARGETS vectorlite
-            LIBRARY DESTINATION vectorlite_py
-            RUNTIME DESTINATION vectorlite_py)
+    set(_deploy_default OFF)
+else()
+    set(_deploy_default ON)
+endif()
+option(VECTORLITE_DEPLOY_TO_PYTHON "Deploy the built extension into the source Python package"
+       ${_deploy_default})
+set(_deploy_commands)
+if(VECTORLITE_DEPLOY_TO_PYTHON)
+    set(_deploy_commands
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${VECTORLITE_EXTENSION}"
+                "${PROJECT_SOURCE_DIR}/bindings/python/vectorlite_py/vectorlite${CMAKE_SHARED_LIBRARY_SUFFIX}")
 endif()
 
-include(GoogleTest)
-enable_testing()
-file(GLOB TEST_SOURCES *.cpp)
-add_executable(unit_test ${TEST_SOURCES})
-target_include_directories(unit_test PUBLIC ${PROJECT_BINARY_DIR})
-target_link_libraries(unit_test PRIVATE GTest::gtest GTest::gtest_main unofficial::sqlite3::sqlite3 absl::status absl::statusor absl::strings re2::re2 ops)
-# target_compile_options(unit_test PRIVATE -Wall -fno-omit-frame-pointer -g -O0)
-# target_link_options(unit_test PRIVATE -fsanitize=address)
-if (MSVC)
-    target_compile_options(vectorlite PRIVATE /arch:AVX)
-    target_compile_options(unit_test PRIVATE /arch:AVX)
+# Cargo performs its own incremental source/header/dependency invalidation, so
+# invoke it on every requested build rather than duplicating its dependency graph.
+add_custom_target(vectorlite ALL
+    COMMAND "${CMAKE_COMMAND}" -E env ${_cargo_environment}
+            "${CARGO_EXECUTABLE}" build --locked --manifest-path "${_cargo_manifest}"
+            --target "${VECTORLITE_RUST_TARGET}" $<$<NOT:$<CONFIG:Debug>>:--release>
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_cargo_artifact}" "${VECTORLITE_EXTENSION}"
+    ${_deploy_commands}
+    BYPRODUCTS "${VECTORLITE_EXTENSION}"
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/rust"
+    COMMAND_EXPAND_LISTS
+    USES_TERMINAL
+    VERBATIM)
+
+install(FILES "${VECTORLITE_EXTENSION}" DESTINATION vectorlite_py)
+
+if(BUILD_TESTING)
+    add_test(NAME rust_unit_tests
+        COMMAND "${CMAKE_COMMAND}" -E env ${_cargo_environment}
+                "${CARGO_EXECUTABLE}" test --locked --manifest-path "${_cargo_manifest}"
+                --workspace --target "${VECTORLITE_RUST_TARGET}")
+    add_test(NAME sqlite_abi
+        COMMAND "${CMAKE_COMMAND}" -E env ${_cargo_environment}
+                "${CARGO_EXECUTABLE}" test --locked --manifest-path "${_cargo_manifest}"
+                -p vectorlite-sqlite-sys --features abi-check
+                --target "${VECTORLITE_RUST_TARGET}")
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_link_libraries(vectorlite PRIVATE absl::log)
-    target_link_libraries(unit_test PRIVATE absl::log)
+if(BUILD_TESTING OR VECTORLITE_BUILD_BENCHMARKS)
+    add_subdirectory(ops)
 endif()
-
-# TODO: For mysterious reason, absl::log symbols are required for even release build on MSVC. Only DLOG are used which should be guarded by NDEBUG and not included in Release build.
-if(MSVC)
-    target_link_libraries(vectorlite PRIVATE absl::log)
-    target_link_libraries(unit_test PRIVATE absl::log)
-endif()
-
-gtest_discover_tests(unit_test)
-
-add_test(NAME unit_test COMMAND unit_test)

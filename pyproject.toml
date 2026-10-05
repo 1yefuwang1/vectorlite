@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.8.0", "ninja"]
+requires = ["scikit-build-core>=0.10.0", "ninja"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -20,11 +20,8 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
 ]
 
 [project.urls]
@@ -32,10 +29,13 @@ Homepage = "https://github.com/1yefuwang1/vectorlite"
 Repository = "https://github.com/1yefuwang1/vectorlite"
 
 [tool.scikit-build]
-# Specify where the Python package is located
-wheel.packages = ["bindings/python/vectorlite_py"]
+# CMake installs Python source and the Cargo artifact together. Do not copy an
+# ignored/stale source-tree extension binary into the wheel.
+wheel.packages = []
+sdist.include = ["scripts/install_rust.sh"]
+sdist.exclude = ["build/**", "rust/target/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
 # Minimum version of CMake
-cmake.minimum-version = "3.22"
+cmake.version = ">=3.22"
 # Build configuration
 cmake.build-type = "Release"
 # Use Ninja generator and vcpkg toolchain
@@ -50,6 +50,9 @@ wheel.py-api = "py3"
 # These will be passed to CMake as -D flags
 SKBUILD = "1"
 CMAKE_BUILD_TYPE = "Release"
+BUILD_TESTING = "OFF"
+VECTORLITE_BUILD_BENCHMARKS = "OFF"
+VECTORLITE_DEPLOY_TO_PYTHON = "OFF"
 
 [tool.cibuildwheel]
 # cibuildwheel only builds wheels here. The prebuilt CPython interpreters that
@@ -61,8 +64,15 @@ CMAKE_BUILD_TYPE = "Release"
 skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp39*", "cp310*", "cp311*", "cp312*", "cp313*"]
 
 [tool.cibuildwheel.macos]
-environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"} # 10.15 is the minimum version that fully supports c++17
+environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"}
 
-# todo: support musllinux
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_arm64"
+environment = {MACOSX_DEPLOYMENT_TARGET = "11.0"}
+
+# Rust must be installed inside the manylinux container, not only on the host.
 [tool.cibuildwheel.linux]
-before-build = "yum install -y ninja-build"
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux_2_28"
+before-all = "sh {project}/scripts/install_rust.sh"
+environment = { CARGO_HOME = "/opt/rust/cargo", RUSTUP_HOME = "/opt/rust/rustup", RUSTUP_TOOLCHAIN = "stable", PATH = "/opt/rust/cargo/bin:$PATH", VCPKG_DEFAULT_BINARY_CACHE = "/project/vcpkg-binary-cache" }

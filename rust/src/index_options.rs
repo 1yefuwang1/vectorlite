@@ -1,5 +1,5 @@
 //! Parsing of the HNSW index-options string, e.g.
-//! `hnsw(max_elements=1000, M=16)`. Mirrors `index_options.cpp`.
+//! `hnsw(max_elements=1000, M=16)`.
 
 #[derive(Clone, Debug)]
 pub struct IndexOptions {
@@ -26,8 +26,7 @@ fn is_word(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Mirrors `absl::SimpleAtob`: accepts a small set of boolean spellings,
-/// case-insensitively.
+/// Accepts common boolean spellings case-insensitively.
 fn parse_bool(s: &str) -> Option<bool> {
     match s.to_ascii_lowercase().as_str() {
         "true" | "t" | "yes" | "y" | "on" | "1" => Some(true),
@@ -143,6 +142,26 @@ mod tests {
         assert!(IndexOptions::parse("hnsw(max_elements)").is_err());
         assert!(IndexOptions::parse("hnsw(max_elements=1, bogus=2)").is_err());
         assert!(IndexOptions::parse("hnsw(max_elements=notanumber)").is_err());
+    }
+
+    #[test]
+    fn accepts_arbitrary_option_order() {
+        let options = IndexOptions::parse(
+            "hnsw(random_seed=7, M=8, allow_replace_deleted=false, max_elements=100, ef_construction=50)",
+        )
+        .unwrap();
+        assert_eq!(options.max_elements, 100);
+        assert_eq!(options.m, 8);
+        assert_eq!(options.ef_construction, 50);
+        assert_eq!(options.random_seed, 7);
+        assert!(!options.allow_replace_deleted);
+    }
+
+    #[test]
+    fn rejects_integer_overflow_and_missing_separators() {
+        assert!(IndexOptions::parse("hnsw(max_elements=99999999999999999999999999999)").is_err());
+        assert!(IndexOptions::parse("hnsw(max_elements=10 M=16)").is_err());
+        assert!(IndexOptions::parse("hnsw(max_elements=10,)").is_err());
     }
 
     #[test]

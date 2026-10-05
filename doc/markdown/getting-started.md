@@ -4,8 +4,11 @@ The quickest way to get started is to install vectorlite using python.
 # Note: vectorlite-py not vectorlite. vectorlite is another project.
 pip install vectorlite-py numpy
 ```
-Vectorlite's metadata filter feature requires sqlite>=3.38. Python 3.14's built-in `sqlite3` module bundles SQLite 3.50.4 (>= 3.38), so no extra driver is needed. Vectorlite still works with older sqlite versions if metadata filter support is not required.
-Below is a minimal example of using vectorlite. It can also be found in the [examples folder](https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples).
+The packaged extension is implemented in Rust, with native hnswlib and Highway SIMD operations. Installing a prebuilt wheel requires no Rust toolchain. The `vectorlite_py` package and its `vectorlite_path()` API are unchanged.
+
+Use a Python build with loadable SQLite extensions enabled. Vectorlite requires SQLite >= 3.20; rowid lookups and metadata filtering require SQLite >= 3.38. Python 3.14 with a recent bundled SQLite is recommended. On SQLite >= 3.31, vectorlite tables cannot be accessed from views or triggers; issue queries and save/load commands directly from application SQL.
+
+Below is a minimal example of using vectorlite. It can also be found in the [examples folder](https://github.com/1yefuwang1/vectorlite/tree/main/examples).
 
 ```python
 import vectorlite_py
@@ -34,7 +37,7 @@ for distance_type in ['l2', 'cosine', 'ip']:
 # generate some test data
 DIM = 32 # dimension of the vectors
 NUM_ELEMENTS = 10000 # number of vectors
-data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # Only float32 vectors are supported by vectorlite for now
+data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # SQL inputs use float32 blobs; stored types may also be float16/bfloat16.
 
 # Create a virtual table using vectorlite using l2 distance (default distance type) and default HNSW parameters
 cursor.execute(f'create virtual table my_table using vectorlite(my_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
@@ -53,7 +56,8 @@ print(f'vector at rowid 1234: {result[0]}')
 # Find 10 approximate nearest neighbors of data[0] and there distances from data[0].
 # knn_search() is used to tell vectorlite to do a vector search.
 # knn_param(V, K, ef) is used to pass the query vector V, the number of nearest neighbors K to find and an optional ef parameter to tune the performance of the search.
-# If ef is not specified, ef defaults to 10. For more info on ef, please check https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md
+# If ef is not specified, it defaults to 10. An explicit ef applies only to that query.
+# For more info on ef, see https://github.com/nmslib/hnswlib/blob/v0.8.0/ALGO_PARAMS.md
 result = cursor.execute('select rowid, distance from my_table where knn_search(my_embedding, knn_param(?, 10))', [data[0].tobytes()]).fetchall()
 print(f'10 nearest neighbors of row 0 is {result}')
 
@@ -66,4 +70,27 @@ conn.close()
 
 ```
 
-More examples can be found in [examples](https://github.com/1yefuwang1/vectorlite/tree/v0.2.0/examples) folder.
+More examples can be found in the [examples](https://github.com/1yefuwang1/vectorlite/tree/main/examples) folder. For persistence, issue explicit `INSERT INTO <table>(operation, path) VALUES('save'|'load', ...)` commands from application SQL. New saves have a versioned schema descriptor; raw legacy files use the receiving table's declared schema. See the [API reference](<api.md>) for details.
+
+## Building from source
+
+Source builds require latest stable Rust, C/C++17 compilers, CMake >= 3.22, Ninja, Git and vcpkg. From a checkout of the repository:
+
+```shell
+git submodule update --init --recursive
+python3 bootstrap_vcpkg.py
+# scikit-build-core runs CMake, which invokes Cargo for the extension:
+python3 -m pip install .
+# Or create a wheel:
+python3 -m pip wheel . --wheel-dir dist
+```
+
+For development builds and tests, install the development requirements and use the root scripts:
+
+```shell
+python3 -m pip install -r requirements-dev.txt
+sh build.sh          # Debug build + CTest + both Python suites
+sh build_release.sh  # Release build + the same tests
+```
+
+There is no prerequisite C++ virtual-table build or separate Rust redeployment step. C++ is retained only for hnswlib, Highway ops and their thin native shim.

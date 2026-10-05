@@ -36,40 +36,63 @@ jobs:
           python-version: '3.11'
       - run: python scripts/check_version.py
 
-  rust_port:
-    name: Rust port (${{ matrix.os }}, stable)
+  build_and_test:
+    name: Build and test (${{ matrix.os }}, Rust stable)
+    needs: check_version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            vcpkg_triplet: x64-linux
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            vcpkg_triplet: x64-windows-static-md-release
+          - os: macos-14
+            rust_target: aarch64-apple-darwin
+            vcpkg_triplet: arm64-osx
+            macos_target: '11.0'
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          - os: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            vcpkg_triplet: x64-osx
+            macos_target: '10.15'
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
     defaults:
       run:
         shell: bash
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
       RUSTUP_TOOLCHAIN: stable
+      CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/release/vectorlite/cargo
+      VECTORLITE_VCPKG_TRIPLET_DIR: ${{ github.workspace }}/build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Create vcpkg binary cache directory
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
 
-      - name: Cache vcpkg binary packages
+      - name: Cache native vcpkg binary packages
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-binary-cache
-          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
-            vcpkg-${{ matrix.os }}-
+            vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # MSVC environment (and the /arch:AVX-capable toolchain) for the Windows
-      # build; a no-op on Linux.
+      # Static native libraries use the dynamic MSVC CRT, matching Rust's default.
       - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
 
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v2
@@ -81,54 +104,42 @@ jobs:
         with:
           version: 1.11.1
 
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component clippy rustfmt
-
-      # The Rust build reuses the vcpkg headers/libs (highway) produced by the
-      # CMake configure step, so install the C++ dependencies first.
-      - name: Bootstrap vcpkg and install C++ dependencies
+      - name: Install latest stable Rust toolchain
         run: |
-          git submodule update --init --recursive
-          python bootstrap_vcpkg.py
-          cmake --preset release
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup target add --toolchain stable "$CARGO_BUILD_TARGET"
 
       - name: rustfmt
         working-directory: rust
         run: cargo fmt --all --check
 
+      # CMake installs hnswlib/Highway plus optional SIMD-test and SQLite ABI headers.
+      - name: Bootstrap vcpkg and configure the primary Rust build
+        run: |
+          git submodule update --init --recursive
+          python bootstrap_vcpkg.py
+          cmake --preset release -DBUILD_TESTING=ON -DVCPKG_TARGET_TRIPLET="${{ matrix.vcpkg_triplet }}" -DVECTORLITE_RUST_TARGET="$CARGO_BUILD_TARGET" ${{ matrix.cmake_args }}
+
+      - name: Build and deploy the Rust extension and SIMD tests
+        run: cmake --build build/release --parallel 4
+
       - name: clippy
         working-directory: rust
         run: cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::missing_safety_doc
 
-      - name: Unit tests
-        working-directory: rust
-        run: cargo test --locked --workspace
-
-      - name: Check SQLite bindings against native C ABI
-        working-directory: rust
-        run: cargo test --locked -p vectorlite-sqlite-sys --features abi-check
+      - name: Rust unit tests, SQLite native ABI checks, and Highway tests
+        run: ctest --test-dir build/release --output-on-failure --no-tests=error
 
       - name: Install libclang for binding regeneration
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Check regenerated bindings without changing tracked sources
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         working-directory: rust
         run: |
           cargo test --locked -p vectorlite-sqlite-sys --features regenerate,abi-check
           git diff --exit-code -- vectorlite-sqlite-sys/src/bindings.rs
-
-      # build.sh detects the platform (Linux/macOS/Windows) and deploys the
-      # correct artifact (.so/.dylib/.dll) into the Python package.
-      - name: Build and deploy the Rust extension
-        if: matrix.os != 'windows-latest'
-        run: sh rust/build.sh
-
-      - name: Build and deploy the Rust extension (PowerShell)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: ./rust/build.ps1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -145,24 +156,58 @@ jobs:
             echo "TEST_PYTHON=$(pwd)/.venv-test/Scripts/python.exe" >> "$GITHUB_ENV"
           fi
 
-      # Python integration regression suite, run against the Rust-built
-      # extension on each OS.
-      - name: Python integration tests against the Rust extension
+      - name: Python integration tests against the primary Rust extension
         run: |
           uv pip install --python "$TEST_PYTHON" pytest numpy
           PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
 
+      - name: Archive native Rust extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectorlite-native-${{ matrix.os }}-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build/release/vectorlite/vectorlite.so
+            build/release/vectorlite/vectorlite.dylib
+            build/release/vectorlite/vectorlite.dll
+
   build_wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build Rust wheels on ${{ matrix.os }}
+    needs: build_and_test
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-binary-cache
-      CIBW_ENVIRONMENT_LINUX: "VCPKG_DEFAULT_BINARY_CACHE=/project/vcpkg-binary-cache"
+      RUSTUP_TOOLCHAIN: stable
+      CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+      CIBW_ARCHS: ${{ matrix.wheel_arch }}
+      NODE_PLATFORM_PACKAGE: ${{ matrix.node_package }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+      # Linux Cargo/Rust paths and the container's vcpkg cache are configured in
+      # pyproject.toml, not overridden here by CIBW_ENVIRONMENT_LINUX.
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
-        # os: [ubuntu-latest, macos-13, macos-14]
-        # os: [windows-latest]
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            wheel_arch: x86_64
+            node_package: vectorlite-linux-x64
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            wheel_arch: AMD64
+            node_package: vectorlite-win32-x64
+          - os: macos-14
+            rust_target: aarch64-apple-darwin
+            wheel_arch: arm64
+            node_package: vectorlite-darwin-arm64
+            macos_target: '11.0'
+          - os: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            wheel_arch: x86_64
+            node_package: vectorlite-darwin-x64
+            macos_target: '10.15'
 
     steps:
       - uses: actions/checkout@v4
@@ -172,15 +217,20 @@ jobs:
 
       - name: Create vcpkg binary cache directory
         shell: bash
-        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+        env:
+          # Keep this outside the source tree copied into manylinux containers.
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vectorlite-vcpkg-binary-cache
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          printf 'VCPKG_DEFAULT_BINARY_CACHE=%s\n' "$VCPKG_DEFAULT_BINARY_CACHE" >> "$GITHUB_ENV"
 
       - name: Cache vcpkg binary packages
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/vcpkg-binary-cache
-          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-${{ hashFiles('vcpkg.json', 'pyproject.toml') }}
           restore-keys: |
-            vcpkg-${{ matrix.os }}-
+            vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-
 
       # Used to host cibuildwheel
       - uses: actions/setup-python@v5
@@ -190,7 +240,10 @@ jobs:
       - name: Install cibuildwheel
         run: python -m pip install cibuildwheel==3.3.1
 
-      - uses: ilammy/msvc-dev-cmd@v1 
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
 
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v2
@@ -207,17 +260,19 @@ jobs:
           git submodule update --init --recursive
           python bootstrap_vcpkg.py
 
-      - name: Run C++ unit tests
-        shell: bash
+      - name: Install latest stable Rust toolchain for wheel builds
         run: |
-          cmake --preset release
-          cmake --build build/release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-          ctest --test-dir build/release/vectorlite --output-on-failure
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup target add --toolchain stable "$CARGO_BUILD_TARGET"
 
-      # Build wheels using cibuildwheel
-      # The build system uses scikit-build-core (configured in pyproject.toml)
-      # which handles CMake integration and wheel packaging
+      # scikit-build-core -> CMake -> Cargo builds the only extension implementation.
+      # Linux's before-all hook installs Rust again inside each manylinux container;
+      # the host toolchain installed above is used by Windows and macOS wheels.
       - name: Build wheels
+        env:
+          # Persist Linux's cache through a bind without overriding the Rust env.
+          CIBW_CONTAINER_ENGINE_LINUX: >-
+            docker; create_args: --volume="${{ env.VCPKG_DEFAULT_BINARY_CACHE }}:/project/vcpkg-binary-cache"
         run: python -m cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4
@@ -243,30 +298,46 @@ jobs:
             echo "TEST_PYTHON=${ws}/.venv-test/Scripts/python.exe" >> "$GITHUB_ENV"
           fi
 
-      - name: Run Python integration tests against built wheel
-        shell: bash
+      - name: Run both Python integration suites against each built wheel
         run: |
           uv pip install --python "$TEST_PYTHON" pytest numpy
-          for wheel in wheelhouse/*.whl; do
+          shopt -s nullglob
+          wheels=(wheelhouse/*.whl)
+          if [ "${#wheels[@]}" -eq 0 ]; then
+            echo "Error: cibuildwheel produced no wheels"
+            exit 1
+          fi
+          for wheel in "${wheels[@]}"; do
             echo "Installing $wheel"
             uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
+            "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
           done
-          "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test
 
-      - name: Get release version
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
-        shell: bash
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test the platform Node package against the built Rust wheel
+        working-directory: bindings/nodejs/packages/vectorlite
         run: |
-          echo "RELEASE_VERSION=$(echo ${{ github.ref_name }} | sed -E 's/^release\///')" >> $GITHUB_ENV
+          "$TEST_PYTHON" - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import sys
+          import vectorlite_py
 
-      - name: Upload wheels to release assets
-        if: ${{ github.event_name == 'workflow_dispatch' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run:
-          gh release upload ${{ env.RELEASE_VERSION }} ./wheelhouse/*.whl --clobber
-      
+          suffix = ".dll" if sys.platform == "win32" else ".dylib" if sys.platform == "darwin" else ".so"
+          source = Path(vectorlite_py.vectorlite_path()).with_suffix(suffix)
+          destination = Path(os.environ["GITHUB_WORKSPACE"]) / "bindings/nodejs/packages" / os.environ["NODE_PLATFORM_PACKAGE"] / "src" / source.name
+          shutil.copy2(source, destination)
+          print(f"Testing Node package with {destination}")
+          PY
+          npm install --include=dev --omit=optional
+          npm link "../$NODE_PLATFORM_PACKAGE"
+          npm test
+
+
       - name: Run python examples
         shell: bash
         run: |
@@ -282,28 +353,60 @@ jobs:
             "$TEST_PYTHON" "$example"
           done
 
-      - name: Run benchmark
+      - name: Run bounded Rust wheel benchmark smoke tests
         working-directory: benchmark
-        shell: bash
+        env:
+          NUM_ELEMENTS: '256'
+          MPLBACKEND: Agg
         run: |
           uv pip install --python "$TEST_PYTHON" -r requirements.txt
           # Reinstall the freshly built wheel last so it wins over the PyPI copy.
           for wheel in ../wheelhouse/*.whl; do
             uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
           done
-          "$TEST_PYTHON" benchmark.py
+          "$TEST_PYTHON" -m pytest \
+            test_benchmark.py::test_insert_vectorlite \
+            test_benchmark.py::test_search_vectorlite \
+            -k 'l2 and 128' --benchmark-json=benchmark-smoke.json \
+            --benchmark-max-time=0.1 --benchmark-min-rounds=1
+          "$TEST_PYTHON" plot.py benchmark-smoke.json
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
-          path: ./benchmark/vector*.png
+          path: |
+            benchmark/vector*.png
+            benchmark/vector*.csv
+            benchmark/benchmark-smoke.json
 
+
+  upload_release_assets:
+    name: Upload validated wheels to release assets
+    if: ${{ github.event_name == 'workflow_dispatch' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) }}
+    needs: [build_and_test, build_wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vectorlite-wheel-*
+          merge-multiple: true
+          path: wheelhouse
+
+      - name: Upload release assets after all platform validation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_version="${GITHUB_REF_NAME#release/}"
+          gh release upload "$release_version" wheelhouse/*.whl --repo "$GITHUB_REPOSITORY" --clobber
 
   upload_wheels:
     name: Upload wheels
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_wheel != 'no' }}
-    needs: build_wheels
+    needs: [build_and_test, build_wheels]
     runs-on: ubuntu-latest
 
     steps:
@@ -325,22 +428,22 @@ jobs:
         run: pipx run twine upload --repository testpypi wheelhouse/**/*.whl
       
       - name: Upload to pypi.org
-        if: ${{ github.event.inputs.upload_wheel == 'pypi' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: pipx run twine upload wheelhouse/**/*.whl
 
-      - name: Fail if uploading to pypi.org without a tag
-        if: ${{ github.event.inputs.upload_wheel == 'pypi' && !(startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
+      - name: Fail if uploading to pypi.org without a release ref
+        if: ${{ github.event.inputs.upload_wheel == 'pypi' && !(startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) }}
         run: | 
-          echo "Error: Uploading to pypi.org requires a tag"
+          echo "Error: Uploading to pypi.org requires a v tag or release/v branch"
           exit 1
 
   publish_npm_pkgs:
     name: Upload npm packages
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_npm == 'yes' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}
-    needs: build_wheels
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_npm == 'yes' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) }}
+    needs: [build_and_test, build_wheels]
     runs-on: ubuntu-latest
 
     steps:
@@ -361,7 +464,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Test locally

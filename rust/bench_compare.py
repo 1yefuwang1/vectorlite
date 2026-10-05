@@ -1,8 +1,7 @@
-"""Micro-benchmark: Rust-ported vectorlite .so vs C++ vectorlite .so.
+"""Compare two Vectorlite builds with identical workloads and SQLite host.
 
-Both extensions share the same hnswlib + Highway `ops` core, so this isolates
-the cost of the virtual-table glue layer (Rust vs C++). Identical workloads,
-same seed, same SQLite (host stdlib sqlite3).
+Usage: python rust/bench_compare.py <before-extension> <after-extension>
+The default implementation is Rust; either argument may be an archived build.
 """
 import gc
 import os
@@ -60,9 +59,11 @@ def bench_one(path, dim, vectors, queries):
 
 
 def main():
+    if len(sys.argv) != 3:
+        raise SystemExit("Usage: python rust/bench_compare.py <before-extension> <after-extension>")
     backends = {
-        "C++ ": sys.argv[1],
-        "Rust": sys.argv[2],
+        "Before": sys.argv[1],
+        "After": sys.argv[2],
     }
     for name, p in backends.items():
         print(f"{name}: {p}  ({os.path.getsize(p)/1e6:.2f} MB)")
@@ -98,12 +99,12 @@ def main():
                 f"{dim:>5} | {name:<5} | {i_med/N*1e6:>14.2f} | {q_med/Q*1e6:>15.2f} | "
                 f"{i_med:>12.3f} | {q_med:>11.3f}"
             )
-        # ratio (Rust / C++)
-        ci, cq = results["C++ "]
-        ri, rq = results["Rust"]
+        # ratio (after / before)
+        ci, cq = results["Before"]
+        ri, rq = results["After"]
         print(
             f"{'':>5} | ratio | {ri/ci:>13.3f}x | {rq/cq:>14.3f}x | "
-            f"{'(Rust/C++)':>12} |"
+            f"{'(After/Before)':>12} |"
         )
         print()
 
