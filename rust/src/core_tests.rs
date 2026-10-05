@@ -114,15 +114,46 @@ fn failed_atomic_replace_leaves_destination_untouched() {
 }
 
 #[test]
-fn persistence_rejects_legacy_and_truncated_envelopes_without_replacement() {
+fn persistence_loads_legacy_and_resaves_with_descriptor() {
+    for kind in [
+        VectorType::Float32,
+        VectorType::BFloat16,
+        VectorType::Float16,
+    ] {
+        for metric in [
+            DistanceType::L2,
+            DistanceType::InnerProduct,
+            DistanceType::Cosine,
+        ] {
+            let dir = TestDirectory::new();
+            let src = index(kind, metric);
+            src.add(&[1., 2., 3., 4.], 1).unwrap();
+            let expected = src.get_vector(1);
+            let raw = dir.file("legacy.bin");
+            src.index.borrow().save(&raw).unwrap();
+
+            let dst = index(kind, metric);
+            dst.add(&[4., 3., 2., 1.], 2).unwrap();
+            dst.load(&raw).unwrap();
+            assert_eq!(dst.get_vector(1), expected);
+            assert!(!dst.contains(2));
+
+            let upgraded = dir.file("versioned.bin");
+            dst.save(&upgraded).unwrap();
+            let bytes = std::fs::read(&upgraded).unwrap();
+            assert_eq!(&bytes[..8], FILE_MAGIC);
+            let restored = index(kind, metric);
+            restored.load(&upgraded).unwrap();
+            assert_eq!(restored.get_vector(1), expected);
+        }
+    }
+}
+
+#[test]
+fn persistence_rejects_truncated_envelopes_without_replacement() {
     let dir = TestDirectory::new();
     let src = index(VectorType::Float32, DistanceType::L2);
     src.add(&[1., 2., 3., 4.], 1).unwrap();
-    let raw = dir.file("legacy.bin");
-    src.index.borrow().save(&raw).unwrap();
-    let error = src.load(&raw).unwrap_err();
-    assert!(error.contains("legacy"));
-    assert_eq!(src.get_vector(1), Some(vec![1., 2., 3., 4.]));
     let path = dir.file("index.bin");
     src.save(&path).unwrap();
     let original_size = std::fs::metadata(&path).unwrap().len();

@@ -1,5 +1,6 @@
-"""Callback recovery and retained registry ownership for the Rust extension."""
+"""SQL regressions for Rust callbacks, registry ownership, and persistence."""
 
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -68,7 +69,232 @@ def test_registry_survives_reparse_rename_and_recreation(conn):
     assert conn.execute("SELECT rowid FROM renamed WHERE rowid=1").fetchall() == []
 
 
-def test_load_ignores_untrusted_saved_capacity(conn, tmp_path):
+def _save_legacy_index(conn, table, path):
+    conn.execute(
+        f"INSERT INTO {table}(operation,path) VALUES('save',?)", (str(path),)
+    )
+    contents = path.read_bytes()
+    assert contents[:8] == b"VLTIDX01"
+    assert int.from_bytes(contents[24:32], "little") == len(contents) - 32
+    # The envelope contains an unmodified native hnswlib payload, using the same
+    # serialized layout as the C++ extension's raw saveIndex output.
+    path.write_bytes(contents[32:])
+
+
+@pytest.mark.parametrize("vector_type", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("metric", ["l2", "ip", "cosine"])
+@pytest.mark.parametrize("empty", [False, True], ids=["populated", "empty"])
+def test_legacy_load_and_versioned_resave(conn, tmp_path, vector_type, metric, empty):
+    declaration = f"embedding {vector_type}[2] {metric}"
+    conn.execute(
+        f"CREATE VIRTUAL TABLE source USING vectorlite({declaration}, "
+        "hnsw(max_elements=8))"
+    )
+    if not empty:
+        for rowid, vector in [(10, [1, 2]), (11, [3, 1]), (12, [2, 4])]:
+            conn.execute(
+                "INSERT INTO source(rowid,embedding) VALUES(?,vector_from_json(?))",
+                (rowid, json.dumps(vector)),
+            )
+    expected_vectors = conn.execute(
+        "SELECT rowid,embedding FROM source WHERE rowid IN (10,11,12) ORDER BY rowid"
+    ).fetchall()
+    query = "[1,2]"
+    expected_neighbors = conn.execute(
+        "SELECT rowid,distance FROM source "
+        "WHERE knn_search(embedding,knn_param(vector_from_json(?),8,40))",
+        (query,),
+    ).fetchall()
+    legacy_path = tmp_path / "legacy.bin"
+    _save_legacy_index(conn, "source", legacy_path)
+
+    conn.execute(
+        f"CREATE VIRTUAL TABLE loaded USING vectorlite({declaration}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(rowid,embedding) VALUES(99,vector_from_json('[9,8]'))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(operation,path) VALUES('load',?)", (str(legacy_path),)
+    )
+    assert conn.execute(
+        "SELECT rowid,embedding FROM loaded WHERE rowid IN (10,11,12) ORDER BY rowid"
+    ).fetchall() == expected_vectors
+    assert conn.execute("SELECT rowid FROM loaded WHERE rowid=99").fetchall() == []
+    assert conn.execute(
+        "SELECT rowid,distance FROM loaded "
+        "WHERE knn_search(embedding,knn_param(vector_from_json(?),8,40))",
+        (query,),
+    ).fetchall() == expected_neighbors
+
+    upgraded_path = tmp_path / "versioned.bin"
+    conn.execute(
+        "INSERT INTO loaded(operation,path) VALUES('save',?)", (str(upgraded_path),)
+    )
+    assert upgraded_path.read_bytes()[:8] == b"VLTIDX01"
+    conn.execute(
+        f"CREATE VIRTUAL TABLE restored USING vectorlite({declaration}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO restored(operation,path) VALUES('load',?)", (str(upgraded_path),)
+    )
+    assert conn.execute(
+        "SELECT rowid,embedding FROM restored WHERE rowid IN (10,11,12) ORDER BY rowid"
+    ).fetchall() == expected_vectors
+
+
+@pytest.mark.parametrize(
+    "source_space,target_space,expected_vector,expected_distance",
+    [
+        ("float32[2] l2", "float32[2] ip", [1.0, 2.0], -4.0),
+        ("bfloat16[2] l2", "float16[2] l2", [1.875, 2.0], 0.0),
+        ("float32[2] l2", "float16[4] l2", [0.0, 1.875, 0.0, 2.0], 0.0),
+    ],
+)
+def test_legacy_uses_declared_schema(
+    conn, tmp_path, source_space, target_space, expected_vector, expected_distance
+):
+    conn.execute(
+        f"CREATE VIRTUAL TABLE source USING vectorlite(embedding {source_space}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO source(rowid,embedding) VALUES(10,vector_from_json('[1,2]'))"
+    )
+    legacy_path = tmp_path / "legacy.bin"
+    _save_legacy_index(conn, "source", legacy_path)
+    conn.execute(
+        f"CREATE VIRTUAL TABLE loaded USING vectorlite(embedding {target_space}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(operation,path) VALUES('load',?)", (str(legacy_path),)
+    )
+    blob = conn.execute("SELECT embedding FROM loaded WHERE rowid=10").fetchone()[0]
+    assert list(struct.unpack(f"<{len(expected_vector)}f", blob)) == expected_vector
+    rowid, distance = conn.execute(
+        "SELECT rowid,distance FROM loaded "
+        "WHERE knn_search(embedding,knn_param(vector_from_json(?),1))",
+        (json.dumps(expected_vector),),
+    ).fetchone()
+    assert rowid == 10
+    assert distance == pytest.approx(expected_distance)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["data_size", "short_header", "truncated", "trailing_bytes", "bad_neighbor"]
+)
+def test_invalid_legacy_load_preserves_live_index(conn, tmp_path, invalid):
+    dimension = 3 if invalid == "data_size" else 2
+    conn.execute(
+        f"CREATE VIRTUAL TABLE source USING vectorlite(embedding float32[{dimension}], "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO source(rowid,embedding) VALUES(10,vector_from_json(?))",
+        (json.dumps([1] * dimension),),
+    )
+    legacy_path = tmp_path / "invalid.bin"
+    _save_legacy_index(conn, "source", legacy_path)
+    payload = bytearray(legacy_path.read_bytes())
+    if invalid == "short_header":
+        payload = payload[:7]
+    elif invalid == "truncated":
+        payload = payload[:-1]
+    elif invalid == "trailing_bytes":
+        payload += b"\x00"
+    elif invalid == "bad_neighbor":
+        # Native header: ten size_t fields, one int, one tableint, one double.
+        data_offset = 10 * struct.calcsize("P") + 16
+        struct.pack_into("=I", payload, data_offset, 1)
+        struct.pack_into("=I", payload, data_offset + 4, 1)  # count is only one
+    legacy_path.write_bytes(payload)
+
+    with pytest.raises(sqlite3.OperationalError, match="load failed"):
+        conn.execute(
+            "INSERT INTO v(operation,path) VALUES('load',?)", (str(legacy_path),)
+        )
+    assert conn.execute(
+        "SELECT rowid,vector_to_json(embedding) FROM v WHERE rowid IN (1,10)"
+    ).fetchall() == [(1, "[1.0,2.0]")]
+
+
+@pytest.mark.parametrize(
+    "source_space,target_space",
+    [("bfloat16[2] l2", "float16[2] l2"), ("float32[2] l2", "float32[2] ip")],
+)
+def test_versioned_descriptor_mismatch_does_not_fall_back(
+    conn, tmp_path, source_space, target_space
+):
+    conn.execute(
+        f"CREATE VIRTUAL TABLE source USING vectorlite(embedding {source_space}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO source(rowid,embedding) VALUES(10,vector_from_json('[1,2]'))"
+    )
+    versioned_path = tmp_path / "versioned.bin"
+    conn.execute(
+        "INSERT INTO source(operation,path) VALUES('save',?)", (str(versioned_path),)
+    )
+    conn.execute(
+        f"CREATE VIRTUAL TABLE loaded USING vectorlite(embedding {target_space}, "
+        "hnsw(max_elements=8))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(rowid,embedding) VALUES(99,vector_from_json('[9,8]'))"
+    )
+    with pytest.raises(sqlite3.OperationalError, match="descriptor mismatch"):
+        conn.execute(
+            "INSERT INTO loaded(operation,path) VALUES('load',?)", (str(versioned_path),)
+        )
+    assert conn.execute(
+        "SELECT rowid FROM loaded WHERE rowid IN (10,99)"
+    ).fetchall() == [(99,)]
+
+
+@pytest.mark.parametrize("allow_replace_deleted", [False, True])
+def test_legacy_preserves_configured_capacity_and_deletion_policy(
+    conn, tmp_path, allow_replace_deleted
+):
+    conn.execute(
+        "CREATE VIRTUAL TABLE source USING vectorlite(embedding float32[2], "
+        "hnsw(max_elements=3))"
+    )
+    for rowid in (10, 11, 12):
+        conn.execute(
+            "INSERT INTO source(rowid,embedding) VALUES(?,vector_from_json('[1,2]'))",
+            (rowid,),
+        )
+    legacy_path = tmp_path / "legacy.bin"
+    _save_legacy_index(conn, "source", legacy_path)
+    replace = str(allow_replace_deleted).lower()
+    conn.execute(
+        "CREATE VIRTUAL TABLE loaded USING vectorlite(embedding float32[2], "
+        f"hnsw(max_elements=4,allow_replace_deleted={replace}))"
+    )
+    conn.execute(
+        "INSERT INTO loaded(operation,path) VALUES('load',?)", (str(legacy_path),)
+    )
+    insert = "INSERT INTO loaded(rowid,embedding) VALUES(?,vector_from_json('[3,4]'))"
+    conn.execute(insert, (13,))  # Uses the receiving table's larger capacity.
+    conn.execute("DELETE FROM loaded WHERE rowid=11")
+    if allow_replace_deleted:
+        conn.execute(insert, (14,))
+        expected = [(10,), (12,), (13,), (14,)]
+    else:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute(insert, (14,))
+        expected = [(10,), (12,), (13,)]
+    assert conn.execute(
+        "SELECT rowid FROM loaded WHERE rowid IN (10,11,12,13,14) ORDER BY rowid"
+    ).fetchall() == expected
+
+
+@pytest.mark.parametrize("file_format", ["versioned", "legacy"])
+def test_load_ignores_untrusted_saved_capacity(conn, tmp_path, file_format):
     index_path = tmp_path / "capacity.bin"
     conn.execute(
         "CREATE VIRTUAL TABLE source USING "
@@ -85,12 +311,15 @@ def test_load_ignores_untrusted_saved_capacity(conn, tmp_path):
         (str(index_path),),
     )
 
-    # The versioned envelope is 32 bytes. The raw HNSW payload begins with
-    # offsetLevel0_ followed by max_elements_, both native-size words. Inflate
-    # only max_elements_ so a tiny valid file advertises excessive spare capacity.
+    # The raw HNSW payload begins with offsetLevel0_ followed by max_elements_,
+    # both native-size words. Exercise the capacity limit with both file formats.
+    payload_offset = 32
+    if file_format == "legacy":
+        index_path.write_bytes(index_path.read_bytes()[32:])
+        payload_offset = 0
     word_size = struct.calcsize("P")
     with index_path.open("r+b") as index_file:
-        index_file.seek(32 + word_size)
+        index_file.seek(payload_offset + word_size)
         index_file.write((1_000_000).to_bytes(word_size, sys.byteorder))
 
     conn.execute(

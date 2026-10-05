@@ -2,6 +2,8 @@
 
 > Toolchain policy update: the Rust port now supports the latest stable release only. Rust 1.70 validation below records the earlier review work and is no longer an active support commitment. See `rust/README.md` and the root `rust-toolchain.toml`.
 
+> Legacy compatibility update: raw HNSW indexes can now be loaded directly using the receiving vtab's declared schema and a per-vector data-size check, with native structural validation retained. A subsequent save upgrades the file to the versioned format. This supersedes the export/reinsertion migration policy recorded below; see `rust/README.md` for current behavior.
+
 > For agentic workers: implement independent domains with the dispatching-parallel-agents skill, then review the integrated result.
 
 **Goal:** Correct the thirteen findings in the review of baf6715, including scalar L2 overhead and unsafe abstractions.

@@ -119,13 +119,30 @@ host process.
   On macOS, use the Command Line Tools libclang with
   `LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib`; newer Homebrew
   LLVM releases may require a newer bindgen than the pinned generator supports.
-- Rust persistence uses a versioned envelope recording dimension, element type,
-  distance metric, normalization and native word size/endianness. Loading
-  incompatible descriptors or an older raw HNSW file fails before replacing the
-  live index. Raw files from earlier Rust/C++ builds must be reopened with the
-  matching older extension and their vectors and rowids reinserted into the new
-  extension. Successful saves replace the destination atomically using a
-  temporary file in the same directory.
+- New saves use a versioned envelope recording dimension, element type, distance
+  metric, normalization and native word size/endianness. Versioned files must
+  match the receiving table's descriptor; an invalid descriptor or payload is
+  rejected before replacing the live index.
+- Loading also accepts legacy raw HNSW files written by earlier Rust/C++ builds
+  or hnswlib. Since these files contain no Vectorlite metadata, the receiving
+  virtual table's declared dimension, element type, distance metric and
+  normalization policy are authoritative. A matching per-vector byte size is the
+  schema compatibility check, so same-width element types or different
+  dimensions with the same total byte size are accepted. The existing native
+  layout, graph-link and capacity checks still apply, and the raw payload's
+  native word size and endianness must be compatible with the current host.
+  Loading does not convert or re-normalize the stored vectors or rebuild the
+  graph; declare the intended schema when opening a legacy file.
+- No export/reinsertion is needed to upgrade a legacy file: load it into a table
+  and save again to write the versioned format with that table's descriptor.
+  Successful saves replace the destination atomically using a temporary file in
+  the same directory. Failed loads leave the current in-memory index unchanged.
+
+  ```sql
+  -- Create my_table with the intended schema before loading the raw index.
+  INSERT INTO my_table(operation, path) VALUES('load', 'legacy-hnsw.bin');
+  INSERT INTO my_table(operation, path) VALUES('save', 'versioned-index.bin');
+  ```
 
 ## Testing
 

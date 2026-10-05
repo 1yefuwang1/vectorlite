@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 use crate::half::{Bf16Bits, F16Bits};
@@ -39,7 +39,7 @@ impl Stored<'_> {
 
 // Version 1 envelope: magic, little-endian version and dimension, element,
 // metric, normalization, native-layout identifier, and raw payload byte length.
-// Legacy untyped HNSW files are rejected: their element/metric cannot be inferred.
+// Legacy raw HNSW files use the receiving table's schema instead of a descriptor.
 const FILE_MAGIC: &[u8; 8] = b"VLTIDX01";
 const HEADER_LEN: usize = 32;
 
@@ -270,36 +270,39 @@ impl Index {
         Ok(())
     }
 
-    /// Replaces the in-memory index only after validating the versioned vector
-    /// descriptor and the native payload. To migrate legacy untyped files,
-    /// export vectors and rowids with the old extension, then reinsert them with
-    /// this version and save again; their format cannot be inferred safely.
+    /// Replaces the in-memory index only after validating the native payload.
+    /// Versioned files must also match the table's vector descriptor. Legacy raw
+    /// HNSW files use this table's dimension, element type, metric and normalization
+    /// policy; their stored bytes are accepted when the per-vector data size matches.
     pub fn load(&self, path: &str) -> Result<(), String> {
         if path.is_empty() {
             return Err("path must not be empty".to_string());
         }
         let mut input = File::open(path).map_err(|e| format!("cannot open index file: {e}"))?;
+        let file_len = input.metadata().map_err(|e| e.to_string())?.len();
         let mut header = [0u8; HEADER_LEN];
-        input.read_exact(&mut header).map_err(|_| {
-            "unsupported or truncated index; for legacy untyped HNSW files, export vectors and rowids with the old extension and reinsert them with this version"
-                .to_string()
-        })?;
-        if &header[..8] != FILE_MAGIC {
-            return Err(
-                "unsupported index format; for legacy untyped HNSW files, export vectors and rowids with the old extension and reinsert them with this version"
-                    .to_string(),
-            );
-        }
-        if header[..24] != self.descriptor() {
-            return Err("index descriptor mismatch: version, dimension, element type, metric, normalization, and native layout must match the table".to_string());
-        }
-        let payload_len =
-            u64::from_le_bytes(header[24..32].try_into().expect("fixed header width"));
-        if payload_len.checked_add(HEADER_LEN as u64)
-            != Some(input.metadata().map_err(|e| e.to_string())?.len())
-        {
-            return Err("index payload length does not match the envelope".to_string());
-        }
+        input
+            .read_exact(&mut header)
+            .map_err(|e| format!("unsupported or truncated index header: {e}"))?;
+        let payload_len = if &header[..8] == FILE_MAGIC {
+            // A recognized envelope never falls back to the raw loader when its
+            // descriptor or length is invalid.
+            if header[..24] != self.descriptor() {
+                return Err("index descriptor mismatch: version, dimension, element type, metric, normalization, and native layout must match the table".to_string());
+            }
+            let payload_len =
+                u64::from_le_bytes(header[24..32].try_into().expect("fixed header width"));
+            if payload_len.checked_add(HEADER_LEN as u64) != Some(file_len) {
+                return Err("index payload length does not match the envelope".to_string());
+            }
+            payload_len
+        } else {
+            // Legacy files have no Vectorlite metadata. The declared table space
+            // supplies it, while the same checked native loader validates their
+            // layout, per-vector byte size, graph links and effective capacity.
+            input.rewind().map_err(|e| e.to_string())?;
+            file_len
+        };
         let new_index = Hnsw::load(
             &self.space,
             input.take(payload_len),
