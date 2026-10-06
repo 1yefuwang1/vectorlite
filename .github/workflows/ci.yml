@@ -333,7 +333,9 @@ jobs:
           for wheel in "${wheels[@]}"; do
             echo "Installing $wheel"
             uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
-            "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test vectorlite/tests
+            # Preload and verify the installed wheel before pytest can import
+            # the source package while collecting its nested binding tests.
+            "$TEST_PYTHON" scripts/run_wheel_tests.py
           done
 
       - uses: actions/setup-node@v4

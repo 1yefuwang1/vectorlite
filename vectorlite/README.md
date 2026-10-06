@@ -267,6 +267,20 @@ PYTHONPATH=bindings/python python3 -m pytest --import-mode=importlib \
   bindings/python/vectorlite_py/test vectorlite/tests
 ```
 
+For installed-wheel validation, install the freshly built wheel into the test
+interpreter, then use the [wheel test runner](<../scripts/run_wheel_tests.py>)
+without a source-tree `PYTHONPATH`:
+
+```sh
+python3 scripts/run_wheel_tests.py
+```
+
+The runner preloads `vectorlite_py` before pytest collects the nested binding
+tests. Even `--import-mode=importlib` can otherwise import the checkout's parent
+package and shadow the wheel. It verifies the package's installed-distribution
+path and native library, and rejects `VECTORLITE_RUST_EXTENSION` overrides so
+both suites test the wheel rather than a local build.
+
 `VECTORLITE_RUST_EXTENSION` remains an optional override for testing a direct
 Cargo artifact with the Rust-specific suite. For example, on macOS:
 
