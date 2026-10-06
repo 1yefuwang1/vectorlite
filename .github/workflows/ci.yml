@@ -94,6 +94,19 @@ jobs:
         with:
           arch: x64
 
+      # Git Bash puts its Unix link.exe on PATH; Rust needs the MSVC linker.
+      # Pin it for both target crates and same-triple host build scripts.
+      - name: Pin the MSVC linker for Cargo
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (!(Test-Path -LiteralPath $linker -PathType Leaf)) {
+            throw "MSVC linker not found: $linker"
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v2
         with:
@@ -244,6 +257,19 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
+
+      # Git Bash puts its Unix link.exe on PATH; Rust needs the MSVC linker.
+      # Pin it for both target crates and same-triple host build scripts.
+      - name: Pin the MSVC linker for Cargo
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (!(Test-Path -LiteralPath $linker -PathType Leaf)) {
+            throw "MSVC linker not found: $linker"
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v2
