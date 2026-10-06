@@ -5,8 +5,8 @@ mod build_support;
 use build_support::find_vcpkg;
 
 fn main() {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let repo_root = manifest_dir.parent().unwrap().to_path_buf();
+    let repo_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let source_dir = repo_root.join("vectorlite");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
@@ -44,9 +44,8 @@ fn main() {
     let vcpkg_include = triplet.join("include");
     let lib_dir = triplet.join("lib");
 
-    let vectorlite_src = repo_root.join("vectorlite");
-    let ops_cpp = vectorlite_src.join("ops/ops.cpp");
-    let shim_cpp = manifest_dir.join("cpp/core_shim.cpp");
+    let ops_cpp = source_dir.join("ops/ops.cpp");
+    let shim_cpp = source_dir.join("cpp/core_shim.cpp");
 
     // Compile the C++ core: the existing (un-ported) ops SIMD kernels plus the
     // thin C ABI shim around hnswlib + vectorlite spaces.
@@ -56,10 +55,10 @@ fn main() {
         .std("c++17")
         .file(&ops_cpp)
         .file(&shim_cpp)
-        .include(&vectorlite_src)
-        .include(vectorlite_src.join("ops"))
+        .include(&source_dir)
+        .include(source_dir.join("ops"))
         .include(&vcpkg_include)
-        .include(manifest_dir.join("cpp"))
+        .include(source_dir.join("cpp"))
         .warnings(profile == "debug");
     if msvc {
         // hnswlib relies on RAII cleanup when its operations throw.
@@ -101,14 +100,14 @@ fn main() {
     // SQLite extension API bindings live in the vendored vectorlite-sqlite-sys
     // crate (committed, pre-generated), so no bindgen/libclang is needed here.
 
-    println!("cargo:rerun-if-changed=cpp/core_shim.cpp");
-    println!("cargo:rerun-if-changed=cpp/core_shim.h");
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=build_support.rs");
+    println!("cargo:rerun-if-changed=vectorlite/cpp/core_shim.cpp");
+    println!("cargo:rerun-if-changed=vectorlite/cpp/core_shim.h");
+    println!("cargo:rerun-if-changed=vectorlite/build.rs");
+    println!("cargo:rerun-if-changed=vectorlite/build_support.rs");
     println!("cargo:rerun-if-changed={}", ops_cpp.display());
     println!(
         "cargo:rerun-if-changed={}",
-        vectorlite_src.join("ops/ops.h").display()
+        source_dir.join("ops/ops.h").display()
     );
     for path in [
         vcpkg_include.join("hnswlib"),

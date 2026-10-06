@@ -32,6 +32,7 @@
 *.app
 
 build/*
+/target/
 release/*
 vcpkg/*
 vcpkg_installed/*

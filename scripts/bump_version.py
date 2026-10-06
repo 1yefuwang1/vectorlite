@@ -17,10 +17,10 @@ PYPROJECT_TOML = ROOT / "pyproject.toml"
 PYTHON_INIT = ROOT / "bindings" / "python" / "vectorlite_py" / "__init__.py"
 VCPKG_JSON = ROOT / "vcpkg.json"
 CARGO_MANIFESTS = [
-    ROOT / "rust" / "Cargo.toml",
-    ROOT / "rust" / "vectorlite-sqlite-sys" / "Cargo.toml",
+    ROOT / "Cargo.toml",
+    ROOT / "vectorlite" / "vectorlite-sqlite-sys" / "Cargo.toml",
 ]
-CARGO_LOCK = ROOT / "rust" / "Cargo.lock"
+CARGO_LOCK = ROOT / "Cargo.lock"
 NODEJS_PACKAGES_DIR = ROOT / "bindings" / "nodejs" / "packages"
 
 PLATFORM_PACKAGES = [

@@ -49,7 +49,7 @@ set(_cargo_artifact
     "${VECTORLITE_CARGO_TARGET_DIR}/${VECTORLITE_RUST_TARGET}/${_cargo_profile}/${_cargo_library}")
 set(VECTORLITE_EXTENSION
     "${CMAKE_CURRENT_BINARY_DIR}/vectorlite${CMAKE_SHARED_LIBRARY_SUFFIX}")
-set(_cargo_manifest "${PROJECT_SOURCE_DIR}/rust/Cargo.toml")
+set(_cargo_manifest "${PROJECT_SOURCE_DIR}/Cargo.toml")
 
 # Isolated wheel build directories are not part of Cargo's normal discovery.
 # Always pass the exact installation chosen by this CMake toolchain.
@@ -91,7 +91,7 @@ add_custom_target(vectorlite ALL
             "${_cargo_artifact}" "${VECTORLITE_EXTENSION}"
     ${_deploy_commands}
     BYPRODUCTS "${VECTORLITE_EXTENSION}"
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/rust"
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     COMMAND_EXPAND_LISTS
     USES_TERMINAL
     VERBATIM)

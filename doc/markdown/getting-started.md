@@ -74,7 +74,7 @@ More examples can be found in the [examples](https://github.com/1yefuwang1/vecto
 
 ## Building from source
 
-Source builds require latest stable Rust, C/C++17 compilers, CMake >= 3.22, Ninja, Git and vcpkg. From a checkout of the repository:
+Source builds require latest stable Rust, C/C++17 compilers, CMake >= 3.22, Ninja, Git and vcpkg. The Cargo workspace uses root [Cargo.toml](<../../Cargo.toml>) and [Cargo.lock](<../../Cargo.lock>); Rust sources and retained native ops live under `vectorlite/`. See the [contributor guide](<../../vectorlite/README.md>) for the layout and direct Cargo checks. Run the following commands from the repository root:
 
 ```shell
 git submodule update --init --recursive

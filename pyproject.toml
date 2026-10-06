@@ -33,7 +33,7 @@ Repository = "https://github.com/1yefuwang1/vectorlite"
 # ignored/stale source-tree extension binary into the wheel.
 wheel.packages = []
 sdist.include = ["scripts/install_rust.sh"]
-sdist.exclude = ["build/**", "rust/target/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
+sdist.exclude = ["build/**", "target/**", "vectorlite/target/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
 # Minimum version of CMake
 cmake.version = ">=3.22"
 # Build configuration

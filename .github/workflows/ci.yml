@@ -123,7 +123,6 @@ jobs:
           rustup target add --toolchain stable "$CARGO_BUILD_TARGET"
 
       - name: rustfmt
-        working-directory: rust
         run: cargo fmt --all --check
 
       # CMake installs hnswlib/Highway plus optional SIMD-test and SQLite ABI headers.
@@ -137,7 +136,6 @@ jobs:
         run: cmake --build build/release --parallel 4
 
       - name: clippy
-        working-directory: rust
         run: cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::missing_safety_doc
 
       - name: Rust unit tests, SQLite native ABI checks, and Highway tests
@@ -149,10 +147,9 @@ jobs:
 
       - name: Check regenerated bindings without changing tracked sources
         if: runner.os == 'Linux'
-        working-directory: rust
         run: |
           cargo test --locked -p vectorlite-sqlite-sys --features regenerate,abi-check
-          git diff --exit-code -- vectorlite-sqlite-sys/src/bindings.rs
+          git diff --exit-code -- vectorlite/vectorlite-sqlite-sys/src/bindings.rs
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -172,7 +169,7 @@ jobs:
       - name: Python integration tests against the primary Rust extension
         run: |
           uv pip install --python "$TEST_PYTHON" pytest numpy
-          PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
+          PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test vectorlite/tests
 
       - name: Archive native Rust extension
         uses: actions/upload-artifact@v4
@@ -336,7 +333,7 @@ jobs:
           for wheel in "${wheels[@]}"; do
             echo "Installing $wheel"
             uv pip install --python "$TEST_PYTHON" "$wheel" --reinstall
-            "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
+            "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test vectorlite/tests
           done
 
       - uses: actions/setup-node@v4

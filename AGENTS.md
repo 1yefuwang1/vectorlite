@@ -40,17 +40,17 @@ cmake --build build/release -j8
 # Rust + SQLite ABI + retained native ops tests through CTest
 ctest --test-dir build/dev --output-on-failure
 
-# Direct Cargo checks after configuring native dependencies
-cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
-cargo test --manifest-path rust/Cargo.toml --locked --workspace
-cargo test --manifest-path rust/Cargo.toml --locked -p vectorlite-sqlite-sys --features abi-check
+# Direct Cargo checks from the repository root after configuring native dependencies
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked -p vectorlite-sqlite-sys --features abi-check
 
 # Build a wheel through scikit-build-core -> CMake -> Cargo
 python3 -m pip wheel .
 ```
 
-There is no prerequisite C++ extension build and no subsequent Rust redeployment step. Use the root build scripts to run both Python suites against the just-built library. Both Python suites default to the library deployed in the Python package; a missing artifact is an error. `VECTORLITE_RUST_EXTENSION` is an optional override for testing a direct Cargo output, not a requirement for the normal build or installed-wheel tests; see the [contributor guide](<rust/README.md#testing>).
+There is no prerequisite C++ extension build and no subsequent Rust redeployment step. Use the root build scripts to run both Python suites against the just-built library. Both Python suites default to the library deployed in the Python package; a missing artifact is an error. `VECTORLITE_RUST_EXTENSION` is an optional override for testing a direct Cargo output, not a requirement for the normal build or installed-wheel tests; see the [contributor guide](<vectorlite/README.md#testing>).
 
 `BUILD_TESTING=ON` enables Rust/SQLite ABI/native ops tests and selects the vcpkg `tests` feature (Google Test and SQLite headers). Wheel builds need only the native runtime dependencies. Ops benchmarks are opt-in with `VECTORLITE_BUILD_BENCHMARKS=ON`, which selects the separate vcpkg benchmark feature:
 
@@ -61,15 +61,18 @@ cmake --build build/release --target ops_benchmark -j8
 
 ## Project Structure
 
-- `rust/src/` — Main extension implementation: SQLite routing/callbacks, parsers, registry, vector conversions and index policy.
-- `rust/cpp/` — Thin C ABI over hnswlib and Highway ops; no SQLite virtual-table policy.
-- `rust/vectorlite-sqlite-sys/` — Committed SQLite API bindings and native ABI checks.
-- `rust/tests/` — Native-dependency discovery tests and Rust-specific SQL regressions.
+- [Cargo.toml](<Cargo.toml>), [Cargo.lock](<Cargo.lock>) — Cargo package/workspace manifest and lockfile at the repository root.
+- `vectorlite/` — Rust sources, build support, native shim and retained SIMD ops.
+- [build.rs](<vectorlite/build.rs>) — Native build script selected by the root Cargo manifest.
+- `vectorlite/src/` — Main extension implementation: SQLite routing/callbacks, parsers, registry, vector conversions and index policy.
+- `vectorlite/cpp/` — Thin C ABI over hnswlib and Highway ops; no SQLite virtual-table policy.
+- `vectorlite/vectorlite-sqlite-sys/` — Committed SQLite API bindings and native ABI checks.
+- `vectorlite/tests/` — Native-dependency discovery tests and Rust-specific SQL regressions.
 - `vectorlite/ops/` — Retained native SIMD operations, Google Test tests and Google Benchmark benchmarks.
 - `bindings/python/`, `bindings/nodejs/` — Packaging and integration tests for the compiled extension.
 - `benchmark/`, `examples/` — Python performance harness and usage examples.
 - `vcpkg/` and the root CMake configuration — Native dependency management and Cargo build/installation integration.
-- `docs/superpowers/` — Dated design specs/plans. Treat C++ source references there as historical, not current build instructions.
+- `docs/superpowers/` — Dated design specs/plans. Treat source paths, validation counts and benchmark results there as historical, not current build instructions.
 
 ## Key Dependencies
 
@@ -97,8 +100,8 @@ cmake --build build/release --target ops_benchmark -j8
 
 ## Testing
 
-- Rust unit tests are colocated with modules; index/persistence tests are in [core_tests.rs](<rust/src/core_tests.rs>).
-- SQLite layout/API-prefix checks live in `rust/vectorlite-sqlite-sys/`.
+- Rust unit tests are colocated with modules; index/persistence tests are in [core_tests.rs](<vectorlite/src/core_tests.rs>).
+- SQLite layout/API-prefix checks live in `vectorlite/vectorlite-sqlite-sys/`.
 - Retain [ops_test.cpp](<vectorlite/ops/ops_test.cpp>) and [ops_benchmark.cpp](<vectorlite/ops/ops_benchmark.cpp>) with their CMake targets.
-- Run both `bindings/python/vectorlite_py/test/` and `rust/tests/` Python suites against the same freshly built library.
+- Run both `bindings/python/vectorlite_py/test/` and `vectorlite/tests/` Python suites against the same freshly built library.
 - After implementation changes, run the root debug or release build script; it covers CTest and both Python suites.

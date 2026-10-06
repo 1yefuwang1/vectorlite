@@ -16,7 +16,11 @@ per cell.
 
 Local CMake builds now benchmark the **Rust implementation** of the SQLite
 extension, backed by the retained hnswlib/Highway native core. No separate C++
-virtual-table build or Rust deployment step is needed. The native ops
+virtual-table build or Rust deployment step is needed. The Cargo workspace uses
+the root [manifest](<../Cargo.toml>) and [lockfile](<../Cargo.lock>); extension
+sources and retained native ops live under `vectorlite/`. See the
+[contributor guide](<../vectorlite/README.md>). This source-layout move does not
+change the public `build/<preset>/vectorlite` artifact paths. The native ops
 microbenchmark remains a separate, opt-in executable, built from
 [ops_benchmark.cpp](<../vectorlite/ops/ops_benchmark.cpp>). Enable its native
 vcpkg benchmark dependency and CMake target explicitly:

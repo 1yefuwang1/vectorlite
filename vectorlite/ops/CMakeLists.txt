@@ -2,7 +2,7 @@ find_package(hwy CONFIG REQUIRED)
 find_path(HIGHWAY_INCLUDE_DIRS hwy/highway.h REQUIRED)
 
 # This library is used only by native kernel tests/benchmarks. The shipped Rust
-# extension compiles the same ops.cpp through rust/build.rs and its C ABI shim.
+# extension compiles the same ops.cpp through vectorlite/build.rs and its C ABI shim.
 add_library(ops STATIC ops.cpp)
 target_link_libraries(ops PRIVATE hwy::hwy)
 target_include_directories(ops PUBLIC ${HIGHWAY_INCLUDE_DIRS} ${CMAKE_CURRENT_LIST_DIR})

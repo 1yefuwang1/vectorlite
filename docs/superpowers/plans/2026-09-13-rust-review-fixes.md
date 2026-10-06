@@ -1,8 +1,10 @@
 # Rust review fixes implementation plan
 
-> Toolchain policy update: the Rust port now supports the latest stable release only. Rust 1.70 validation below records the earlier review work and is no longer an active support commitment. See `rust/README.md` and the root `rust-toolchain.toml`.
+> Layout update: the Cargo workspace [manifest](<../../../Cargo.toml>) and [lockfile](<../../../Cargo.lock>) now live at the repository root. Rust sources, the native build script, tests, SQLite API crate and retained native ops live under `vectorlite/`; direct Cargo outputs default to root `target/`. The `rust/` paths below describe the layout at the time of this plan, not current command paths. Historical validation counts and benchmark results are preserved and are not evidence of a new run.
 
-> Legacy compatibility update: raw HNSW indexes can now be loaded directly using the receiving vtab's declared schema and a per-vector data-size check, with native structural validation retained. A subsequent save upgrades the file to the versioned format. This supersedes the export/reinsertion migration policy recorded below; see `rust/README.md` for current behavior.
+> Toolchain policy update: the Rust port now supports the latest stable release only. Rust 1.70 validation below records the earlier review work and is no longer an active support commitment. See the [current contributor guide](<../../../vectorlite/README.md>) and the root [rust-toolchain.toml](<../../../rust-toolchain.toml>).
+
+> Legacy compatibility update: raw HNSW indexes can now be loaded directly using the receiving vtab's declared schema and a per-vector data-size check, with native structural validation retained. A subsequent save upgrades the file to the versioned format. This supersedes the export/reinsertion migration policy recorded below; see the [current contributor guide](<../../../vectorlite/README.md#notes>) for current behavior.
 
 > For agentic workers: implement independent domains with the dispatching-parallel-agents skill, then review the integrated result.
 

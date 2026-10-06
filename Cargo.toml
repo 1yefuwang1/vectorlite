@@ -2,18 +2,24 @@
 name = "vectorlite"
 version = "0.3.0"
 edition = "2021"
+build = "vectorlite/build.rs"
 description = "SQLite extension for fast HNSW vector search"
 license = "Apache-2.0"
 
 [lib]
 name = "vectorlite"
+path = "vectorlite/src/lib.rs"
 crate-type = ["cdylib"]
+
+[[test]]
+name = "build_support"
+path = "vectorlite/tests/build_support.rs"
 
 [dependencies]
 bytemuck = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 tempfile = { version = "3", default-features = false }
-vectorlite-sqlite-sys = { path = "vectorlite-sqlite-sys" }
+vectorlite-sqlite-sys = { path = "vectorlite/vectorlite-sqlite-sys" }
 
 [build-dependencies]
 cc = "1"
@@ -29,4 +35,4 @@ opt-level = 3
 panic = "abort"
 
 [workspace]
-members = ["vectorlite-sqlite-sys"]
+members = ["vectorlite/vectorlite-sqlite-sys"]

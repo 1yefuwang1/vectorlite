@@ -2,7 +2,7 @@
 ## Quick overview
 Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. It provides fast vector search capabilities with a SQL interface and runs on every language with a SQLite driver.
 
-Rust is the main and only extension implementation: it owns the SQLite virtual table, scalar functions, parsers, per-connection registry and index policy. C++ is retained for hnswlib, Google Highway SIMD operations and a thin C ABI shim, with native ops tests and benchmarks. CMake and scikit-build-core build the Rust library through Cargo; public Python/npm package names and `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames are unchanged.
+Rust is the main and only extension implementation: it owns the SQLite virtual table, scalar functions, parsers, per-connection registry and index policy. C++ is retained for hnswlib, Google Highway SIMD operations and a thin C ABI shim, with native ops tests and benchmarks. CMake and scikit-build-core build the Rust library through Cargo; public Python/npm package names and `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames are unchanged. The Cargo workspace uses root [Cargo.toml](<../../Cargo.toml>) and [Cargo.lock](<../../Cargo.lock>); Rust sources and retained native ops live under `vectorlite/`. See the [architecture and contributor guide](<../../vectorlite/README.md>).
 
 For motivation and background of this project, please check [here](https://dev.to/yefuwang/introducing-vectorlite-a-fast-and-tunable-vector-search-extension-for-sqlite-4dcl).
 

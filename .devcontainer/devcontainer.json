@@ -10,7 +10,7 @@
                 "ms-vscode.cpptools-extension-pack"
             ],
             "settings": {
-                "rust-analyzer.linkedProjects": ["rust/Cargo.toml"]
+                "rust-analyzer.linkedProjects": ["Cargo.toml"]
             }
         }
     }

@@ -66,13 +66,13 @@ def main() -> None:
     # The shipped extension reports CARGO_PKG_VERSION; include both Rust crates
     # and their workspace lockfile records in the release consistency check.
     for manifest in [
-        ROOT / "rust" / "Cargo.toml",
-        ROOT / "rust" / "vectorlite-sqlite-sys" / "Cargo.toml",
+        ROOT / "Cargo.toml",
+        ROOT / "vectorlite" / "vectorlite-sqlite-sys" / "Cargo.toml",
     ]:
         check_file_regex(manifest, r'^version = "(.+)"', expected, errors)
     for crate in ["vectorlite", "vectorlite-sqlite-sys"]:
         check_file_regex(
-            ROOT / "rust" / "Cargo.lock",
+            ROOT / "Cargo.lock",
             rf'^\[\[package\]\]\nname = "{crate}"\nversion = "([^"]+)"',
             expected,
             errors,

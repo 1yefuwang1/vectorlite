@@ -9,4 +9,4 @@ cmake --preset dev
 cmake --build build/dev --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-8}"
 ctest --test-dir build/dev --output-on-failure --no-tests=error
 PYTHONPATH="$repo_root/bindings/python" "${PYTHON:-python}" -m pytest \
-    --import-mode=importlib bindings/python/vectorlite_py/test rust/tests
+    --import-mode=importlib bindings/python/vectorlite_py/test vectorlite/tests

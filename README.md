@@ -4,7 +4,7 @@
 # Overview
 Vectorlite is a [Runtime-loadable extension](https://www.sqlite.org/loadext.html) for SQLite that enables fast vector search based on [hnswlib](https://github.com/nmslib/hnswlib) and works on Windows, MacOS and Linux. It provides fast vector search capabilities with a SQL interface and runs on every language with a SQLite driver.
 
-**Rust is the main and only extension implementation.** The Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. Native C++ is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim; the ops tests and benchmarks remain native. CMake and scikit-build-core invoke Cargo for normal source and wheel builds. Public package names and `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames are unchanged. See the [architecture and contributor guide](<rust/README.md>).
+**Rust is the main and only extension implementation.** The Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. Native C++ is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim; the ops tests and benchmarks remain native. CMake and scikit-build-core invoke Cargo for normal source and wheel builds. Public package names and `vectorlite.so` / `vectorlite.dylib` / `vectorlite.dll` filenames are unchanged. The Cargo workspace uses root [Cargo.toml](<Cargo.toml>) and [Cargo.lock](<Cargo.lock>); Rust sources and retained native ops live under `vectorlite/`. See the [architecture and contributor guide](<vectorlite/README.md>).
 
 For motivation and background of this project, please check [here](https://dev.to/yefuwang/introducing-vectorlite-a-fast-and-tunable-vector-search-extension-for-sqlite-4dcl).
 
@@ -470,7 +470,7 @@ sh build.sh         # Debug build and tests
 sh build_release.sh # Release build and tests
 ```
 
-These scripts build the Rust extension via CMake, run CTest (Rust unit tests, SQLite ABI checks and native ops tests), and run both Python integration suites against the built library. CMake deploys the library into the Python package automatically. The public `vectorlite.[so|dll|dylib]` artifact is also available under `build/dev/vectorlite` or `build/release/vectorlite`.
+These scripts build the Rust extension via CMake, run CTest (Rust unit tests, SQLite ABI checks and native ops tests), and run both Python integration suites (`bindings/python/vectorlite_py/test/` and `vectorlite/tests/`) against the built library. CMake deploys the library into the Python package automatically. The public `vectorlite.[so|dll|dylib]` artifact is also available under `build/dev/vectorlite` or `build/release/vectorlite`.
 
 For build-only iteration:
 ```shell
@@ -488,7 +488,7 @@ python3 -m pip wheel . --wheel-dir dist
 python3 -m build -w
 ```
 
-The `vectorlite_py` wheel contains the same Rust-built extension with unchanged public filenames. Source archives omit Git submodules; when the local vcpkg toolchain is absent, CMake fetches and bootstraps the checkout pinned by `vcpkg.json` (Git and network access are required). See the [Rust contributor guide](<rust/README.md>) for direct Cargo commands, native dependency selection and optional SQLite binding regeneration.
+The `vectorlite_py` wheel contains the same Rust-built extension with unchanged public filenames. Source archives omit Git submodules; when the local vcpkg toolchain is absent, CMake fetches and bootstraps the checkout pinned by `vcpkg.json` (Git and network access are required). See the [Rust contributor guide](<vectorlite/README.md>) for direct Cargo commands, native dependency selection and optional SQLite binding regeneration.
 
 # Roadmap
 - [x] SIMD support for ARM platform

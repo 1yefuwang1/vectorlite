@@ -1,6 +1,6 @@
 """Compare two Vectorlite builds with identical workloads and SQLite host.
 
-Usage: python rust/bench_compare.py <before-extension> <after-extension>
+Usage: python vectorlite/bench_compare.py <before-extension> <after-extension>
 The default implementation is Rust; either argument may be an archived build.
 """
 import gc
@@ -60,7 +60,7 @@ def bench_one(path, dim, vectors, queries):
 
 def main():
     if len(sys.argv) != 3:
-        raise SystemExit("Usage: python rust/bench_compare.py <before-extension> <after-extension>")
+        raise SystemExit("Usage: python vectorlite/bench_compare.py <before-extension> <after-extension>")
     backends = {
         "Before": sys.argv[1],
         "After": sys.argv[2],
