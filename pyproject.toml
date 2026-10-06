@@ -61,13 +61,11 @@ VECTORLITE_DEPLOY_TO_PYTHON = "OFF"
 # extension. The built wheels are instead tested in CI with a uv-managed
 # CPython 3.14, whose `sqlite3` has loadable extensions enabled and bundles a
 # recent SQLite (>= 3.38).
-skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "pp*", "cp39*", "cp310*", "cp311*", "cp312*", "cp313*"]
+skip = ["*-win32", "*-win_arm64", "*-manylinux_i686", "*musllinux*", "*-macosx_x86_64", "*-macosx_universal2", "pp*", "cp39*", "cp310*", "cp311*", "cp312*", "cp313*"]
 
+# macOS releases support Apple Silicon only; never build an Intel slice.
 [tool.cibuildwheel.macos]
-environment = {MACOSX_DEPLOYMENT_TARGET = "10.15"}
-
-[[tool.cibuildwheel.overrides]]
-select = "*-macosx_arm64"
+archs = ["arm64"]
 environment = {MACOSX_DEPLOYMENT_TARGET = "11.0"}
 
 # Rust must be installed inside the manylinux container, not only on the host.

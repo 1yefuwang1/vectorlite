@@ -71,6 +71,10 @@ minimal generic adapters needed to expose those two through a C ABI.
 
 ## Building
 
+Official release and CI platforms are Linux x64, Windows x64 and macOS Apple
+Silicon (arm64) only. The macOS arm64 wheel requires macOS 11.0 or newer;
+Intel macOS is not supported.
+
 The normal source build uses **CMake -> Cargo**; Python source installs and
 wheels use **scikit-build-core -> CMake -> Cargo**. CMake installs native
 dependencies through vcpkg, builds the Rust library and deploys it into the
@@ -231,9 +235,9 @@ host process.
 
 ## Testing
 
-CI builds and tests the latest stable Rust on Linux, Windows, Apple Silicon
-macOS and Intel macOS. Native ABI checks compare the Rust layouts and API
-offsets used by the extension against the installed SQLite C headers.
+CI builds and tests the latest stable Rust on Linux x64, Windows x64 and
+macOS Apple Silicon (arm64) only. Native ABI checks compare the Rust layouts
+and API offsets used by the extension against the installed SQLite C headers.
 
 From the repository root, the normal scripts run CMake's Cargo-backed build,
 CTest (Rust unit tests, SQLite ABI checks and native ops tests), and both Python

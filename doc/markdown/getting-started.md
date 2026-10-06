@@ -6,6 +6,8 @@ pip install vectorlite-py numpy
 ```
 The packaged extension is implemented in Rust, with native hnswlib and Highway SIMD operations. Installing a prebuilt wheel requires no Rust toolchain. The `vectorlite_py` package and its `vectorlite_path()` API are unchanged.
 
+Official release and CI platforms are Linux x64, Windows x64 and macOS Apple Silicon (arm64) only. The macOS arm64 wheel requires macOS 11.0 or newer; Intel macOS is not supported.
+
 Use a Python build with loadable SQLite extensions enabled. Vectorlite requires SQLite >= 3.20; rowid lookups and metadata filtering require SQLite >= 3.38. Python 3.14 with a recent bundled SQLite is recommended. On SQLite >= 3.31, vectorlite tables cannot be accessed from views or triggers; issue queries and save/load commands directly from application SQL.
 
 Below is a minimal example of using vectorlite. It can also be found in the [examples folder](https://github.com/1yefuwang1/vectorlite/tree/main/examples).

@@ -6,6 +6,8 @@ Vectorlite is a SQLite extension for fast vector search using HNSW. Rust is the 
 
 CMake and scikit-build-core remain the source-build and packaging frontends; the `vectorlite` library target invokes Cargo, not a C++ virtual-table implementation.
 
+Official release and CI platforms are Linux x64, Windows x64 and macOS Apple Silicon (arm64) only. The macOS arm64 wheel requires macOS 11.0 or newer; Intel macOS is not supported.
+
 ## Prerequisites
 
 - Latest stable Rust, including rustfmt and Clippy (selected by [rust-toolchain.toml](<rust-toolchain.toml>)).

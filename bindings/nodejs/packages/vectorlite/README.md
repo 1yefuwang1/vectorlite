@@ -1,6 +1,9 @@
 # `vectorlite` for nodejs
 Vectorlite is a fast and tunable vector search extension for SQLite.
 For more info, please check https://github.com/1yefuwang1/vectorlite.
+
+Official npm releases support Linux x64, Windows x64 and macOS Apple Silicon (arm64) only. Intel macOS is not supported.
+
 # Example
 Below is an example of using it with `better-sqlite3`.
 ```javascript

@@ -25,7 +25,6 @@ NODEJS_PACKAGES_DIR = ROOT / "bindings" / "nodejs" / "packages"
 
 PLATFORM_PACKAGES = [
     "vectorlite-darwin-arm64",
-    "vectorlite-darwin-x64",
     "vectorlite-linux-x64",
     "vectorlite-win32-x64",
 ]

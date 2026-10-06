@@ -12,7 +12,6 @@ platforms = {
     "linux-x64": ("vectorlite-linux-x64", "vectorlite.so"),
     "win32-x64": ("vectorlite-win32-x64", "vectorlite.dll"),
     "darwin-arm64": ("vectorlite-darwin-arm64", "vectorlite.dylib"),
-    "darwin-x64": ("vectorlite-darwin-x64", "vectorlite.dylib"),
 }
 selected = {}
 for wheel in sorted((root / "wheelhouse").glob("vectorlite-wheel*/*.whl")):
@@ -23,8 +22,6 @@ for wheel in sorted((root / "wheelhouse").glob("vectorlite-wheel*/*.whl")):
         platform = "win32-x64"
     elif "macosx" in name and name.endswith("arm64.whl"):
         platform = "darwin-arm64"
-    elif "macosx" in name and name.endswith("x86_64.whl"):
-        platform = "darwin-x64"
     else:
         raise SystemExit(f"Unsupported wheel platform: {wheel}")
     if platform in selected:
