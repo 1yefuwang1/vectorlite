@@ -30,8 +30,8 @@ jobs:
     name: Check version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - run: python scripts/check_version.py
@@ -66,28 +66,28 @@ jobs:
       VECTORLITE_VCPKG_TRIPLET_DIR: ${{ github.workspace }}/build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Create vcpkg binary cache directory
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
 
       - name: Cache native vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/vcpkg-binary-cache
           key: vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
       # Static native libraries use the dynamic MSVC CRT, matching Rust's default.
-      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Initialize the MSVC developer environment
         if: runner.os == 'Windows'
-        with:
-          arch: x64
+        shell: pwsh
+        run: ./scripts/setup_msvc.ps1
 
       # Git Bash puts its Unix link.exe on PATH; Rust needs the MSVC linker.
       # Pin it for both target crates and same-triple host build scripts.
@@ -108,9 +108,7 @@ jobs:
           cmake-version: '3.29.6'
 
       - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v5
-        with:
-          version: 1.11.1
+        run: python scripts/setup_ninja.py
 
       - name: Install latest stable Rust toolchain
         run: |
@@ -167,7 +165,7 @@ jobs:
           PYTHONPATH=bindings/python "$TEST_PYTHON" -m pytest --import-mode=importlib bindings/python/vectorlite_py/test vectorlite/tests
 
       - name: Archive native Rust extension
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vectorlite-native-${{ matrix.os }}-${{ github.sha }}
           if-no-files-found: error
@@ -210,9 +208,9 @@ jobs:
             macos_target: '11.0'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: benjlevesque/short-sha@v3.0
+      - uses: benjlevesque/short-sha@v4.0
         id: short_sha
 
       - name: Create vcpkg binary cache directory
@@ -225,7 +223,7 @@ jobs:
           printf 'VCPKG_DEFAULT_BINARY_CACHE=%s\n' "$VCPKG_DEFAULT_BINARY_CACHE" >> "$GITHUB_ENV"
 
       - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-${{ hashFiles('vcpkg.json', 'pyproject.toml') }}
@@ -233,17 +231,17 @@ jobs:
             vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-
 
       # Used to host cibuildwheel
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
       - name: Install cibuildwheel
         run: python -m pip install cibuildwheel==3.3.1
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Initialize the MSVC developer environment
         if: runner.os == 'Windows'
-        with:
-          arch: x64
+        shell: pwsh
+        run: ./scripts/setup_msvc.ps1
 
       # Git Bash puts its Unix link.exe on PATH; Rust needs the MSVC linker.
       # Pin it for both target crates and same-triple host build scripts.
@@ -264,9 +262,7 @@ jobs:
           cmake-version: '3.29.6'
 
       - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v5
-        with:
-          version: 1.11.1
+        run: python scripts/setup_ninja.py
 
       - name: Bootstrap vcpkg
         run: |
@@ -288,7 +284,7 @@ jobs:
             docker; create_args: --volume="${{ env.VCPKG_DEFAULT_BINARY_CACHE }}:/project/vcpkg-binary-cache"
         run: python -m cibuildwheel --output-dir wheelhouse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: ./wheelhouse/*.whl
@@ -328,7 +324,7 @@ jobs:
             "$TEST_PYTHON" scripts/run_wheel_tests.py
           done
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -387,7 +383,7 @@ jobs:
           "$TEST_PYTHON" plot.py benchmark-smoke.json
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
           path: |
@@ -404,7 +400,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: vectorlite-wheel-*
           merge-multiple: true
@@ -425,13 +421,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: benjlevesque/short-sha@v3.0
+      - uses: benjlevesque/short-sha@v4.0
         id: short_sha
     
       # Download all artifacts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: ./wheelhouse
 
@@ -462,13 +458,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: benjlevesque/short-sha@v3.0
+      - uses: benjlevesque/short-sha@v4.0
         id: short_sha
     
       # Download all artifacts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: ./wheelhouse
 
@@ -477,7 +473,7 @@ jobs:
         run: |
           sh extract_wheels.sh
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
