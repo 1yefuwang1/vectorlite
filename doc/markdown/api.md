@@ -41,6 +41,27 @@ SQL vector inputs and outputs are little-endian float32 blobs. The declared stor
 -- operation/path commands shown below.
 create virtual table {table_name} using vectorlite({vector_name} float32[{dimension}] {distance_type}, hnsw(max_elements={max_elements}, {ef_construction=200}, {M=16}, {random_seed=100}, {allow_replace_deleted=true}));
 ```
+### Breaking change: explicit index persistence
+
+The optional **third file-path argument to `CREATE VIRTUAL TABLE` has been removed**. Existing SQL using that argument is rejected. Indexes are no longer automatically loaded when a table is created or automatically saved when the connection closes.
+
+To migrate, remove the path argument, then issue an explicit `load` command after creating the table when you want to restore an existing index:
+
+```sql
+-- Old API (no longer supported):
+CREATE VIRTUAL TABLE my_table USING vectorlite(
+    embedding float32[128], hnsw(max_elements=10000), '/path/to/index.bin'
+);
+
+-- Current API:
+CREATE VIRTUAL TABLE my_table USING vectorlite(
+    embedding float32[128], hnsw(max_elements=10000)
+);
+INSERT INTO my_table(operation, path) VALUES ('load', '/path/to/index.bin');
+```
+
+For a new index, skip `load`. **Explicitly save any changes you want to retain before closing the connection**; closing without saving loses the in-memory changes. If an existing SQLite database stores a virtual-table declaration with the old third argument, that declaration also needs migration; changing only new table-creation SQL is not sufficient. Legacy index-file compatibility is described below.
+
 Persist an index to disk, or restore a saved index into an in-memory table:
 ```sql
 -- Save the current in-memory index to a file (overwrites if it exists).
