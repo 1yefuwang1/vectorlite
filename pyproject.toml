@@ -32,8 +32,9 @@ Repository = "https://github.com/1yefuwang1/vectorlite"
 # CMake installs Python source and the Cargo artifact together. Do not copy an
 # ignored/stale source-tree extension binary into the wheel.
 wheel.packages = []
-sdist.include = ["scripts/install_rust.sh"]
-sdist.exclude = ["build/**", "target/**", "vectorlite/target/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
+# Include new implementation inputs even before a local dirty checkout is committed.
+sdist.include = ["scripts/install_rust.sh", "scripts/check_macos_artifact.py", "scripts/collect_runtime_licenses.py", "cmake/triplets/*.cmake", "third_party/**", "bindings/nodejs/packages/*/LICENSE", "vectorlite/src/**/*.rs", "vectorlite/tests/*.py", "doc/diskann.md", "benchmark/diskann_benchmark.py", "benchmark/test_diskann_benchmark_utils.py"]
+sdist.exclude = ["build/**", "target/**", "vectorlite/target/**", ".cache/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
 # Minimum version of CMake
 cmake.version = ">=3.22"
 # Build configuration

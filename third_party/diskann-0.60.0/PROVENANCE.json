@@ -1,0 +1,17 @@
+{
+  "component": "Microsoft DiskANN",
+  "version": "0.60.0",
+  "crates": ["diskann", "diskann-utils", "diskann-vector", "diskann-wide"],
+  "license": "MIT",
+  "repository": "https://github.com/microsoft/DiskANN",
+  "revision": "97a828a500848018d8be28c3ea6d5a585b07362f",
+  "source_files": {
+    "LICENSE.txt": "https://raw.githubusercontent.com/microsoft/DiskANN/97a828a500848018d8be28c3ea6d5a585b07362f/LICENSE.txt",
+    "NOTICE.txt": "https://raw.githubusercontent.com/microsoft/DiskANN/97a828a500848018d8be28c3ea6d5a585b07362f/NOTICE.txt"
+  },
+  "source_git_blobs": {
+    "LICENSE.txt": "b2f52a2bad4e27e2d9c68a755abb74cb8943f2fa",
+    "NOTICE.txt": "faf70aa99f51f9bdd98c82b8949ba2826d408a23"
+  },
+  "notes": "License and notice text are reproduced from the revision recorded in the 0.60.0 crate's .cargo_vcs_info.json. This is component provenance, not a complete transitive-dependency license audit. The extension's own Apache-2.0 license is unchanged."
+}

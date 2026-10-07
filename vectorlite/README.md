@@ -69,6 +69,36 @@ that forwards to `ops`; the rowid filter is a Rust predicate invoked through a
 trampoline. So the *only* C++ is hnswlib itself, the `ops` kernels, and the
 minimal generic adapters needed to expose those two through a C ABI.
 
+## SQLite-backed DiskANN
+
+The optional `diskann(...)` backend calls Microsoft DiskANN3's pinned Rust graph
+algorithms through a private `DataProvider`, while storing vectors, adjacency,
+labels, counters, and entrypoints in SQLite shadow tables. Initial support is
+float32 squared L2/cosine; HNSW options, types, files, and nontransactional behavior
+remain unchanged. See the [SQL/operational guide](<../doc/diskann.md>).
+
+The new modules are [diskann_core.rs](<src/diskann_core.rs>),
+[diskann_store.rs](<src/diskann_store.rs>), [atomic_callback.rs](<src/atomic_callback.rs>),
+[sqlite.rs](<src/sqlite.rs>), and [index_error.rs](<src/index_error.rs>). SQLite
+calls still use only the host API table. No separate connection, linked SQLite,
+Tokio runtime, or spawning bulk graph operation is used in this milestone.
+Connection-bound owners remain non-Send; private scoped tokens check thread,
+connection, generation, and reentrancy before accessing borrowed storage.
+
+A single virtual-table callback can make multiple successful nested SQL writes
+before a later error. SQLite does not necessarily allocate a statement journal
+for that single callback. Each DiskANN mutation therefore runs inside a private
+ordinary two-row UPDATE carrier, with pre/post guard validation and errors
+reported while its scalar action is still inside the statement's rollback
+boundary. Do not replace this with bare write-through callbacks or a no-op
+trigger: trigger disabling and FAIL/IGNORE behavior can break atomicity.
+
+Authoritative state is SQLite-only; rollback needs no transaction-sized Rust
+graph snapshot. Query/prune workspaces are operation-local, records are read
+lazily, and projected cursor vectors are captured with their distances. Corrupt
+lengths must be gated in SQL before payload materialization, not just checked
+after copying a BLOB into Rust.
+
 ## Building
 
 Official release and CI platforms are Linux x64, Windows x64 and macOS Apple

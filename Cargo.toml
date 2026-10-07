@@ -17,6 +17,10 @@ path = "vectorlite/tests/build_support.rs"
 
 [dependencies]
 bytemuck = { version = "1", default-features = false, features = ["derive"] }
+# Keep the pre-1.0 graph/provider contracts behind our private SQLite adapter.
+diskann = { version = "=0.60.0", default-features = false }
+diskann-utils = { version = "=0.60.0", default-features = false }
+diskann-vector = { version = "=0.60.0", default-features = false }
 serde_json = "1"
 tempfile = { version = "3", default-features = false }
 vectorlite-sqlite-sys = { path = "vectorlite/vectorlite-sqlite-sys" }

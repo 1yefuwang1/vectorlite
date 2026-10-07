@@ -55,6 +55,26 @@ fn used_bindings_match_native_sqlite_headers() {
             offset!(sqlite3_module, xFindFunction),
         ),
         ("sqlite3_module.xRename", offset!(sqlite3_module, xRename)),
+        ("sqlite3_module.xBegin", offset!(sqlite3_module, xBegin)),
+        ("sqlite3_module.xSync", offset!(sqlite3_module, xSync)),
+        ("sqlite3_module.xCommit", offset!(sqlite3_module, xCommit)),
+        (
+            "sqlite3_module.xRollback",
+            offset!(sqlite3_module, xRollback),
+        ),
+        (
+            "sqlite3_module.xSavepoint",
+            offset!(sqlite3_module, xSavepoint),
+        ),
+        ("sqlite3_module.xRelease", offset!(sqlite3_module, xRelease)),
+        (
+            "sqlite3_module.xRollbackTo",
+            offset!(sqlite3_module, xRollbackTo),
+        ),
+        (
+            "sqlite3_module.xShadowName",
+            offset!(sqlite3_module, xShadowName),
+        ),
         (
             "sizeof(sqlite3_index_info)",
             std::mem::size_of::<sqlite3_index_info>(),
@@ -206,6 +226,82 @@ fn used_bindings_match_native_sqlite_headers() {
         (
             "sqlite3_api_routines.vtab_in_next",
             offset!(sqlite3_api_routines, vtab_in_next),
+        ),
+        (
+            "sqlite3_api_routines.prepare_v2",
+            offset!(sqlite3_api_routines, prepare_v2),
+        ),
+        (
+            "sqlite3_api_routines.finalize",
+            offset!(sqlite3_api_routines, finalize),
+        ),
+        (
+            "sqlite3_api_routines.bind_int64",
+            offset!(sqlite3_api_routines, bind_int64),
+        ),
+        (
+            "sqlite3_api_routines.bind_blob",
+            offset!(sqlite3_api_routines, bind_blob),
+        ),
+        (
+            "sqlite3_api_routines.bind_text",
+            offset!(sqlite3_api_routines, bind_text),
+        ),
+        (
+            "sqlite3_api_routines.step",
+            offset!(sqlite3_api_routines, step),
+        ),
+        (
+            "sqlite3_api_routines.column_count",
+            offset!(sqlite3_api_routines, column_count),
+        ),
+        (
+            "sqlite3_api_routines.column_type",
+            offset!(sqlite3_api_routines, column_type),
+        ),
+        (
+            "sqlite3_api_routines.column_int64",
+            offset!(sqlite3_api_routines, column_int64),
+        ),
+        (
+            "sqlite3_api_routines.column_blob",
+            offset!(sqlite3_api_routines, column_blob),
+        ),
+        (
+            "sqlite3_api_routines.column_bytes",
+            offset!(sqlite3_api_routines, column_bytes),
+        ),
+        (
+            "sqlite3_api_routines.column_text",
+            offset!(sqlite3_api_routines, column_text),
+        ),
+        (
+            "sqlite3_api_routines.errmsg",
+            offset!(sqlite3_api_routines, errmsg),
+        ),
+        (
+            "sqlite3_api_routines.extended_errcode",
+            offset!(sqlite3_api_routines, extended_errcode),
+        ),
+        (
+            "sqlite3_api_routines.randomness",
+            offset!(sqlite3_api_routines, randomness),
+        ),
+        (
+            "sqlite3_api_routines.changes",
+            offset!(sqlite3_api_routines, changes),
+        ),
+        (
+            "sqlite3_api_routines.bind_pointer",
+            offset!(sqlite3_api_routines, bind_pointer),
+        ),
+        (
+            "sqlite3_api_routines.context_db_handle",
+            offset!(sqlite3_api_routines, context_db_handle),
+        ),
+        (
+            "sqlite3_api_routines.result_error_code",
+            offset!(sqlite3_api_routines, result_error_code),
         ),
     ];
     for (index, (name, value)) in rust_layout.iter().enumerate() {

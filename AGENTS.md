@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vectorlite is a SQLite extension for fast vector search using HNSW. Rust is the main and only extension implementation: the Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. C++17 is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim. Distributed Python wheels and npm packages retain the public `vectorlite.so`, `vectorlite.dylib` and `vectorlite.dll` names.
+Vectorlite is a SQLite extension for fast vector search using HNSW and an optional SQLite-backed Rust DiskANN backend. Rust is the main and only extension implementation: the Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. C++17 is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim. Distributed Python wheels and npm packages retain the public `vectorlite.so`, `vectorlite.dylib` and `vectorlite.dll` names.
 
 CMake and scikit-build-core remain the source-build and packaging frontends; the `vectorlite` library target invokes Cargo, not a C++ virtual-table implementation.
 
@@ -78,7 +78,8 @@ cmake --build build/release --target ops_benchmark -j8
 
 ## Key Dependencies
 
-- Rust: bytemuck (checked byte views), serde_json, tempfile, and the vendored vectorlite-sqlite-sys crate.
+- Rust: bytemuck (checked byte views), serde_json, tempfile, pinned DiskANN 0.60.0 algorithm/provider crates, and the vendored vectorlite-sqlite-sys crate.
+- DiskANN storage: host-connection SQLite shadow tables with lazy record access; scoped callback-thread adapters and an ordinary multirow statement journal carrier own mutation atomicity. Do not substitute an in-memory index, independent connection, or bare multi-statement callback writes.
 - Build: Cargo and the cc crate for the native shim/ops compilation.
 - Native runtime: hnswlib and Highway; SQLite calls go through the host's loadable-extension API table, not a linked SQLite library.
 - Native testing: Google Test and Google Benchmark; SQLite headers are used for ABI checks/regeneration.
@@ -91,7 +92,8 @@ cmake --build build/release --target ops_benchmark -j8
 - Preserve `deny(unsafe_op_in_unsafe_fn)` and the documented-unsafe Clippy checks. Every unsafe operation needs a specific lifetime/layout/ownership justification.
 - Validate vector dimensions and buffer lengths before native calls; use the distinct half-storage types rather than interchangeable integer slices.
 - Do not let Rust panics or C++ exceptions cross C ABI boundaries. Keep panic-abort library profiles and native exception translation.
-- SQLite serializes callbacks per connection. Registry entries use shared ownership so index/space lifetimes survive reparses; do not add unjustified Send/Sync implementations.
+- SQLite serializes callbacks per connection. HNSW registry entries use shared ownership so index/space lifetimes survive reparses; DiskANN state is authoritative in SQLite, not the registry. Do not add unjustified Send/Sync implementations. Scoped tokens must validate thread/connection/generation/reentrancy before pointer access, and bound statements must finalize before their pointer leases end.
+- Preserve DiskANN's journal-carrier boundary, pre/post validation, original SQL errors, and rollback-capable journal requirements. Budget graph/query/prune workspaces; validate persisted payloads before SQLite or Rust materializes them. Direct shadow edits are not a supported API.
 - Run rustfmt and Clippy when changing Rust code.
 
 ### Retained C++ / Highway

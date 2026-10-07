@@ -1,0 +1,1173 @@
+===== Unmodified leading source comments: src/error/ann_error.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/error/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/error/ranked.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Multi-Modal Error Handling
+//!
+//! # Background
+//!
+//! Sometime, data providers can experience spurious failures during operations such as vector
+//! retrieval.
+//!
+//! A primary culprit is access to deleted vectors (if vectors are eagerly deleted rather
+//! than deferred until graph clean up), which may returns an error but is more or
+//! less expected and should not take down the DiskANN algorithm.
+//!
+//! However, not all classes of errors can be ignored in this way, such as errors indicating
+//! that DiskANN should abort processing.
+//!
+//! Furthermore, DiskANN should not be in the habit of ignoring all errors from providers as
+//! many users may want such errors to be propagated.
+//!
+//! This means we need a multi-level error handling mechanism that achieves several design
+//! goals:
+//!
+//! 1. Disambiguate between "transient" errors (those which are expected to resolve eventually
+//!    or can be ignored) and "hard" errors (those that should stop the current task and be
+//!    propagated) from user error types.
+//!
+//! 2. Require algorithmic code to explicitly acknowledge or escalate "transient" errors with
+//!    minimal probability of silently dropping an error or implicitly escalating.
+//!
+//!    In this context:
+//!
+//!    * "acknowledge": Notify the error that it has been observed and that the algorithm
+//!      is choosing to continue.
+//!
+//!    * "escalate": Notify the error that is has been observed and is being escalated by
+//!      the algorithm into a hard error.
+//!
+//! 3. Provide light-weight callback mechanisms for error acknowledgement or escalation
+//!    to enable telemetry in user types.
+//!
+//!    Practically, this means that user error types can use diagnostic logging to record
+//!    acknowledgements or escalations to assist in debugging efforts.
+//!
+//! 4. Ideally be minimal or no overhead for error types that are never transient.
+//!
+//! # How Does This Work?
+//!
+//! User error types (such as [`crate::provider::DataProvider::Error`])
+//! are expected to implement [`ToRanked`], which converts the
+//! error type to a [`RankedError`] consisting of a `Transient` and full `Error` alternatives.
+//! The [`RankedError::Transient`] alternative must implement [`TransientError`], which
+//! provides callback mechanisms for transient error acknowledgement or escalation.
+//! These callback are provided with a concrete reason for the decision to aid in debugging
+//! or program telemetry.
+//!
+//! The trait [`ErrorExt`] is then defined which takes `Result`s of such [`ToRanked`] types
+//! and provides the `allow_transient`/`escalate` interface to these `Result`s.
+//!
+//! So, how does this satisfy our goals:
+//!
+//! 1. User types explicitly mark themselves as either "transient" or "hard" when constructing
+//!    the [`RankedError`] enum through [`ToRanked`].
+//!
+//! 2. Generic algorithmic code should constrain error types to be just [`ToRanked`]. This
+//!    means that the `?` operator will not apply by default, requiring explicit handling
+//!    through either [`ErrorExt::allow_transient`] or [`ErrorExt::escalate`].
+//!
+//! 3. The methods in [`ErrorExt`] require reasons for the decision, which are forwarded
+//!    the implementation of [`TransientError`] and therefore made available to user types.
+//!
+//! Now, what about low-overhead?
+//!
+//! User types `T` that wish to **always** escalate can use the [`crate::always_escalate!`]
+//! macro. This works be defining the `Transient` alternative of [`ToRanked`] to be the
+//! unconstructable enum [`NeverTransient`]. This ensures at compile time
+//! that the [`RankedError::Transient`] alternative is unreachable and therefore the layout of
+//! `RankedError<NeverTransient, T>` is the same as `T` and all the transient error handling
+//! goes away.
+
+
+===== Unmodified leading source comments: src/flat/index.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Brute-force k-nearest-neighbor search over a [`DistancesUnordered`] visitor.
+
+===== Unmodified leading source comments: src/flat/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Sequential ("flat") search.
+//!
+//! This module is the streaming counterpart to the random-access
+//! [`crate::graph::glue::SearchAccessor`] family. It is designed for backends whose natural access
+//! pattern is a one-pass scan over their data -- for example append-only buffered stores or
+//! on-disk shards streamed via I/O.
+//!
+//! # Architecture
+//!
+//! The search algorithm operates directly on an initialized visitor:
+//!
+//! | Graph (random access)                       | Flat (sequential)                          |  Shared?  |
+//! | :------------------------------------       | :----------------------------------------- |:--------- |
+//! | [`crate::graph::glue::SearchAccessor`]      | [`DistancesUnordered`]                     | No        |
+//! | [`crate::graph::Search`]                    | [`knn_search`]                             | No        |
+//! | [`crate::graph::glue::SearchPostProcess`]   | [`crate::graph::glue::SearchPostProcess`]  | Yes       |
+//!
+
+===== Unmodified leading source comments: src/flat/strategy.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Core flat-search trait: [`DistancesUnordered`].
+
+
+===== Unmodified leading source comments: src/flat/test/cases/flat_knn_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Baseline-cached regression sweep for [`crate::flat::knn_search`].
+//!
+//! Builds a fresh provider per parameter combination, runs `knn_search` through the
+//! [`crate::flat::test::harness`], snapshots the result + statistics into
+//! [`FlatKnnBaseline`], and compares the entire batch against the JSON committed under
+//! `diskann/test/generated/flat/test/cases/flat_knn_search/`.
+
+
+===== Unmodified leading source comments: src/flat/test/cases/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/flat/test/harness.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Reusable execution harness for [`crate::flat::knn_search`] tests.
+//!
+//! Use [`KnnOracleRun::run`] to drive `knn_search` under a chosen [`OracleProcessor`]
+//! and pair the result with the oracle's expected post-processed output.
+
+
+===== Unmodified leading source comments: src/flat/test/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Test fixtures and helpers for the flat module.
+
+===== Unmodified leading source comments: src/flat/test/provider.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Self-contained test provider for the flat-search module.
+
+
+===== Unmodified leading source comments: src/graph/adjacencylist.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/config/defaults.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/config/experimental.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/config/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/ext/labeled.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! A [filtered search](glue::FilteredAccessor) adaptor around traditional
+//! [`SearchAccessor`](glue::SearchAccessor) where the acceptance/rejection criteria comes
+//! from an externally provided [`QueryLabelProvider`].
+//!
+//! To use, embed a [`SearchStrategy`](glue::SearchStrategy) `S` in a [`Filtered`] strategy
+//! with an associated [`QueryLabelProvider`]. This implements `SearchStrategy` under the
+//! same conditions as `S` with the resulting [`FilteredAccessor`] implementing
+//! [`glue::FilteredAccessor`].
+//!
+//! [`glue::DefaultPostProcessor`] defaults to the `<S as DefaultPostProcessor<_, _, _>>`.
+//! To use a general post-processor for `S`, the [`Unfiltered`] [`glue::SearchPostProcessStep`]
+//! can be used to strip off the wrapping [`FilteredAccessor`] and retrieve the inner
+//! `SearchAccessor`.
+//!
+//! ## Limitations
+//!
+//! * The provided [`QueryLabelProvider`] must somehow agree on the id space as the inner
+//!   `SearchAccessor`.
+//!
+//! * There exists a time-of-check, time-of-use window between label checks and distance
+//!   computations.
+//!
+//! * The [`QueryLabelProvider`] is checked behind a trait object.
+//!
+//! * By default, the [`FilteredAccessor`] is not passed to search post-processing.
+//!
+//! * As of writing, [`QueryLabelProvider`] does not have batched accesses.
+
+
+===== Unmodified leading source comments: src/graph/ext/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Extensions for search.
+
+
+===== Unmodified leading source comments: src/graph/glue.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # Search
+//!
+//! The [`SearchAccessor`] is the primary trait for implementing graph search algorithms.
+//! Graph search begins at [`starting_points`](SearchAccessor::starting_points) and performs
+//! several rounds of "beam expansion" via [`expand_beam`](SearchAccessor::expand_beam).
+//!
+//! The [`SearchAccessor`] has several duties. It must be able to retrieve adjacency list
+//! information from its underlying [`DataProvider`] and can compute distances between a
+//! fixed query and all elements in adjacency lists. See the documentation of
+//! [`expand_beam`](SearchAccessor::expand_beam) for a more detailed description of the
+//! required algorithm.
+//!
+//! Accessors are constructed via [`SearchStrategy::search_accessor`] and
+//! [`InsertStrategy::insert_search_accessor`] where they are provided with the query.
+//!
+//! # Build
+//!
+//! Index building consists of two main parts:
+//!
+//! 1. Adjacency list manipulation.
+//! 2. Neighbor pruning to compute new adjacency lists.
+//!
+//! Like search, there is a primary trait for extending this behavior: [`PruneAccessor`].
+//! Neighbor manipulation is done via [`PruneAccessor::neighbors`] whereas pruning is
+//! facilitated with [`PruneAccessor::fill`].
+//!
+//! A single [`PruneAccessor`] can be used for multiple rounds of pruning during a single
+//! insert or delete operation. As such, implementations may wish to cache a small number
+//! of vectors internally across calls to [`PruneAccessor::fill`] and are encouraged to use
+//! [`Map`](crate::graph::workingset::Map) for this cache.
+//!
+//! # Strategies
+//!
+//! Strategies provide the "glue" between [`DataProvider`]s and index operations like search,
+//! insertion, deletion, etc.
+//!
+//! They do this by tying together accessors, computers, and other operations required
+//! by the various indexing algorithms.
+//!
+//! The relationship between between strategies and indexing algorithms can feel like having
+//! "action at a distance", so this module-level documentation describes the logical flow
+//! behind the strategy types defined here.
+//!
+//! Type level documentation contains more detailed description behind the actual mechanics.
+//!
+//! * [`SearchStrategy`]: This is used for default graph-based searches. The flow of a search
+//!   is as follows:
+//!
+//!   1. Create the [`SearchAccessor`] defined by the strategy. This is the object that will
+//!      be used to retrieve data from the [`DataProvider`].
+//!
+//!   2. Run greedy-search using the accessor.
+//!
+//!   3. After search, post-processing is run, which enables operations like filtering
+//!      of start or deleted points, reranking etc.
+//!
+//!      See [`SearchPostProcess`].
+//!
+//! * [`SearchPostProcess`]/[`SearchPostProcessStep`]: These traits enable cascadable
+//!   post-processing pipelines for the results of search. The first is responsible for
+//!   transforming an input iterator of search results into a [`SearchOutputBuffer`].
+//!
+//!   The second enables modification of the input or output streams and associated accessors.
+//!
+//!   An arbitrary number of [`SearchPostProcessStep`]s can be cascaded together using
+//!   a [`Pipeline`].
+//!
+//! * [`InsertStrategy`]: Graph insertion consists of accepting the value to insert,
+//!   invoking [`provider::SetElement`] on that value,
+//!   then performing a graph search.
+//!
+//!   Following graph search, candidates are passed to a pruning phase.
+//!
+//!   Most of the [`InsertStrategy`] is dedicated to the initial graph search, delegating
+//!   pruning to an associated [`PruneStrategy`].
+//!
+//!   The graph search portion works by constructing a [`SearchAccessor`] with the value
+//!   that was just inserted.
+//!
+//!   This accessor is then used for search, followed by pruning.
+//!
+//! * [`PruneStrategy`]: The pruning strategy is simpler a deferred mechanism of constructing
+//!   a [`PruneAccessor`].
+//!
+//! * [`InplaceDeleteStrategy`]: This follows the trend of defining accessors and related
+//!   strategies. One difference for inplace-deletion is that we use an element accessed
+//!   from the [`DataProvider`] itself for search. Therefore, methods like
+//!   [`crate::graph::DiskANNIndex::inplace_delete`] also require the
+//!   [`InplaceDeleteStrategy`] to implement an appropriate [`SearchStrategy`].
+//!
+//!   Like insertion, this trait delegates pruning to a dedicated `PruneStrategy`.
+
+
+===== Unmodified leading source comments: src/graph/index.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/internal/backedge.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/internal/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/internal/prune.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/internal/sorted_neighbors.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Sorted Neighbor Vector
+
+
+===== Unmodified leading source comments: src/graph/misc.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// enum used to return the status of the vector that `consolidate_vector`
+// was called on: Deleted if the vector was already deleted, and Complete
+// if the vector was not deleted (and thus is now consolidated)
+
+===== Unmodified leading source comments: src/graph/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/pipnn/leaf_kernel.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Nearest-neighbor selection inside one PiPNN leaf.
+//!
+//! [`select_leaf_neighbors`] asks the metric for the distances between all point
+//! pairs of the leaf. It then runs a pair scan, which reads each pair once and
+//! offers it to the nearest sets of both points.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/leaf_metric.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Pairwise distances inside one PiPNN leaf.
+//!
+//! Leaf distances equal the DiskANN metric distances, because later graph stages
+//! compare and quantize them. The leaf kernel reads only the strict lower
+//! triangle, which holds each pair below the diagonal.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Numerical kernels for PiPNN graph construction.
+//!
+//! Each kernel computes a distance matrix with metric `M`, then selects the nearest
+//! candidates from it with SIMD architecture `A`:
+//!
+//! - `partition_kernel` assigns each point to its nearest partition leaders. It
+//!   uses `partition_metric`.
+//! - `leaf_kernel` finds the nearest neighbors of each point in a leaf. It uses
+//!   `leaf_metric`.
+//! - `topk` holds the selection code of both kernels. `simd` sets its vector width.
+//!
+//! The metric code does not use `A`, because the GEMM and norm routines select
+//! their own SIMD code. Callers choose the metric once per graph build, so each
+//! kernel compiles for one metric and has no run-time metric check.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/partition_kernel.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Partition assignment for PiPNN.
+//!
+//! [`assign_leaders`] computes the ranking distance from each point of a stripe to
+//! each partition leader, then selects the IDs of the nearest leaders. A ranking
+//! distance orders the leaders of a point in the same way as the metric distance.
+//! Each leader stands for one child partition, so the IDs tell the caller where to
+//! send each point.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/partition_metric.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Ranking distances from points to partition leaders.
+//!
+//! A ranking distance orders the leaders of one point in the same way as the
+//! metric distance. It can omit terms that are equal for every leader of the
+//! point, so its value can differ from the metric distance. A point stripe is a
+//! block of consecutive points that one task assigns. One leader set serves all
+//! point stripes of a partition split.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/simd.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The SIMD vector type of the PiPNN ranking kernels.
+
+
+===== Unmodified leading source comments: src/graph/pipnn/topk.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Top-k selection for the PiPNN ranking kernels.
+//!
+//! The nearest set of a point holds the k nearest candidates found so far, nearest
+//! first. An unfilled slot holds [`Candidate::EMPTY`]. The k-th distance of a
+//! nearest set is the distance in its last slot. It stays positive infinity until
+//! the set is full. To offer a candidate to a nearest set is to insert the
+//! candidate if it is nearer than the k-th distance. NaN and positive infinity are
+//! never nearer, so they never enter a nearest set.
+//!
+//! [`select_top_k_ids`] serves partition assignment. It selects the nearest set of
+//! each distance row and writes its IDs. [`select_top_k_symmetric`] serves leaf
+//! construction. It runs a pair scan: it reads each unordered point pair once and
+//! offers the pair to the nearest sets of both points. The caller sets k through
+//! the width of the output. For common values of k, both functions use fixed-size
+//! nearest sets, so the compiler can unroll insertion.
+//!
+//! Both functions compare [`LANES`] distances at a time with the k-th distance and
+//! insert only the nearer ones. After a nearest set fills, most groups have no
+//! nearer distance, so one SIMD comparison replaces `LANES` scalar comparisons.
+//! The SIMD loops run inside `run2` or `run3` of architecture `A`, which compiles
+//! them with the target features of `A`.
+
+
+===== Unmodified leading source comments: src/graph/search/diverse_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Diversity-aware search.
+
+
+===== Unmodified leading source comments: src/graph/search/filtered_range_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Filtered range-based search with a distance radius
+
+
+===== Unmodified leading source comments: src/graph/search/inline_filter_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Inline label-filtered search with optional adaptive-L sizing.
+
+
+===== Unmodified leading source comments: src/graph/search/knn_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Standard k-NN (k-nearest neighbor) graph-based search.
+
+
+===== Unmodified leading source comments: src/graph/search/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Unified search execution framework.
+//!
+//! This module provides the primary search interface for DiskANN. All search types
+//! are represented as parameter structs that implement [`Search`], which
+//! contains the complete search logic.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use diskann::graph::{
+//!     neighbor::{BackInserter, Neighbor},
+//!     search::{Knn, Range, MultihopFilterSearch},
+//!     Search,
+//! };
+//!
+//! // Standard k-NN search: use a fixed-capacity output buffer
+//! let params = Knn::new(10, 100, None)?;
+//! let mut knn_storage = [Neighbor::default(); 10];
+//! let mut knn_output = BackInserter::new(&mut knn_storage);
+//! let stats = index
+//!     .search(params, &strategy, &context, &query, &mut knn_output)
+//!     .await?;
+//!
+//! // Range search: use a growable Vec buffer for an unknown number of results
+//! let params = Range::new(100, 0.5)?;
+//! let mut range_output: Vec<Neighbor<_>> = Vec::new();
+//! let stats = index
+//!     .search(params, &strategy, &context, &query, &mut range_output)
+//!     .await?;
+//! ```
+
+
+===== Unmodified leading source comments: src/graph/search/multihop_filter_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Filtered search using multi-hop expansion.
+
+
+===== Unmodified leading source comments: src/graph/search/paged.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/search/range_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Range-based search within a distance radius.
+
+
+===== Unmodified leading source comments: src/graph/search/record.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/search/scratch.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/search_output_buffer.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/start_point.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/strategy.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Operates entirely with full precision
+///
+/// All indexing and search operations use the uncompressed full-precision vectors.
+
+===== Unmodified leading source comments: src/graph/test/cases/consolidate.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for `consolidate_vector` covering all four code paths:
+//!
+//! 1. Consolidating a deleted vertex → `ConsolidateKind::Deleted`
+//! 2. Consolidating a vertex with nothing to repair → `ConsolidateKind::Complete` (no-op)
+//! 3. Consolidating a vertex with deleted neighbors → prune and repair edges
+//! 4. Transient failure during vector retrieval → `ConsolidateKind::FailedVectorRetrieval`
+
+
+===== Unmodified leading source comments: src/graph/test/cases/filtered_range_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for filtered range search using an always-true filter.
+//!
+//! These cover the filtered-range cases directly and validate the filtered-range
+//! behavior against its own baselines.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/grid_insert.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Baseline regression tests for single and batch insert followed by search.
+//!
+//! This module consolidates both single-insert and multi-insert tests into a single
+//! parameterized framework. The test matrix covers:
+//!
+//! - **Grid configurations**: 1D/100, 3D/5, 4D/4
+//! - **Insert modes**: single (one-by-one) and batch (via `multi_insert`)
+//! - **Batch sizes**: all-at-once and chunked
+//! - **Intra-batch candidates**: None, Some(4), All
+//!
+//! For multi-insert tests, thread-count invariance is verified: the same baseline must
+//! hold regardless of whether the tokio runtime is single-threaded or multi-threaded.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/grid_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/test/cases/helpers.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Shared test helpers for graph index test cases.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/index.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/test/cases/inline.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for inline filter search traversal behavior.
+//!
+//! These tests exercise end-to-end `index.search(InlineFilterSearch { .. })` execution.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/inplace_delete.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/test/cases/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/test/cases/multihop.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for multihop search traversal behavior.
+//!
+//! Organized into two layers:
+//! - **Unit tests** call `multihop_search_internal` directly on small hand-constructed
+//!   graphs to test each decision path (Accept, Reject+two-hop, Terminate) in isolation.
+//! - **Integration tests** go through `index.search(MultihopFilterSearch{...})` end-to-end
+//!   with baselines for regression protection.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/paged_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for paged (iterative) search.
+//!
+//! Paged search returns results in pages of k neighbors via a stateful
+//! [`PagedSearch`](crate::graph::search::PagedSearch) handle. Tests cover basic pagination,
+//! single-page retrieval, and small page sizes that stress the iteration machinery.
+
+
+===== Unmodified leading source comments: src/graph/test/cases/range_search.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tests for range-based search within a distance radius.
+//!
+//! Covers basic range search, inner radius filtering, two-round expansion,
+//! and empty result handling. Integration tests use baselines for regression
+//! protection.
+
+
+===== Unmodified leading source comments: src/graph/test/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/test/provider.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! A pedantic provider implementation used for testing alorithmic logic.
+
+
+===== Unmodified leading source comments: src/graph/test/synthetic.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/graph/workingset/map.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The default implementation of a [Working Set](super).
+//!
+//! This is meant to work out of the box with enough knobs to cover common cases.
+//! Supported workflows include:
+//!
+//! * Controlling reuse of the working set across multiple prunes.
+//! * Zero-copy seeding from batches passed to
+//!   [`multi_insert`](crate::graph::DiskANNIndex::multi_insert).
+//!
+//! # Guidance
+//!
+//! The data structure here has a lot of knobs. This section contains guidance for what
+//! defaults to use for developers depending on needs.
+//!
+//! ### Single insert, no need to tweak working set fills
+//!
+//! Use [`Map`] with the default projection. For example, if your internal ID type is `u32`
+//! and your element type is convertible to a `Box<[T]>`, then use `Map<u32, Box<[T]>>`,
+//! constructed as follows:
+//!
+//! ```
+//! use diskann::graph::workingset::{Map, map::{Builder, Capacity}};
+//!
+//! let capacity = 10;
+//! let mut map: Map<u32, Box<[f32]>> = Builder::new(Capacity::Default).build(capacity);
+//! map.insert(1, Box::new([1.0]));
+//! assert_eq!(&**map.get(&1).unwrap(), &[1.0]);
+//! ```
+//!
+//! ### Multi insert, element types are slice-like
+//!
+//! If using [`multi_insert`](crate::graph::DiskANNIndex::multi_insert) and your elements
+//! look like slices, then the [`Ref`] [projection](Projection) can be used. See the section
+//! on element projection down below.
+//!
+//! # Concepts
+//!
+//! ## Working Set Reuse
+//!
+//! The core indexing algorithm will reuse the same working-set object (e.g. [`Map`]) across
+//! multiple rounds of prune. Users can take advantage of this reuse to use the working set
+//! as a cache, reusing vector retrieved from a previous round to reduce the total number of
+//! vectors retrieved. This needs to be balanced with the potential extra memory overhead of
+//! the cache.
+//!
+//! To that end, [`Map`] provides four different operating modes, controlled by the
+//! [`Capacity`] enum:
+//!
+//! * [`Capacity::None`]: Do not reuse any vectors. In this case, calls to [`Map::fill`] will
+//!   completely clear the set before any vectors are added.
+//!
+//! * [`Capacity::Default`]: Set the capacity of the [`Map`] to
+//!   [`max_occlusion_size`](crate::graph::Config::max_occlusion_size). This allows
+//!   some amount of reuse while keeping an upper bound on the amount of memory occupied by
+//!   the map to that which prune can use anyways.
+//!
+//! * [`Capacity::Some`]: Override the allowed capacity of the [`Map`]. Enabling more
+//!   aggressive caching than [`Capacity::Default`] while still limiting memory growth.
+//!
+//! * [`Capacity::Unbounded`]: Never clear entries from the cache. This can cause unbounded
+//!   growth, so use with care.
+//!
+//! In any case where the working set is used as a cache - there's the possibility of stale
+//! entries being resident in the working set. The core algorithm will only retain working
+//! sets for the duration of a logical operation (adding of back-edges, for example) and will
+//! not persist these sets across operations. This minimizes the risk of stale entries
+//! negatively impacting graph quality.
+//!
+//! ### Eviction Policy
+//!
+//! [`Map`] uses a scheme to evict older entries during [`fill`](Map::fill)
+//! (see also [`Map::prepare`]). First, the elements in the provided
+//! iterator that already exist in the map are pinned. Unpinned entries will be evicted
+//! until there is enough room to store all entries in the iterator. Finally, all missing
+//! entries will be fetched.
+//!
+//! ## Zero Copy Batch Overlays
+//!
+//! [`glue::MultiInsertStrategy::finish`] provides the batch of inserted vectors for use as a
+//! "seed" for the final working set. In situations where
+//! [intra-batch candidates](`crate::graph::config::IntraBatchCandidates`) are used, this
+//! provides an opportunity to use the existing data provided to multi-insert directly, rather
+//! than fetching vectors from the underlying provider every time.
+//!
+//! This module provides functionality in the form of [`Overlay`]. The simplest constructor
+//! to use is [`Overlay::from_batch`] which is designed to work natively with the
+//! [`glue::Batch`] trait required by multi-insert. This can be fed to a [`Builder`] which
+//! ultimately creates a [`Map`].
+//!
+//! ### Element Projection
+//!
+//! One fundamental problem of the overlay is that the way data is stored in the overlay and
+//! the way it is stored natively in [`Map`] might be different. To accommodate this, the
+//! [`Projection`] trait is introduced. Briefly, this allows decoupling of the storage in
+//! [`Map`] and the overlay:
+//!
+//! ```
+//! use std::sync::Arc;
+//! use diskann_utils::views::rowmajor;
+//!
+//! use diskann::graph::workingset::{Map, View, map::{Overlay, Ref, Builder, Capacity}};
+//!
+//! let batch = rowmajor::Owned::<u32>::row_vector(Box::new([1, 2, 3]));
+//!
+//! // Construct an "overlay" with just one id.
+//! //
+//! // The overlay uses the `Ref` projection, yielding slices.
+//! let overlay = Overlay::<u32, Ref<[u32]>>::from_batch(Arc::new(batch), [5]);
+//! assert_eq!(overlay.get(&5).unwrap(), &[1, 2, 3]);
+//!
+//! // Next - we build a `Map` that stores its entries as `Box<[u32]>`.
+//! let mut map: Map<_, Box<[u32]>, _> = Builder::new(Capacity::Default)
+//!     .with_overlay(overlay)
+//!     .build(5);
+//!
+//! map.insert(10, Box::new([10, 20, 30]));
+//!
+//! // Since we have an overlay, the map has an entry for id "5" as well as the "10" we
+//! // just inserted.
+//! let v = map.view();
+//! assert_eq!(v.get(5).unwrap(), &[1, 2, 3]);
+//! assert_eq!(v.get(10).unwrap(), &[10, 20, 30]);
+//! ```
+
+
+===== Unmodified leading source comments: src/graph/workingset/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/internal/chain.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// An iterator chain that implements [`ExactSizeIterator`] by assuming the
+/// combined length of `A` and `B` does not overflow `usize`.
+///
+/// [`std::iter::Chain`] deliberately does not implement `ExactSizeIterator`
+/// because `a.len() + b.len()` can theoretically overflow. In our domain,
+/// both sides are small (neighbor lists, candidate pools) so overflow is
+/// impossible.
+
+===== Unmodified leading source comments: src/internal/convert_f32.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/internal/counter.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/internal/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/lib.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Generic indexing algorithms.
+
+
+===== Unmodified leading source comments: src/neighbor/diverse_priority_queue.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/neighbor/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// Imports
+
+===== Unmodified leading source comments: src/neighbor/queue.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/provider.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The [`DataProvider`] trait encompasses the following concepts:
+//!
+//! * Storage for arbitrary data that is contextually accessed through accessors constructed
+//!   by [strategies](crate::graph::glue).
+//!
+//! * Mapping between an "external id" (a unique external identifier for an entry in data
+//!   store) and an "internal id", which is a simple typed used as a handle to vector data
+//!   internally.
+//!
+//! * Support for deletion via the [`Delete`] sub-trait.
+//!
+//! # Important Related Traits
+//!
+//! The [`DataProvider`] trait is really an ensemble of multiple related traits all working
+//! together to solve a problem.
+//!
+//! Important associated traits are described here.
+//!
+//! * [`SetElement`]: This is the method that allows assigning of data into the
+//!   [`DataProvider`] via external ID. This trait is parameterized by the type of the
+//!   "vector" being assigned, providing a mechanism for inclusion of arbitrary associated
+//!   data along with the raw vector.
+//!
+//!   The responsibility of the `set_element` method is several fold:
+//!
+//!   * It must assign an internal ID for the provided external ID. It can do this by using
+//!     a naive identity map.
+//!
+//!   * After insertion, the implementer may return a guard that will notify the provider
+//!     of an unsuccessful operation, allowing automatic cleanup and consistency control
+//!     over the external ID to internal ID mapping.
+//!
+//! * [`Delete`]: A sub-trait of [`DataProvider`] indicating that the provider supports the
+//!   notion of deleted items.
+//!
+//!   We differentiate between two different kinds of deletion:
+//!
+//!   * Soft Deletion: Where a external ID is marked as deleted, but the internal vector id
+//!     may still be reachable in an index.
+//!
+//!   * Hard Deletion (aka "release): This deletes an item by internal ID, removing it
+//!     completely from the store.
+//!
+//!   Note that the exact semantics of deletion are defined by the implementer. Some
+//!   implementations may allow internal IDs to be reused immediately following the deletion
+//!   of the external ID while others may wait for a "release".
+//!
+//! * [`HasId`]: Traits such as [`NeighborAccessor`] and [`NeighborAccessorMut`] all need to
+//!   interact with the underlying [`DataProvider`] using an internal ID type.
+//!
+//!   The [`HasId`] trait provides a common base-trait for these related concepts, which
+//!   ensures implementers only need to define and constrain it once.
+
+
+===== Unmodified leading source comments: src/test/cache.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test/cmp.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test/tokio.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Return a [current-thread runtime](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.new_current_thread).
+///
+/// This just a thin convenience wrapper around the builder interface in the linked
+/// documentation.
+
+===== Unmodified leading source comments: src/tracing.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Line and file numbers generated by the `tracing::event!` family of macros use the
+/// `file!()` and `line!()` macros.
+///
+/// Unfortunately, these do not respect `[track_caller]`, and so we lose some of the source
+/// location tracking we currently rely on.
+///
+/// The `tracked_*` family of macros use `std::panic::Location::caller()` to correctly get
+/// the caller and attach the info in "diskann.file" and "diskann.line".
+///
+/// Upstream handling should first look for these fields and only if they don't exist should
+/// we inspect the file and line included as part of the tracing record.
+
+===== Unmodified leading source comments: src/utils/async_tools.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/utils/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/utils/utils.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+===== Unmodified leading source comments: src/utils/vector_id.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/utils/vector_repr.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+

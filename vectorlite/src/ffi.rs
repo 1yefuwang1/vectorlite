@@ -76,7 +76,26 @@ pub unsafe fn set_api(table: *const sqlite3_api_routines) -> Result<(), &'static
         declare_vtab,
         vtab_config,
         create_module_v2,
-        create_function_v2
+        create_function_v2,
+        prepare_v2,
+        finalize,
+        bind_int64,
+        bind_blob,
+        bind_text,
+        bind_pointer,
+        context_db_handle,
+        result_error_code,
+        step,
+        column_count,
+        column_type,
+        column_int64,
+        column_blob,
+        column_bytes,
+        column_text,
+        errmsg,
+        extended_errcode,
+        randomness,
+        changes
     );
     if version >= 3038000 {
         require!(vtab_in, vtab_in_first, vtab_in_next);
@@ -294,6 +313,69 @@ pub unsafe fn vtab_in_next(v: *mut sqlite3_value, out: *mut *mut sqlite3_value) 
     unsafe { (api_field!(vtab_in_next))(v, out) }
 }
 
+// --- prepared statements on the borrowed host connection ---
+
+// These entries all precede the SQLite 3.20 API prefix validated by set_api.
+// Keep raw routing here; sqlite.rs owns statement state and buffer lifetimes.
+macro_rules! statement_api {
+    ($name:ident($($argument:ident: $kind:ty),* $(,)?) -> $result:ty) => {
+        /// Routes through the initialized host's loadable-extension API.
+        ///
+        /// # Safety
+        /// Arguments must satisfy this SQLite routine's connection, statement,
+        /// buffer, and output-pointer contracts. The API must be initialized.
+        pub unsafe fn $name($($argument: $kind),*) -> $result {
+            // SAFETY: the caller supplies this routine's SQLite argument
+            // contract; set_api validated this entry in the supported prefix.
+            unsafe { (api_field!($name))($($argument),*) }
+        }
+    };
+}
+
+statement_api!(prepare_v2(
+    db: *mut sqlite3,
+    sql: *const c_char,
+    length: c_int,
+    statement: *mut *mut sqlite3_stmt,
+    tail: *mut *const c_char,
+) -> c_int);
+statement_api!(finalize(statement: *mut sqlite3_stmt) -> c_int);
+statement_api!(bind_int64(statement: *mut sqlite3_stmt, index: c_int, value: i64) -> c_int);
+statement_api!(bind_blob(
+    statement: *mut sqlite3_stmt,
+    index: c_int,
+    value: *const c_void,
+    length: c_int,
+    destructor: sqlite3_destructor_type,
+) -> c_int);
+statement_api!(bind_text(
+    statement: *mut sqlite3_stmt,
+    index: c_int,
+    value: *const c_char,
+    length: c_int,
+    destructor: sqlite3_destructor_type,
+) -> c_int);
+statement_api!(bind_pointer(
+    statement: *mut sqlite3_stmt,
+    index: c_int,
+    value: *mut c_void,
+    tag: *const c_char,
+    destructor: sqlite3_destructor_type,
+) -> c_int);
+statement_api!(context_db_handle(context: *mut sqlite3_context) -> *mut sqlite3);
+statement_api!(result_error_code(context: *mut sqlite3_context, code: c_int) -> ());
+statement_api!(step(statement: *mut sqlite3_stmt) -> c_int);
+statement_api!(column_count(statement: *mut sqlite3_stmt) -> c_int);
+statement_api!(column_type(statement: *mut sqlite3_stmt, column: c_int) -> c_int);
+statement_api!(column_int64(statement: *mut sqlite3_stmt, column: c_int) -> i64);
+statement_api!(column_blob(statement: *mut sqlite3_stmt, column: c_int) -> *const c_void);
+statement_api!(column_bytes(statement: *mut sqlite3_stmt, column: c_int) -> c_int);
+statement_api!(column_text(statement: *mut sqlite3_stmt, column: c_int) -> *const u8);
+statement_api!(errmsg(db: *mut sqlite3) -> *const c_char);
+statement_api!(extended_errcode(db: *mut sqlite3) -> c_int);
+statement_api!(randomness(length: c_int, output: *mut c_void) -> ());
+statement_api!(changes(db: *mut sqlite3) -> c_int);
+
 // --- schema / module / functions ---
 
 pub unsafe fn declare_vtab(db: *mut sqlite3, sql: &str) -> c_int {
@@ -311,6 +393,16 @@ pub unsafe fn vtab_config_constraint_support(db: *mut sqlite3) -> c_int {
     // SAFETY: the caller supplies valid SQLite arguments with the documented
     // callback lifetime; set_api validated the dispatched function pointers.
     unsafe { (api_field!(vtab_config))(db, SQLITE_VTAB_CONSTRAINT_SUPPORT as c_int, 1 as c_int) }
+}
+
+/// Disables constraint-support promises for a backend with multi-row writes.
+///
+/// # Safety
+/// Called only from xCreate/xConnect with their live host connection.
+pub unsafe fn vtab_config_constraint_support_disabled(db: *mut sqlite3) -> c_int {
+    // SAFETY: the caller supplies the constructor's live connection; this
+    // configuration takes one variadic int and the API entry is validated.
+    unsafe { (api_field!(vtab_config))(db, SQLITE_VTAB_CONSTRAINT_SUPPORT as c_int, 0 as c_int) }
 }
 
 pub unsafe fn vtab_config_directonly(db: *mut sqlite3) -> c_int {
@@ -504,5 +596,300 @@ pub unsafe fn scalar_callback(
     let args = unsafe { arguments(argc, argv) };
     if let Err(error) = callback(&ctx, args) {
         ctx.error(&error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    const CASE_ENV: &str = "VECTORLITE_HOST_API_PREFIX_CASE";
+
+    unsafe extern "C" fn version() -> c_int {
+        if std::env::var(CASE_ENV)
+            .unwrap_or_default()
+            .starts_with("338")
+        {
+            3_038_000
+        } else {
+            3_020_000
+        }
+    }
+
+    unsafe extern "C" fn presence_only() {
+        // Presence-only placeholders must never be invoked by initialization.
+        std::process::abort();
+    }
+
+    #[allow(clippy::missing_transmute_annotations)]
+    fn fixture(case: &str) -> sqlite3_api_routines {
+        // SAFETY: every field of sqlite3_api_routines is an optional function
+        // pointer; zero is the valid None representation for all fields.
+        let mut table: sqlite3_api_routines = unsafe { std::mem::zeroed() };
+        table.libversion_number = Some(version);
+        macro_rules! present {
+            ($($field:ident),+ $(,)?) => {$(
+                // SAFETY: initialization only tests these function pointers for
+                // presence, never calls them. The executable non-null address
+                // is converted to the field's inferred function-pointer type.
+                // Only libversion_number is dispatched, with its true signature.
+                table.$field = Some(unsafe {
+                    std::mem::transmute::<unsafe extern "C" fn(), _>(presence_only as unsafe extern "C" fn())
+                });
+            )+};
+        }
+        present!(
+            value_type,
+            value_bytes,
+            value_blob,
+            value_text,
+            value_int64,
+            value_pointer,
+            result_double,
+            result_null,
+            result_blob,
+            result_text,
+            result_error,
+            result_pointer,
+            malloc,
+            free,
+            declare_vtab,
+            vtab_config,
+            create_module_v2,
+            create_function_v2,
+            prepare_v2,
+            finalize,
+            bind_int64,
+            bind_blob,
+            bind_text,
+            bind_pointer,
+            context_db_handle,
+            result_error_code,
+            step,
+            column_count,
+            column_type,
+            column_int64,
+            column_blob,
+            column_bytes,
+            column_text,
+            errmsg,
+            extended_errcode,
+            randomness,
+            changes,
+            vtab_in,
+            vtab_in_first,
+            vtab_in_next,
+        );
+        match case {
+            "320-missing-prepare" => table.prepare_v2 = None,
+            "320-missing-extended" => table.extended_errcode = None,
+            "320-missing-randomness" => table.randomness = None,
+            "320-missing-column" => table.column_blob = None,
+            "320-missing-bind-pointer" => table.bind_pointer = None,
+            "320-missing-context-db" => table.context_db_handle = None,
+            "320-missing-result-code" => table.result_error_code = None,
+            "338-missing-in" => table.vtab_in_next = None,
+            _ => {}
+        }
+        table
+    }
+
+    // Put the usable prefix immediately before an unreadable page. This catches
+    // whole-table reference/copy regressions and accidental reads of newer fields.
+    struct GuardPrefix {
+        allocation: *mut c_void,
+        length: usize,
+        table: *const sqlite3_api_routines,
+    }
+
+    impl GuardPrefix {
+        fn new(source: &sqlite3_api_routines, prefix: usize) -> Self {
+            let (allocation, page) = pages::allocate();
+            assert!(prefix <= page);
+            assert_eq!(prefix % std::mem::align_of::<sqlite3_api_routines>(), 0);
+            // SAFETY: allocate returns two pages, with the second inaccessible.
+            // The prefix fits in the readable first page and is pointer-aligned.
+            // Copy only the initialized source bytes that the fixture host owns.
+            let table = unsafe {
+                let destination = allocation.cast::<u8>().add(page - prefix);
+                std::ptr::copy_nonoverlapping(
+                    (source as *const sqlite3_api_routines).cast::<u8>(),
+                    destination,
+                    prefix,
+                );
+                destination.cast::<sqlite3_api_routines>()
+            };
+            Self {
+                allocation,
+                length: page * 2,
+                table,
+            }
+        }
+    }
+
+    impl Drop for GuardPrefix {
+        fn drop(&mut self) {
+            // SAFETY: this owns the exact two-page allocation returned by pages;
+            // invalid initialization never retained the table in the global API.
+            unsafe { pages::release(self.allocation, self.length) };
+        }
+    }
+
+    #[cfg(unix)]
+    mod pages {
+        use super::*;
+        extern "C" {
+            fn getpagesize() -> c_int;
+            fn mmap(
+                address: *mut c_void,
+                length: usize,
+                protection: c_int,
+                flags: c_int,
+                fd: c_int,
+                offset: i64,
+            ) -> *mut c_void;
+            fn mprotect(address: *mut c_void, length: usize, protection: c_int) -> c_int;
+            fn munmap(address: *mut c_void, length: usize) -> c_int;
+        }
+
+        pub(super) fn allocate() -> (*mut c_void, usize) {
+            // SAFETY: getpagesize takes no arguments; mmap requests two private
+            // anonymous writable pages without using a file or existing mapping.
+            let (address, page) = unsafe {
+                let page = usize::try_from(getpagesize()).unwrap();
+                let anonymous = if cfg!(target_os = "macos") {
+                    0x1000
+                } else {
+                    0x20
+                };
+                (
+                    mmap(std::ptr::null_mut(), page * 2, 3, 2 | anonymous, -1, 0),
+                    page,
+                )
+            };
+            assert_ne!(address as isize, -1, "mmap failed");
+            // SAFETY: mmap returned two pages; the second page's protection is
+            // removed, leaving the prefix's backing page writable and readable.
+            let status = unsafe { mprotect(address.cast::<u8>().add(page).cast(), page, 0) };
+            assert_eq!(status, 0, "mprotect failed");
+            (address, page)
+        }
+
+        pub(super) unsafe fn release(address: *mut c_void, length: usize) {
+            // SAFETY: caller supplies this module's live allocation and exact size.
+            unsafe { munmap(address, length) };
+        }
+    }
+
+    #[cfg(windows)]
+    mod pages {
+        use super::*;
+        #[link(name = "kernel32")]
+        extern "system" {
+            #[link_name = "VirtualAlloc"]
+            fn virtual_alloc(
+                address: *mut c_void,
+                length: usize,
+                allocation: u32,
+                protection: u32,
+            ) -> *mut c_void;
+            #[link_name = "VirtualProtect"]
+            fn virtual_protect(
+                address: *mut c_void,
+                length: usize,
+                protection: u32,
+                old: *mut u32,
+            ) -> c_int;
+            #[link_name = "VirtualFree"]
+            fn virtual_free(address: *mut c_void, length: usize, operation: u32) -> c_int;
+        }
+
+        pub(super) fn allocate() -> (*mut c_void, usize) {
+            // Windows x64's 64-KiB allocation granularity is also page-aligned.
+            let page = 65_536;
+            // SAFETY: request fresh committed/reserved writable memory; no
+            // existing address or foreign allocation is modified.
+            let address = unsafe { virtual_alloc(std::ptr::null_mut(), page * 2, 0x3000, 0x04) };
+            assert!(!address.is_null(), "VirtualAlloc failed");
+            let mut old = 0;
+            // SAFETY: protect the allocation's second aligned 64-KiB region;
+            // old is a writable output and the first region stays accessible.
+            let status = unsafe {
+                virtual_protect(address.cast::<u8>().add(page).cast(), page, 0x01, &mut old)
+            };
+            assert_ne!(status, 0, "VirtualProtect failed");
+            (address, page)
+        }
+
+        pub(super) unsafe fn release(address: *mut c_void, _length: usize) {
+            // SAFETY: caller supplies the owned base; MEM_RELEASE requires size0.
+            unsafe { virtual_free(address, 0, 0x8000) };
+        }
+    }
+
+    #[test]
+    fn host_api_prefix_subprocess() {
+        if let Ok(case) = std::env::var(CASE_ENV) {
+            let source = fixture(&case);
+            let prefix = if case.starts_with("338") {
+                std::mem::offset_of!(sqlite3_api_routines, deserialize)
+            } else {
+                std::mem::offset_of!(sqlite3_api_routines, vtab_nochange)
+            };
+            let memory = GuardPrefix::new(&source, prefix);
+            // SAFETY: the fixture owns this host-version prefix, with a genuine
+            // libversion_number entry. It is never borrowed as a complete table.
+            // A successful installation below retains the mapping until exit.
+            let result = unsafe { set_api(memory.table) };
+            let expected = match case.as_str() {
+                "320-missing-prepare" => Some("prepare_v2"),
+                "320-missing-extended" => Some("extended_errcode"),
+                "320-missing-randomness" => Some("randomness"),
+                "320-missing-column" => Some("column_blob"),
+                "320-missing-bind-pointer" => Some("bind_pointer"),
+                "320-missing-context-db" => Some("context_db_handle"),
+                "320-missing-result-code" => Some("result_error_code"),
+                "338-missing-in" => Some("vtab_in_next"),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert!(result.unwrap_err().contains(expected));
+            } else {
+                assert_eq!(result, Ok(()));
+                // The global API keeps this borrowed prefix; preserve it for
+                // this isolated subprocess's lifetime, without invoking stubs.
+                std::mem::forget(memory);
+            }
+            return;
+        }
+        for case in [
+            "320",
+            "338",
+            "320-missing-prepare",
+            "320-missing-extended",
+            "320-missing-randomness",
+            "320-missing-column",
+            "320-missing-bind-pointer",
+            "320-missing-context-db",
+            "320-missing-result-code",
+            "338-missing-in",
+        ] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ffi::tests::host_api_prefix_subprocess",
+                    "--nocapture",
+                ])
+                .env(CASE_ENV, case)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "host prefix case {case} failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
     }
 }

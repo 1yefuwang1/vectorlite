@@ -37,6 +37,107 @@ are **historical measurements from before the Rust-primary migration**, not
 new Rust performance results. Keep their recorded artifact paths and numbers
 as provenance; rerun this suite to measure the current implementation.
 
+## Streamed SQLite-contained DiskANN benchmark
+
+[The standalone DiskANN runner](<diskann_benchmark.py>) is separate from the
+in-memory, multi-backend pytest suite below. It requires only Python's standard
+library and an **explicit, freshly built extension** with the DiskANN backend;
+SQLite 3.38 or newer is required. It never falls back to an installed wheel.
+
+```bash
+# Run after building the release extension; choose a NEW database and JSON file.
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-production.sqlite --output diskann-production.json \
+  --count 10000 --dim 128 --metric l2 --queries 32 --k 10 \
+  --degree 16 --build-list-size 64 --search-list-size 64 \
+  --cache-bytes 67108864 --max-visits 2048 --updates 16 --deletes 16
+
+# Reopen a previously generated database without changing its contents.
+# Dataset/graph settings come from its persisted benchmark manifest.
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-production.sqlite --query-only --queries 32 --k 10
+```
+
+Use `.so` on Linux or `.dll` on Windows. New runs fail if the database already
+exists; `--query-only` requires a database created by this runner. A JSON output
+file must also be new. Failed builds leave their partial database for inspection,
+not automatic reuse or deletion.
+
+### Measurement method
+
+- Seeded float32 L2 or cosine data is generated one vector at a time and inserted
+  through the public virtual-table API in transactions of at most 128 vectors.
+  There is no corpus-sized Python/NumPy matrix or vector list.
+- Build, query, exact-ground-truth and mutation stages use **separate fresh
+  interpreter processes**. Query workers do not inherit the builder's dataset
+  or memory high-water mark. Exact ground truth runs **after** timed queries in
+  another process, scanning stored vectors in bounded batches into per-query
+  top-k heaps. `--numpy-ground-truth` optionally accelerates those bounded
+  batches; NumPy is never imported by measured query workers.
+- JSON records recall@k, the first query, first-pass and repeated warm-pass
+  p50/p95 latency, extension path/SHA-256, SQLite/Python versions, build cost,
+  update/delete/consolidation costs, database/WAL sizes, and per-stage peak RSS.
+  Mutation measurements are followed by another fresh query/recall run.
+- “Fresh-process first pass” **does not mean cold OS cache**. The builder and
+  earlier workers can leave OS pages cached; this runner never drops global
+  OS caches. Both first-pass and warm latency exclude synthetic query generation.
+- Every connection uses an 8 MiB SQLite page-cache setting and `mmap_size=0`.
+  `--cache-bytes` is the graph workspace budget, not total process RSS. Linux
+  `ru_maxrss` is converted from KiB, macOS from bytes; Windows uses
+  `GetProcessMemoryInfo.PeakWorkingSetSize`.
+- `--query-memory-limit-mib` applies and verifies Linux `RLIMIT_AS` in query
+  workers only. This limits **virtual address space, not RSS**. It is rejected
+  on macOS/Windows, whose corresponding behavior is not verified here.
+- Format-3 soft deletions retain vectors and adjacency until maintenance.
+  Consolidation performs a SQLite-staged full graph rebuild with bounded Rust
+  workspace, not merely deleted-neighbor cleanup; its cost can scale with the
+  entire live population. Use `--skip-consolidation` if that cost is intentionally
+  outside a run. The runtime descriptor/format is recorded so prototype format-2
+  measurements are not confused with format-3 results. No default latency or
+  recall SLA is implied by this benchmark.
+
+### Controlled large-storage fixture
+
+To exercise lazy storage/working memory without waiting for a large production
+ANN build, the runner also offers a synthetic linear graph:
+
+```bash
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-storage.sqlite --output diskann-storage.json \
+  --fixture storage-linear --count 65536 --dim 1024 --metric l2 \
+  --degree 4 --build-list-size 32 --search-list-size 64 \
+  --cache-bytes 16777216 --max-visits 1024 --queries 32 --k 10 \
+  --require-beyond-ram
+```
+
+**This is not a production ANN build or a general recall benchmark.** It uses a
+public first-row bootstrap, then deliberately populates private format-2/3 shadow
+tables in streamed batches. The runtime descriptor is preserved and its format
+recorded; no descriptor is fabricated to bypass extension validation. Those
+writes are benchmark fixture construction,
+**not a supported import API**. The two-row atomic carrier and descriptor remain
+unchanged. Frozen node 0 connects to a bidirectional chain of live nodes; vectors
+have their row ID in the first float32 coordinate and zeros elsewhere. Queries
+address only the reachable start prefix and verify analytic nearest labels and
+squared distances after reopening in a fresh process. Mutations are skipped.
+JSON uses fixture coverage rather than reporting production ANN recall.
+
+The example stores **256 MiB of live vector payload**, plus SQLite and graph
+storage overhead. `--require-beyond-ram` succeeds only when the measured database
+file is larger than both the query worker's peak RSS and the configured graph
+workspace plus SQLite cache. This is measured evidence about this controlled
+workload, **not proof of random-query performance, a cold OS cache, or universal
+memory bounds**. Small fixture smoke runs make no beyond-RAM claim.
+
+Artifact-independent utility tests do not load an extension or benchmark deps:
+
+```bash
+python -B -m unittest discover -s benchmark -p 'test_diskann_benchmark_utils.py' -v
+```
+
 ## Requirements
 
 - **Python >= 3.14** to install the current `vectorlite_py` package and the

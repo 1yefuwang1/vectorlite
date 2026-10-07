@@ -52,6 +52,27 @@ Vectorlite is currently in beta. There could be breaking changes.
 5. Index serde support. A vectorlite table can be saved to a file, and be reloaded from it. Index files created by hnswlib can also be loaded by vectorlite. Please check [this example](https://github.com/1yefuwang1/vectorlite/blob/main/examples/index_serde.py);
 6. Vector json serde support using `vector_from_json()` and `vector_to_json()`.
 
+## SQLite-backed DiskANN (experimental)
+
+Use `diskann(...)` for a SQLite-contained vector/graph backend with transactional
+INSERT/UPDATE/DELETE and explicit consolidation. The first milestone supports
+float32 squared L2/cosine and requires SQLite 3.38+. HNSW remains available with
+its existing in-memory save/load behavior and nontransactional write policy.
+
+```sql
+CREATE VIRTUAL TABLE embeddings USING vectorlite(
+    embedding float32[768] cosine, diskann()
+);
+SELECT rowid, distance FROM embeddings
+WHERE knn_search(embedding, knn_param(?, 10));
+INSERT INTO embeddings(operation) VALUES ('consolidate');
+```
+
+Use a file-backed database for disk storage; `:memory:` remains memory-backed.
+See the [DiskANN API and operational guide](<doc/diskann.md>) for tuning, resource
+budgets, atomicity, maintenance, and current limitations. No performance speedup
+or production SLA is implied by the initial integration.
+
 ## API reference
 Vectorlite provides the following APIs. 
 Please note vectorlite is currently in beta. There could be breaking changes.
@@ -89,7 +110,7 @@ SQL vector inputs and outputs are little-endian float32 blobs. The declared stor
 -- 3. M: defaults to 16
 -- 4. random_seed: defaults to 100
 -- 5. allow_replace_deleted: defaults to true
--- The index is always held in memory. Persist or restore it explicitly with the
+-- HNSW is held in memory. Persist or restore it explicitly with the
 -- operation/path commands shown below.
 create virtual table {table_name} using vectorlite({vector_name} float32[{dimension}] {distance_type}, hnsw(max_elements={max_elements}, {ef_construction=200}, {M=16}, {random_seed=100}, {allow_replace_deleted=true}));
 ```
@@ -128,7 +149,7 @@ Loading also accepts **legacy raw HNSW files** from older Vectorlite builds or h
 
 The receiving table's `max_elements` and `allow_replace_deleted` control capacity and deleted-slot reuse after loading. Capacity is at least the loaded element count; use a larger `max_elements` to allow growth. Other graph-construction parameters come from the saved graph.
 
-The in-memory index is held per database connection and survives schema reparses (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections). It is lost when the connection closes unless you explicitly save it. On SQLite **3.31 or newer**, vectorlite tables are direct-only: application SQL can access them, but views and triggers cannot.
+The HNSW in-memory index is held per database connection and survives schema reparses (e.g. `VACUUM`, `ALTER TABLE`, or DDL from other connections). It is lost when the connection closes unless you explicitly save it. On SQLite **3.31 or newer**, vectorlite tables are direct-only: application SQL can access them, but views and triggers cannot.
 
 Note: `operation`, `path`, and `distance` are reserved column names and cannot be used as the vector column name.
 
@@ -542,10 +563,10 @@ select rowid, distance from my_table where knn_search(my_embedding, knn_param(ve
 2. Stored vectors may be `float32`, `float16` or `bfloat16`, but SQL vector inputs and outputs are always little-endian float32 blobs.
 3. ~~SIMD is only enabled on x86 platforms. Because the default implementation in hnswlib doesn't support SIMD on ARM. Vectorlite is 3x-4x slower on MacOS-ARM than MacOS-x64. I plan to improve it in the future.~~
 4. rowid in sqlite3 is of type int64_t and can be negative. However, rowid in a vectorlite table should be in this range `[0, min(max value of size_t, max value of int64_t)]`. The reason is rowid is used as `labeltype` in hnsw index, which has type `size_t`(usually 32-bit or 64-bit depending on the platform).
-5. Transaction is not supported.
+5. HNSW mutations do not support transactions. DiskANN vectors/graph support SQLite transactions and savepoints; see the [DiskANN guide](<doc/diskann.md#transactions-and-persistence>).
 6. Metadata filter(rowid filter) requires sqlite3 >= 3.38. Python 3.14's built-in `sqlite3` module bundles SQLite 3.50.4 (>= 3.38) to use it. knn_search() without rowid fitler still works for old sqlite3.
-7. The vector index is held in memory.
-8. Deleting a row only marks the vector as deleted and doesn't free the memory. The vector will not be included in later queries. However, if another vector is inserted with the same rowid, the memory will be reused.
+7. HNSW is held in memory; the SQLite-backed DiskANN alternative fetches records lazily from disk in a file-backed database.
+8. In HNSW, deleting a row only marks the vector as deleted and doesn't free the memory. The vector will not be included in later queries. However, if another vector is inserted with the same rowid, the memory will be reused.
 9. A vectorlite table can only have one vector column.
 
 # Acknowledgement
