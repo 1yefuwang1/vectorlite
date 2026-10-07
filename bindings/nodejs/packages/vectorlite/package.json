@@ -7,7 +7,8 @@
     "src"
   ],
   "scripts": {
-    "test": "node test/test.js"
+    "test": "npm run test:platforms && node test/test.js",
+    "test:platforms": "node --test test/platforms.test.js"
   },
   "author": "1yefuwang1@gmail.com",
   "license": "Apache-2.0",
@@ -21,7 +22,6 @@
     "better-sqlite3": "^11.1.2"
   },
   "optionalDependencies": {
-    "@1yefuwang1/vectorlite-darwin-x64": "0.3.0",
     "@1yefuwang1/vectorlite-darwin-arm64": "0.3.0",
     "@1yefuwang1/vectorlite-linux-x64": "0.3.0",
     "@1yefuwang1/vectorlite-win32-x64": "0.3.0"

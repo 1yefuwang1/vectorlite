@@ -16,11 +16,15 @@ VERSION_FILE = ROOT / "VERSION"
 PYPROJECT_TOML = ROOT / "pyproject.toml"
 PYTHON_INIT = ROOT / "bindings" / "python" / "vectorlite_py" / "__init__.py"
 VCPKG_JSON = ROOT / "vcpkg.json"
+CARGO_MANIFESTS = [
+    ROOT / "Cargo.toml",
+    ROOT / "vectorlite" / "vectorlite-sqlite-sys" / "Cargo.toml",
+]
+CARGO_LOCK = ROOT / "Cargo.lock"
 NODEJS_PACKAGES_DIR = ROOT / "bindings" / "nodejs" / "packages"
 
 PLATFORM_PACKAGES = [
     "vectorlite-darwin-arm64",
-    "vectorlite-darwin-x64",
     "vectorlite-linux-x64",
     "vectorlite-win32-x64",
 ]
@@ -78,6 +82,19 @@ def main() -> None:
         r'"version-string": ".*"',
         f'"version-string": "{version}"',
     )
+
+    # Keep the primary Rust runtime and vendored SQLite bindings in sync without
+    # resolving/updating unrelated dependency versions in Cargo.lock.
+    for manifest in CARGO_MANIFESTS:
+        print(f"Updating {manifest}")
+        update_file_regex(manifest, r'^version = ".*"', f'version = "{version}"')
+    print(f"Updating {CARGO_LOCK}")
+    for crate in ["vectorlite", "vectorlite-sqlite-sys"]:
+        update_file_regex(
+            CARGO_LOCK,
+            rf'(^\[\[package\]\]\nname = "{crate}"\nversion = ")[^"]*(")',
+            rf'\g<1>{version}\g<2>',
+        )
 
     # 5. Main Node.js package.json (version + optionalDependencies)
     main_pkg = NODEJS_PACKAGES_DIR / "vectorlite" / "package.json"

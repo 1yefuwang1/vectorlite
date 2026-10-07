@@ -1,0 +1,18 @@
+[package]
+name = "vectorlite-sqlite-sys"
+version = "0.3.0"
+edition = "2021"
+description = "Pre-generated raw FFI bindings for the SQLite loadable-extension API (sqlite3ext.h)"
+license = "Apache-2.0"
+
+[lib]
+name = "vectorlite_sqlite_sys"
+
+# Generate native target bindings into OUT_DIR without changing tracked files.
+[features]
+regenerate = ["dep:bindgen"]
+abi-check = ["dep:cc"]
+
+[build-dependencies]
+bindgen = { version = "0.70", optional = true }
+cc = { version = "1", optional = true }

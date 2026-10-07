@@ -34,7 +34,7 @@ cursor.executemany('insert into news(rowid, article) values (?, ?)', [(i, str(i)
 cursor.execute(f'create virtual table vector_table using vectorlite(article_embedding float32[{DIM}], hnsw(max_elements={NUM_ELEMENTS}))')
 # For simplicity, embeddings are randomly generated for each article.
 # In a real application, you should replace this with your own embeddings.
-data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # Only float32 vectors are supported by vectorlite for now
+data = np.float32(np.random.random((NUM_ELEMENTS, DIM))) # SQL inputs are float32 blobs; storage can also be float16/bfloat16
 embeddings = [(i, data[i].tobytes()) for i in range(NUM_ELEMENTS)]
 cursor.executemany('insert into vector_table(rowid, article_embedding) values (?, ?)', embeddings)
 
