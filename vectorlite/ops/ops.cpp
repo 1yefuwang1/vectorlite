@@ -130,48 +130,46 @@ static float SquaredSumVectorized(const D d, const hwy::bfloat16_t* v,
   return hn::ReduceSum(df32, sum0);
 }
 
-// When float16 is not natively supported, we need to widen to f32 for
-// arithmetic. When HWY_HAVE_FLOAT16 is true (e.g. Apple Silicon M4), the
-// generic MulAdd-based SquaredSumVectorized above handles float16_t directly.
-#if !HWY_HAVE_FLOAT16
-template <class D, HWY_IF_F16_D(D)>
-static float SquaredSumVectorized(const D d, const hwy::float16_t* v,
-                                  size_t num_elements) {
-  const hn::Repartition<float, D> df32;
-
+// FP16 is a storage type: always promote to FP32 before accumulating, even
+// on targets with native FP16 arithmetic. ReorderWidenMulAccumulate is a BF16
+// helper whose x86 overload can accept FP16 vectors but reinterpret their bits
+// as BF16, so it must not be used here.
+static float InnerProductF16Vectorized(const hwy::float16_t* v1,
+                                       const hwy::float16_t* v2,
+                                       size_t num_elements) {
+  const hn::ScalableTag<float> df32;
+  const hn::Rebind<hwy::float16_t, decltype(df32)> df16;
   using V = decltype(hn::Zero(df32));
-  const size_t N = hn::Lanes(d);
+  const size_t N = hn::Lanes(df32);
+  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
 
-  size_t i = 0;
   V sum0 = hn::Zero(df32);
   V sum1 = hn::Zero(df32);
   V sum2 = hn::Zero(df32);
   V sum3 = hn::Zero(df32);
-
-  // Main loop: unrolled
-  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
-    const auto a0 = hn::LoadU(d, v + i);
-    i += N;
-    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
-    const auto a1 = hn::LoadU(d, v + i);
-    i += N;
-    sum2 = hn::ReorderWidenMulAccumulate(df32, a1, a1, sum2, sum3);
+  size_t i = 0;
+  for (; i + 4 * N <= num_elements; i += 4 * N) {
+    const auto a0 = hn::PromoteTo(df32, hn::LoadU(df16, v1 + i));
+    const auto b0 = hn::PromoteTo(df32, hn::LoadU(df16, v2 + i));
+    sum0 = hn::MulAdd(a0, b0, sum0);
+    const auto a1 = hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + N));
+    const auto b1 = hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + N));
+    sum1 = hn::MulAdd(a1, b1, sum1);
+    const auto a2 = hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + 2 * N));
+    const auto b2 = hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + 2 * N));
+    sum2 = hn::MulAdd(a2, b2, sum2);
+    const auto a3 = hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + 3 * N));
+    const auto b3 = hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + 3 * N));
+    sum3 = hn::MulAdd(a3, b3, sum3);
   }
-
-  // Possibly one more iteration of whole vectors
-  if (i + N <= num_elements) {
-    const auto a0 = hn::LoadU(d, v + i);
-    i += N;
-    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, a0, sum0, sum1);
+  for (; i + N <= num_elements; i += N) {
+    const auto a = hn::PromoteTo(df32, hn::LoadU(df16, v1 + i));
+    const auto b = hn::PromoteTo(df32, hn::LoadU(df16, v2 + i));
+    sum0 = hn::MulAdd(a, b, sum0);
   }
-
-  // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = hn::Add(sum0, sum1);
-  sum2 = hn::Add(sum2, sum3);
-  sum0 = hn::Add(sum0, sum2);
-  return hn::ReduceSum(df32, sum0);
+  const auto sum = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
+  return hn::ReduceSum(df32, sum);
 }
-#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, typename T = hn::TFromD<D>>
 static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
@@ -188,57 +186,17 @@ static float InnerProductImplVectorized(const D d, const T* v1, const T* v2,
   }
 }
 
-// When float16 is not natively supported, we need a custom inner product that
-// widens to f32. When HWY_HAVE_FLOAT16 is true, the generic
-// InnerProductImplVectorized above (which uses Dot::Compute/MulAdd) works.
-#if !HWY_HAVE_FLOAT16
+// Use FP32 products and accumulators for FP16 on every target. In particular,
+// do not pass FP16 vectors to Highway's BF16 ReorderWidenMulAccumulate helper.
 template <class D, HWY_IF_F16_D(D)>
 static float InnerProductImplVectorized(const D d, const hwy::float16_t* v1,
                                         const hwy::float16_t* v2,
                                         size_t num_elements) {
-  if (v1 == v2) {
-    return SquaredSumVectorized(d, v1, num_elements);
-  }
-
-  const hn::Repartition<float, D> df32;
-
-  using V = decltype(hn::Zero(df32));
-  const size_t N = hn::Lanes(d);
-  HWY_DASSERT(num_elements >= N && num_elements % N == 0);
-
-  size_t i = 0;
-  V sum0 = hn::Zero(df32);
-  V sum1 = hn::Zero(df32);
-  V sum2 = hn::Zero(df32);
-  V sum3 = hn::Zero(df32);
-
-  // Main loop: unrolled
-  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {
-    const auto a0 = hn::LoadU(d, v1 + i);
-    const auto b0 = hn::LoadU(d, v2 + i);
-    i += N;
-    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, b0, sum0, sum1);
-    const auto a1 = hn::LoadU(d, v1 + i);
-    const auto b1 = hn::LoadU(d, v2 + i);
-    i += N;
-    sum2 = hn::ReorderWidenMulAccumulate(df32, a1, b1, sum2, sum3);
-  }
-
-  // Possibly one more iteration of whole vectors
-  if (i + N <= num_elements) {
-    const auto a0 = hn::LoadU(d, v1 + i);
-    const auto b0 = hn::LoadU(d, v2 + i);
-    i += N;
-    sum0 = hn::ReorderWidenMulAccumulate(df32, a0, b0, sum0, sum1);
-  }
-
-  // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = hn::Add(sum0, sum1);
-  sum2 = hn::Add(sum2, sum3);
-  sum0 = hn::Add(sum0, sum2);
-  return hn::ReduceSum(df32, sum0);
+  (void)d;
+  // The same kernel handles both distinct inputs and self-products used by
+  // normalization, so neither path can accidentally use BF16 arithmetic.
+  return InnerProductF16Vectorized(v1, v2, num_elements);
 }
-#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, typename T = hn::TFromD<D>>
 static float InnerProductImpl(const D d, const T* v1, const T* v2,
@@ -341,77 +299,49 @@ static float L2DistanceSquaredImplVectorized(
   return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
 }
 
-// When float16 is not natively supported, we need to promote to f32 for
-// Sub/MulAdd. When HWY_HAVE_FLOAT16 is true, the generic
-// L2DistanceSquaredImplVectorized above (which uses Sub+MulAdd on float16_t
-// directly) works.
-#if !HWY_HAVE_FLOAT16
+// Subtract and accumulate FP16 distances in FP32 on every target, avoiding
+// intermediate FP16 rounding and overflow even when native FP16 is available.
 template <class D, HWY_IF_F16_D(D)>
 static float L2DistanceSquaredImplVectorized(
     const D d, const hwy::float16_t* HWY_RESTRICT v1,
     const hwy::float16_t* HWY_RESTRICT v2, size_t num_elements) {
-  const hn::Repartition<float, D> df32;
-
-  using V = decltype(hn::Zero(df32));
-  const size_t N = hn::Lanes(d);
+  (void)d;
+  const hn::ScalableTag<float> df32;
+  const hn::Rebind<hwy::float16_t, decltype(df32)> df16;
+  const size_t N = hn::Lanes(df32);
   HWY_DASSERT(num_elements >= N && num_elements % N == 0);
+  auto sum0 = hn::Zero(df32);
+  auto sum1 = hn::Zero(df32);
+  auto sum2 = hn::Zero(df32);
+  auto sum3 = hn::Zero(df32);
 
   size_t i = 0;
-
-  V sum0 = hn::Zero(df32);
-  V sum1 = hn::Zero(df32);
-  V sum2 = hn::Zero(df32);
-  V sum3 = hn::Zero(df32);
-
-  // Main loop: unrolled
-  for (; i + 2 * N <= num_elements; /* i += 2 * N */) {  // incr in loop
-    const auto a0 = hn::LoadU(d, v1 + i);
-    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
-    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
-    const auto a1 = hn::LoadU(d, v2 + i);
-    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
-    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
-    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
-    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
-    i += N;
-    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
-    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
-
-    const auto b0 = hn::LoadU(d, v1 + i);
-    const auto b0_lower = hn::PromoteLowerTo(df32, b0);
-    const auto b0_upper = hn::PromoteUpperTo(df32, b0);
-    const auto b1 = hn::LoadU(d, v2 + i);
-    const auto b1_lower = hn::PromoteLowerTo(df32, b1);
-    const auto b1_upper = hn::PromoteUpperTo(df32, b1);
-    const auto diff_b_lower = hn::Sub(b0_lower, b1_lower);
-    const auto diff_b_upper = hn::Sub(b0_upper, b1_upper);
-    i += N;
-    sum2 = hn::MulAdd(diff_b_lower, diff_b_lower, sum2);
-    sum3 = hn::MulAdd(diff_b_upper, diff_b_upper, sum3);
+  for (; i + 4 * N <= num_elements; i += 4 * N) {
+    const auto diff0 = hn::Sub(
+        hn::PromoteTo(df32, hn::LoadU(df16, v1 + i)),
+        hn::PromoteTo(df32, hn::LoadU(df16, v2 + i)));
+    sum0 = hn::MulAdd(diff0, diff0, sum0);
+    const auto diff1 = hn::Sub(
+        hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + N)),
+        hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + N)));
+    sum1 = hn::MulAdd(diff1, diff1, sum1);
+    const auto diff2 = hn::Sub(
+        hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + 2 * N)),
+        hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + 2 * N)));
+    sum2 = hn::MulAdd(diff2, diff2, sum2);
+    const auto diff3 = hn::Sub(
+        hn::PromoteTo(df32, hn::LoadU(df16, v1 + i + 3 * N)),
+        hn::PromoteTo(df32, hn::LoadU(df16, v2 + i + 3 * N)));
+    sum3 = hn::MulAdd(diff3, diff3, sum3);
   }
-
-  // Up to 1 iterations of whole vectors
   for (; i + N <= num_elements; i += N) {
-    const auto a0 = hn::LoadU(d, v1 + i);
-    const auto a0_lower = hn::PromoteLowerTo(df32, a0);
-    const auto a0_upper = hn::PromoteUpperTo(df32, a0);
-    const auto a1 = hn::LoadU(d, v2 + i);
-    const auto a1_lower = hn::PromoteLowerTo(df32, a1);
-    const auto a1_upper = hn::PromoteUpperTo(df32, a1);
-    const auto diff_a_lower = hn::Sub(a0_lower, a1_lower);
-    const auto diff_a_upper = hn::Sub(a0_upper, a1_upper);
-    i += N;
-    sum0 = hn::MulAdd(diff_a_lower, diff_a_lower, sum0);
-    sum1 = hn::MulAdd(diff_a_upper, diff_a_upper, sum1);
+    const auto diff = hn::Sub(hn::PromoteTo(df32, hn::LoadU(df16, v1 + i)),
+                              hn::PromoteTo(df32, hn::LoadU(df16, v2 + i)));
+    sum0 = hn::MulAdd(diff, diff, sum0);
   }
-  // Reduction tree: sum of all accumulators by pairs, then across lanes.
-  sum0 = hn::Add(sum0, sum1);
-  sum2 = hn::Add(sum2, sum3);
-  sum0 = hn::Add(sum0, sum2);
-
-  return hwy::ConvertScalarTo<float>(hn::ReduceSum(df32, sum0));
+  const auto sum = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
+  return hn::ReduceSum(df32, sum);
 }
-#endif  // !HWY_HAVE_FLOAT16
 
 template <class D, HWY_IF_F32_D(D)>
 static float L2DistanceSquaredImplVectorized(
@@ -614,26 +544,23 @@ static void NormalizeImpl(const D d, hwy::bfloat16_t* HWY_RESTRICT inout,
   });
 }
 
-// When float16 is not natively supported, we need to promote to f32 for Mul
-// and demote back. When HWY_HAVE_FLOAT16 is true, the generic NormalizeImpl
-// above (which uses Set/Mul on float16_t directly) works.
-#if !HWY_HAVE_FLOAT16
+// Compute and apply the normalization factor in FP32, then quantize back to
+// FP16. Native FP16 arithmetic must not round or overflow the squared norm.
 template <class D, HWY_IF_F16_D(D)>
 static void NormalizeImpl(const D d, hwy::float16_t* HWY_RESTRICT inout,
                           size_t num_elements) {
   const float squared_sum = InnerProductImpl(d, inout, inout, num_elements);
-  const float norm =
-      hwy::ConvertScalarTo<float>(1.0f / (sqrtf(squared_sum) + 1e-30f));
-  hn::Transform(d, inout, num_elements, [norm](D d, hn::Vec<D> v) HWY_ATTR {
-    const hn::RepartitionToWide<D> df32;
-    const hn::Half<D> dfh;
-    const auto norm_vector = hn::Set(df32, norm);
-    const auto lower = hn::Mul(hn::PromoteLowerTo(df32, v), norm_vector);
-    const auto upper = hn::Mul(hn::PromoteUpperTo(df32, v), norm_vector);
-    return hn::Combine(d, hn::DemoteTo(dfh, upper), hn::DemoteTo(dfh, lower));
+  const float norm = 1.0f / (sqrtf(squared_sum) + 1e-30f);
+  const hn::ScalableTag<float> df32;
+  const hn::Rebind<hwy::float16_t, decltype(df32)> df16;
+  hn::Transform(df16, inout, num_elements,
+                [norm](decltype(df16) d, hn::Vec<decltype(df16)> v) HWY_ATTR {
+    const hn::ScalableTag<float> df32;
+    const auto normalized =
+        hn::Mul(hn::PromoteTo(df32, v), hn::Set(df32, norm));
+    return hn::DemoteTo(d, normalized);
   });
 }
-#endif  // !HWY_HAVE_FLOAT16
 
 template <class HalfFloat, HWY_IF_SPECIAL_FLOAT(HalfFloat)>
 static void QuantizeF32ToHalf(const float* HWY_RESTRICT in,
