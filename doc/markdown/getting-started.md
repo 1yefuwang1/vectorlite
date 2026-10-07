@@ -74,6 +74,8 @@ conn.close()
 
 More examples can be found in the [examples](https://github.com/1yefuwang1/vectorlite/tree/main/examples) folder. For persistence, issue explicit `INSERT INTO <table>(operation, path) VALUES('save'|'load', ...)` commands from application SQL. New saves have a versioned schema descriptor; raw legacy files use the receiving table's declared schema. See the [API reference](<api.md>) for details.
 
+**Breaking change for existing users:** the third file-path argument to `CREATE VIRTUAL TABLE` has been removed, along with automatic loading and saving. Remove that argument and explicitly `load` an existing index after creating the table. **Save changes before closing the connection**; otherwise, the in-memory changes are lost. See the [persistence migration guide](<api.md#breaking-change-explicit-index-persistence>) for before/after SQL and existing-database considerations.
+
 ## Building from source
 
 Source builds require latest stable Rust, C/C++17 compilers, CMake >= 3.22, Ninja, Git and vcpkg. The Cargo workspace uses root [Cargo.toml](<../../Cargo.toml>) and [Cargo.lock](<../../Cargo.lock>); Rust sources and retained native ops live under `vectorlite/`. See the [contributor guide](<../../vectorlite/README.md>) for the layout and direct Cargo checks. Run the following commands from the repository root:
