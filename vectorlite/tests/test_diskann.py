@@ -201,7 +201,13 @@ def test_diskann_invalid_budgets_and_options_fail_before_creation(conn, options)
 def test_diskann_tiny_cache_rejects_before_frozen_or_user_allocation(extension_path):
     connection = _open(extension_path)
     try:
-        _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=4096,max_visits=128)")
+        # The syntactic minimum cannot admit even the fixed SQL plan workspace.
+        with pytest.raises(sqlite3.DatabaseError) as error:
+            _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=4096,max_visits=128)")
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_TOOBIG
+        assert not {"v", "v_diskann_meta", "v_diskann_nodes", "v_diskann_txn", "v_diskann_rebuild"} & _schema_names(connection)
+        # Enough for the fixed plans, but not the admitted algorithm scratch.
+        _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=32768,max_visits=128)")
         before = _snapshot(connection)
         observed = _observe_allocations(connection)
         with pytest.raises(sqlite3.DatabaseError) as error:
@@ -1110,6 +1116,15 @@ def test_diskann_journal_off_rejects_mutation_without_side_effects(extension_pat
         assert _get(connection, 100) == (2.0, 1.0)
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("argument", [None, 1, 4096, b"not a tagged pointer", "0x1234"])
+def test_diskann_batch_rejects_sql_values_as_native_pointers(conn, argument):
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error) as error:
+        conn.execute("INSERT INTO v(operation,embedding) VALUES('insert_batch',?)", (argument,))
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_MISUSE
+    assert _snapshot(conn) == before
 
 
 def test_diskann_private_atomic_function_cannot_be_called_from_sql(conn):

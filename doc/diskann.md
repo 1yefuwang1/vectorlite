@@ -5,10 +5,11 @@ SQLite-owned vector, graph, and index metadata storage. It is an alternative to
 HNSW, not a change to HNSW's in-memory persistence or transaction behavior.
 
 This first milestone is experimental. It supports `float32` storage with squared
-L2 or cosine distance, interactive inserts/updates/deletes, and explicit
-consolidation. It does not include product quantization, half-precision storage,
-inner-product indexing, parallel bulk graph construction, or background repair.
-The upstream algorithm/provider API is pinned to DiskANN 0.60.0.
+L2 or cosine distance, interactive inserts/updates/deletes, native pointer-based
+batch insertion, and explicit consolidation. It does not include product
+quantization, half-precision storage, parallel CPU graph construction, inner-product
+indexing, or background repair. The upstream algorithm/provider API is pinned to
+DiskANN 0.60.0 with a recorded local batch error-propagation/task-draining patch.
 
 ## Create and query
 
@@ -51,6 +52,104 @@ JSON object containing only a positive integer `search_list_size`.
 Like existing vectorlite tables, queries require a KNN or rowid equality/IN
 constraint. Arbitrary SQL predicates are not automatically pushed into graph
 search. Request `ORDER BY distance, rowid` when SQL-level ordering is required.
+
+## Native batch INSERT
+
+Native C/Rust callers can bind a **tagged pointer to a versioned descriptor**
+containing a contiguous row-major float32 matrix and explicit int64 rowids:
+
+```sql
+INSERT INTO embeddings(operation, embedding)
+VALUES ('insert_batch', ?1);
+
+-- Optional working-chunk size; default 8, accepted range 1 through 32.
+INSERT INTO embeddings(operation, embedding, path)
+VALUES ('insert_batch', ?1, '{"batch_size":8}');
+```
+
+`?1` must be bound using `sqlite3_bind_pointer()` with type tag
+`vectorlite.batch.f32.v1`, not as an integer address or BLOB. The standalone
+[public native header](<../vectorlite/include/vectorlite_batch.h>) is also installed
+under `vectorlite_py/include` with the extension. Example for a two-dimensional
+DiskANN table:
+
+```c
+#include <sqlite3.h>
+#include "vectorlite_batch.h"
+
+float vectors[] = {1.f, 0.f, 0.f, 2.f, 3.f, 4.f};
+int64_t rowids[] = {123, 456, 789};
+BatchF32V1 batch = {
+    VECTORLITE_BATCH_F32_V1_ABI_VERSION, (uint32_t)sizeof(BatchF32V1),
+    3, 2, vectors, rowids
+};
+sqlite3_stmt *stmt = NULL;
+int rc = sqlite3_prepare_v2(db,
+    "INSERT INTO embeddings(operation,embedding) VALUES('insert_batch',?1)",
+    -1, &stmt, NULL);
+if (rc == SQLITE_OK) {
+    rc = sqlite3_bind_pointer(stmt, 1, &batch,
+                             VECTORLITE_BATCH_F32_V1_TAG, NULL);
+}
+if (rc == SQLITE_OK) {
+    do { rc = sqlite3_step(stmt); } while (rc == SQLITE_ROW);
+    /* Success is SQLITE_DONE. SQLITE_ROW may come from count_changes=ON. */
+}
+/* Preserve any error before cleanup, and check finalize's result too. */
+int finalize_rc = sqlite3_finalize(stmt);
+```
+
+The descriptor is 40 bytes on official 64-bit targets, with fields
+`uint32_t abi_version`, `uint32_t struct_size`, `uint64_t count`,
+`uint64_t dimension`, `const float *vectors`, and `const int64_t *rowids`.
+Rust callers use an exact `#[repr(C)]` counterpart and the same static tag.
+Native inputs are native IEEE-754 float32 values; stored/output BLOBs retain the
+little-endian float32 format.
+
+**The caller must keep the descriptor and both readable, aligned buffers alive
+and immutable until the binding is cleared, replaced, or finalized.** Resetting
+the statement does not release bindings. With a NULL destructor the caller owns
+all buffers. Allocation validity and actual buffer length cannot be proved from
+a pointer tag; an arbitrary address with the correct tag violates the native
+contract and can cause undefined behavior. The extension checks version, layout,
+dimensions, nullness/alignment, length arithmetic and rowids before accessing the
+appropriate bounded input. It never interprets SQL numbers as addresses.
+
+Only `operation`, the vector column and optional `path` may be supplied; rowids
+come from the descriptor and a `distance` input is rejected. Duplicate rowids
+within/across chunks or already in the table abort the operation; this is
+insert-only, not upsert. Empty batches are no-ops. Numeric/range checks and cosine
+normalization follow ordinary DiskANN insertion and do not modify caller buffers.
+
+A single INSERT may describe more than 32 vectors. The extension copies and
+normalizes working chunks of 8 by default (at most 32), seeds an empty live graph
+with ordinary single insertion, and runs true DiskANN batch candidate/backedge aggregation for
+subsequent chunks. The **entire INSERT has one rollback boundary**: a failure in a
+later chunk restores earlier chunks' vectors, graph, ID allocation and counters.
+Chunking does not commit partial results. A successful nonempty command bumps the
+revision once. Callers needing separate commits can issue several bounded INSERTs,
+optionally under one explicit application transaction.
+
+Batch tasks run on a fresh **private current-thread Tokio runtime** inside the
+original SQLite callback. No task accesses SQLite from a worker thread; no tasks
+or borrowed input pointers remain after callback return. An ambient Tokio runtime
+visible to the extension's linked Tokio instance is rejected before graph writes;
+this is not detection of a separately linked host runtime. The pinned upstream
+patch drains tasks and propagates all batch phase failures independently of
+tracing, rather than accepting partial graph construction as success.
+
+`cache_bytes` admits owned chunk inputs, batch edges/maps/guards, graph scratch and
+vector snapshots. Runtime/container overhead is conservatively estimated, not an
+allocator-enforced process RSS cap. `max_visits` applies across each true chunk,
+not independently to every vector. Lower `batch_size` or adjust resource settings
+when admission/work limits return `SQLITE_TOOBIG`; no graph repair is silently
+truncated. Larger chunks consume one shared visit allowance and may need a larger
+explicit `max_visits`; a failed chunk is not automatically retried at a smaller
+size after writes. The ordinary SQL API and HNSW behavior are unchanged.
+
+Python's standard-library `sqlite3.execute()` cannot bind tagged native pointers;
+this interface is for native C/Rust clients, not a raw-address Python workaround.
+There is no automatic graph batching of ordinary multi-row VALUES or `executemany`.
 
 ## Options
 

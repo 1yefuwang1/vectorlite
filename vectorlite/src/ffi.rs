@@ -79,6 +79,8 @@ pub unsafe fn set_api(table: *const sqlite3_api_routines) -> Result<(), &'static
         create_function_v2,
         prepare_v2,
         finalize,
+        reset,
+        clear_bindings,
         bind_int64,
         bind_blob,
         bind_text,
@@ -340,6 +342,8 @@ statement_api!(prepare_v2(
     tail: *mut *const c_char,
 ) -> c_int);
 statement_api!(finalize(statement: *mut sqlite3_stmt) -> c_int);
+statement_api!(reset(statement: *mut sqlite3_stmt) -> c_int);
+statement_api!(clear_bindings(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(bind_int64(statement: *mut sqlite3_stmt, index: c_int, value: i64) -> c_int);
 statement_api!(bind_blob(
     statement: *mut sqlite3_stmt,
@@ -660,6 +664,8 @@ mod tests {
             create_function_v2,
             prepare_v2,
             finalize,
+            reset,
+            clear_bindings,
             bind_int64,
             bind_blob,
             bind_text,
@@ -683,6 +689,8 @@ mod tests {
         );
         match case {
             "320-missing-prepare" => table.prepare_v2 = None,
+            "320-missing-reset" => table.reset = None,
+            "320-missing-clear-bindings" => table.clear_bindings = None,
             "320-missing-extended" => table.extended_errcode = None,
             "320-missing-randomness" => table.randomness = None,
             "320-missing-column" => table.column_blob = None,
@@ -844,6 +852,8 @@ mod tests {
             let result = unsafe { set_api(memory.table) };
             let expected = match case.as_str() {
                 "320-missing-prepare" => Some("prepare_v2"),
+                "320-missing-reset" => Some("reset"),
+                "320-missing-clear-bindings" => Some("clear_bindings"),
                 "320-missing-extended" => Some("extended_errcode"),
                 "320-missing-randomness" => Some("randomness"),
                 "320-missing-column" => Some("column_blob"),
@@ -867,6 +877,8 @@ mod tests {
             "320",
             "338",
             "320-missing-prepare",
+            "320-missing-reset",
+            "320-missing-clear-bindings",
             "320-missing-extended",
             "320-missing-randomness",
             "320-missing-column",

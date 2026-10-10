@@ -303,6 +303,14 @@ fn used_bindings_match_native_sqlite_headers() {
             "sqlite3_api_routines.result_error_code",
             offset!(sqlite3_api_routines, result_error_code),
         ),
+        (
+            "sqlite3_api_routines.reset",
+            offset!(sqlite3_api_routines, reset),
+        ),
+        (
+            "sqlite3_api_routines.clear_bindings",
+            offset!(sqlite3_api_routines, clear_bindings),
+        ),
     ];
     for (index, (name, value)) in rust_layout.iter().enumerate() {
         // SAFETY: the helper reads only its static layout array and returns a size.

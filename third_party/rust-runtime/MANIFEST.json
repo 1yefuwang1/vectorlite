@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "182c4a215e34e989ed4aba8b1547e05803ec12409b14e364a1a4cca253101c39",
+  "cargo_lock_sha256": "1a2681f94470b8122c08f84883e9b1c4523d88ccf494a5b8ba381f8482415ecb",
   "collection_method": "cargo metadata --locked --format-version 1 --offline --filter-platform <target>; normal-edge traversal from vectorlite stopping before proc-macro subtrees",
   "excluded_packages": [
     {
@@ -406,7 +406,7 @@
               "bytes_from_start": 83,
               "notice_sha256": "f11f2a2c558a05390b3e610bfcae5e9cc2e30368878b8bf3a0ca5c338ad0e7ad",
               "source_path": "src/graph/index.rs",
-              "source_sha256": "26cd82192db87606a524aa2f4aa56f90da7ab3d00f588721bcd39dbdeb0b4cde"
+              "source_sha256": "fd98d08f6c0cd3a44aa10b25e3ea6c724e40cd805befeca825ddd17f309fd302"
             },
             {
               "bytes_from_start": 83,
@@ -783,6 +783,21 @@
           ]
         }
       ],
+      "local_patch": {
+        "modified_files": [
+          {
+            "local_sha256": "fd98d08f6c0cd3a44aa10b25e3ea6c724e40cd805befeca825ddd17f309fd302",
+            "path": "src/graph/index.rs",
+            "upstream_sha256": "26cd82192db87606a524aa2f4aa56f90da7ab3d00f588721bcd39dbdeb0b4cde"
+          }
+        ],
+        "patch_notes_path": "vendor/VENDOR_PATCH.md",
+        "purpose": "Preserve spawning batch algorithm while joining every task and propagating first errors before guard completion; SQLite owner supplies rollback.",
+        "source_directory": "third_party/diskann-0.60.0/vendor",
+        "upstream_file_hashes_path": "vendor/UPSTREAM_SHA256.json",
+        "upstream_file_hashes_sha256": "c4e116306109be42cf85679ee7637f0cc4ffd572f618b4c808800e6228f8d723",
+        "upstream_registry_archive_sha256": "ec463e5bfd1c0e6c850c607b7013ca13710103e92a0dcd4ca29419eaa176941e"
+      },
       "name": "diskann",
       "notes": [
         "All included license alternatives are retained; no SPDX OR alternative is selected.",
@@ -790,7 +805,7 @@
       ],
       "registry_archive_sha256": "ec463e5bfd1c0e6c850c607b7013ca13710103e92a0dcd4ca29419eaa176941e",
       "registry_archive_url": "https://static.crates.io/crates/diskann/diskann-0.60.0.crate",
-      "registry_source": "registry+https://github.com/rust-lang/crates.io-index",
+      "registry_source": null,
       "repository": "https://github.com/microsoft/DiskANN",
       "resolved_features": {
         "aarch64-apple-darwin": [],
@@ -3932,6 +3947,59 @@
         "path_in_vcs": ""
       },
       "version": "1.1.4"
+    },
+    {
+      "declared_license_file": null,
+      "declared_spdx": "MIT OR Apache-2.0",
+      "files": [
+        {
+          "origin": "published crate archive",
+          "path": "crates/serde-1.0.229/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source_path": "LICENSE-APACHE"
+        },
+        {
+          "origin": "published crate archive",
+          "path": "crates/serde-1.0.229/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_path": "LICENSE-MIT"
+        }
+      ],
+      "name": "serde",
+      "notes": [
+        "All included license alternatives are retained; no SPDX OR alternative is selected.",
+        "Leading per-file license/copyright comment excerpts are retained conservatively, without claiming every function survives linking."
+      ],
+      "registry_archive_sha256": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+      "registry_archive_url": "https://static.crates.io/crates/serde/serde-1.0.229.crate",
+      "registry_source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/serde-rs/serde",
+      "resolved_features": {
+        "aarch64-apple-darwin": [
+          "default",
+          "std"
+        ],
+        "x86_64-pc-windows-msvc": [
+          "default",
+          "std"
+        ],
+        "x86_64-unknown-linux-gnu": [
+          "default",
+          "std"
+        ]
+      },
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "vcs": {
+        "git": {
+          "sha1": "7fc3b4c30c94f73a96ebd1553f2b090d928fc3a8"
+        },
+        "path_in_vcs": "serde"
+      },
+      "version": "1.0.229"
     },
     {
       "declared_license_file": null,

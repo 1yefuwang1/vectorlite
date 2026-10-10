@@ -56,8 +56,10 @@ Vectorlite is currently in beta. There could be breaking changes.
 
 Use `diskann(...)` for a SQLite-contained vector/graph backend with transactional
 INSERT/UPDATE/DELETE and explicit consolidation. The first milestone supports
-float32 squared L2/cosine and requires SQLite 3.38+. HNSW remains available with
-its existing in-memory save/load behavior and nontransactional write policy.
+float32 squared L2/cosine and requires SQLite 3.38+. Native C/Rust clients can use
+[tagged-pointer batch INSERT](<doc/diskann.md#native-batch-insert>) with bounded
+working chunks and whole-statement rollback. HNSW remains available with its
+existing in-memory save/load behavior and nontransactional write policy.
 
 ```sql
 CREATE VIRTUAL TABLE embeddings USING vectorlite(

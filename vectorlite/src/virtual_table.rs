@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
 
+use crate::batch_input::BatchView;
 use crate::core::{Index, SearchFilter, SearchResult};
 use crate::diskann_store::{DiskAnnTable, QueryRows};
 use crate::ffi::{
@@ -1087,6 +1088,79 @@ fn execute_persistence(entry: &IndexEntry, values: &mut [Value<'_>]) -> Result<i
     Ok(0)
 }
 
+/// The options are a strict JSON object, not a path or source-table name.
+/// A streaming map visitor rejects duplicate keys before JSON can erase them.
+const DEFAULT_INSERT_BATCH: usize = 8;
+struct BatchOptions(usize);
+
+impl<'de> serde::Deserialize<'de> for BatchOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BatchOptions;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object containing only batch_size (integer 1..=32)")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut batch_size = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != "batch_size" {
+                        return Err(serde::de::Error::custom("unknown insert_batch option"));
+                    }
+                    if batch_size.is_some() {
+                        return Err(serde::de::Error::custom("duplicate batch_size option"));
+                    }
+                    let value = map.next_value::<usize>()?;
+                    if !(1..=32).contains(&value) {
+                        return Err(serde::de::Error::custom(
+                            "batch_size must be an integer 1..=32",
+                        ));
+                    }
+                    batch_size = Some(value);
+                }
+                Ok(BatchOptions(batch_size.unwrap_or(DEFAULT_INSERT_BATCH)))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+fn parse_batch_options(text: &str) -> Result<usize, VTabError> {
+    // The only legal option is tiny; bound allocations even for hostile keys.
+    if text.len() > 1024 {
+        return Err(VTabError::new("insert_batch options exceed 1024 bytes"));
+    }
+    serde_json::from_str::<BatchOptions>(text)
+        .map(|options| options.0)
+        .map_err(|error| VTabError::new(format!("invalid insert_batch options: {error}")))
+}
+
+fn execute_insert_batch(table: &DiskAnnTable, values: &mut [Value<'_>]) -> Result<i64, VTabError> {
+    if values[1].kind() != ffi::SQLITE_NULL as c_int
+        || values[(2 + COL_DISTANCE) as usize].kind() != ffi::SQLITE_NULL as c_int
+    {
+        return Err(VTabError::new(
+            "insert_batch accepts only operation, embedding and optional path",
+        ));
+    }
+    let path = &mut values[(2 + COL_PATH) as usize];
+    let batch_size = match path.kind() {
+        kind if kind == ffi::SQLITE_NULL as c_int => DEFAULT_INSERT_BATCH,
+        kind if kind == ffi::SQLITE_TEXT as c_int => parse_batch_options(path.text()?)?,
+        _ => {
+            return Err(VTabError::new(
+                "insert_batch path must be NULL or a TEXT JSON object",
+            ))
+        }
+    };
+    let batch = BatchView::from_value(&values[(2 + COL_VECTOR) as usize], table.space().dim)?;
+    table.insert_batch(&batch, batch_size)?;
+    Ok(0)
+}
+
 fn insert_or_update_vector(
     backend: &Backend,
     value: &mut Value<'_>,
@@ -1134,14 +1208,17 @@ fn update(
             return match backend {
                 Backend::Hnsw(entry) => execute_persistence(entry, values),
                 Backend::Diskann(table) => {
-                    let operation = values[(2 + COL_OPERATION) as usize].text()?;
-                    if operation == "consolidate" {
-                        table.consolidate().map_err(VTabError::from)?;
-                        Ok(0)
-                    } else {
-                        Err(VTabError::new(
-                            "DiskANN data persists inside SQLite; use SQLite backup instead of save/load. Supported operation: consolidate",
-                        ))
+                    // Read the operation before inspecting the embedding kind:
+                    // sqlite3_bind_pointer values deliberately have SQL NULL type.
+                    match values[(2 + COL_OPERATION) as usize].text()? {
+                        "insert_batch" => execute_insert_batch(table, values),
+                        "consolidate" => {
+                            table.consolidate().map_err(VTabError::from)?;
+                            Ok(0)
+                        }
+                        _ => Err(VTabError::new(
+                            "DiskANN data persists inside SQLite; use SQLite backup instead of save/load. Supported operations: consolidate, insert_batch",
+                        )),
                     }
                 }
             };
@@ -1316,6 +1393,36 @@ pub fn module_ptr() -> *const sqlite3_module {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_options_are_strict_bounded_json_objects() {
+        assert_eq!(parse_batch_options("{}").unwrap(), 8);
+        assert_eq!(parse_batch_options(r#"{"batch_size":1}"#).unwrap(), 1);
+        assert_eq!(parse_batch_options(r#"{"batch_size":32}"#).unwrap(), 32);
+        for text in [
+            "null",
+            "[]",
+            "1",
+            "true",
+            r#""options""#,
+            r#"{"batch_size":0}"#,
+            r#"{"batch_size":33}"#,
+            r#"{"batch_size":-1}"#,
+            r#"{"batch_size":1.0}"#,
+            r#"{"batch_size":1e0}"#,
+            r#"{"batch_size":true}"#,
+            r#"{"batch_size":"2"}"#,
+            r#"{"batch_size":null}"#,
+            r#"{"batch_size":1,"batch_size":2}"#,
+            r#"{"batch_size":1,"batch_\u0073ize":2}"#,
+            r#"{"unknown":1}"#,
+            r#"{"batch_size":1,"extra":2}"#,
+            r#"{"batch_size":1} {}"#,
+        ] {
+            assert!(parse_batch_options(text).is_err(), "accepted {text}");
+        }
+        assert!(parse_batch_options(&" ".repeat(1025)).is_err());
+    }
 
     #[test]
     fn plan_requires_matching_counts_and_known_codes() {

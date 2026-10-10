@@ -270,6 +270,41 @@ impl Statement<'_> {
         self.check(status, "bind scoped pointer")
     }
 
+    /// Rewinds a completed statement without discarding its bindings. A Row
+    /// must be drained through DONE first: resetting unfinished DML can hide a
+    /// late error or commit successful effects. Failed steps are never reused.
+    pub(crate) fn reset(&mut self) -> Result<()> {
+        if !matches!(self.state, State::Ready | State::Done) {
+            return Err(IndexError::with_code(
+                ffi::SQLITE_MISUSE as c_int,
+                "drain a successful statement through DONE before resetting",
+            ));
+        }
+        // SAFETY: this owns a live, completed (or unstepped) statement; no
+        // SQLite column views escape the copying accessors.
+        let status = unsafe { ffi::reset(self.raw()) };
+        if let Err(error) = self.check(status, "reset statement") {
+            self.state = State::Failed;
+            return Err(error);
+        }
+        self.state = State::Ready;
+        Ok(())
+    }
+
+    /// Clears copied buffers and private pointer bindings before reuse.
+    pub(crate) fn clear_bindings(&mut self) -> Result<()> {
+        if self.state != State::Ready {
+            return Err(IndexError::with_code(
+                ffi::SQLITE_MISUSE as c_int,
+                "reset a completed statement before clearing bindings",
+            ));
+        }
+        // SAFETY: the uniquely owned ready statement is live. SQLite releases
+        // only its own binding storage; non-owning pointer bindings have no dtor.
+        let status = unsafe { ffi::clear_bindings(self.raw()) };
+        self.check(status, "clear statement bindings")
+    }
+
     pub(crate) fn step(&mut self) -> Result<Step> {
         if self.state == State::Done {
             return Ok(Step::Done);
@@ -495,6 +530,41 @@ mod tests {
                 .unwrap_err()
                 .code,
             ffi::SQLITE_TOOBIG as c_int
+        );
+    }
+
+    #[test]
+    fn reset_and_clear_reject_unfinished_or_failed_states_before_host_access() {
+        let connection = Connection {
+            db: NonNull::dangling(),
+            _lifetime: PhantomData,
+            _connection_local: PhantomData,
+        };
+        for state in [State::Row, State::Failed] {
+            // No raw statement/connection is ever accessed: both guards reject
+            // these states, and Drop sees no owned statement allocation.
+            let mut statement = Statement {
+                pointer: None,
+                connection: connection.clone(),
+                state,
+            };
+            assert_eq!(
+                statement.reset().unwrap_err().code,
+                ffi::SQLITE_MISUSE as c_int
+            );
+            assert_eq!(
+                statement.clear_bindings().unwrap_err().code,
+                ffi::SQLITE_MISUSE as c_int
+            );
+        }
+        let mut statement = Statement {
+            pointer: None,
+            connection,
+            state: State::Done,
+        };
+        assert_eq!(
+            statement.clear_bindings().unwrap_err().code,
+            ffi::SQLITE_MISUSE as c_int
         );
     }
 

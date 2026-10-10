@@ -4,6 +4,7 @@ Compares vectorlite's vector-search performance and recall against:
 
 - `hnswlib` (in-memory, the library vectorlite is built on)
 - `vectorlite` brute-force (`SELECT ... ORDER BY vector_distance(...)`)
+- SQLite-backed Rust DiskANN _(optional; `BENCHMARK_DISKANN=1`)_
 - `sqlite_vss` _(optional)_
 - `sqlite_vec` _(optional)_
 - `milvus-lite` _(optional)_
@@ -36,6 +37,66 @@ The figures and raw tables in the repository's [main README](<../README.md#bench
 are **historical measurements from before the Rust-primary migration**, not
 new Rust performance results. Keep their recorded artifact paths and numbers
 as provenance; rerun this suite to measure the current implementation.
+
+## Small shared-data HNSW / DiskANN comparison
+
+The existing pytest suite defaults to **3,000 vectors**, dimensions 128/512/1536/3000,
+100 top-10 queries per configuration, and both L2 and cosine. Enable the
+SQLite-backed DiskANN cases alongside the existing baselines:
+
+```bash
+NUM_ELEMENTS=3000 BENCHMARK_SEED=42 BENCHMARK_DISKANN=1 \
+  pytest benchmark/test_benchmark.py \
+    --vectorlite-path=build/release/vectorlite/vectorlite.dylib \
+    -k 'vectorlite or hnswlib' --benchmark-json=bench-3000.json
+```
+
+All backends use the same generated vectors, queries, and exact ground truth.
+Insertions use one transaction per complete dataset, with one warm-up and three
+measured rebuilds. Query timings cover batches of 100 searches against already
+built indexes; setup/build time is excluded. The query-window sweep is 10/50/100:
+HNSW uses numeric `ef`, while DiskANN uses JSON `search_list_size`, recorded and
+labelled separately. Equal window values are **not** a guarantee of equal recall;
+compare recall as well as latency.
+
+This suite uses an **in-memory SQLite database**, so it measures the current
+SQL/graph adapter overhead, not cold-disk I/O, durable commit cost, or behavior
+beyond RAM. For those workloads, use the separate file-backed runner below.
+DiskANN requires SQLite 3.38 or newer and a build containing the new backend.
+Its graph settings here are `degree=32, build_list_size=100`; other options use
+the documented defaults. Existing HNSW settings remain `M=30, ef_construction=100`.
+
+## Focused native batch INSERT comparison
+
+Use [the bounded native runner](<diskann_batch_benchmark.py>) for pointer-based
+batch ingestion, rather than repeating the full pytest build matrix:
+
+```bash
+# Configure the release tree with BUILD_TESTING=ON, then build this opt-in target.
+cmake --build build/release --target diskann_batch_benchmark
+python benchmark/diskann_batch_benchmark.py \
+  --executable build/release/vectorlite/diskann_batch_benchmark \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --output-dir build/benchmarks/batch-insert-new --timeout 120
+```
+
+The native [C host](<diskann_batch_benchmark.c>) builds each HNSW / single DiskANN /
+batch-8 / batch-32 variant exactly once, then reuses that index for query windows
+10/50/100. Each variant runs in its own process with a hard timeout, and completed
+results are saved immediately. A failed mode stops the remaining sequence. The
+C host also has a 90-second insertion deadline via a SQLite progress handler.
+
+Defaults are one shared seeded 3,000-vector 128D L2 dataset and 100 top-10 queries.
+The Python driver computes exact ground truth and records individual-query
+mean/p50/p95 plus recall and artifact/data fingerprints. These timings differ from
+the pytest suite's repeated-batch medians: they exclude per-query bind/reset and
+have only one measured build/pass, so do not compare them as controlled before/
+after statistics. The database is `:memory:`; this is not cold-disk, durable commit,
+physical beyond-RAM, or production-quality evidence. Pointer ingestion is a native
+C/Rust API; this runner does not add a pointer bridge to Python's sqlite3 driver.
+The work allowance is explicit (`--max-visits`, default 65536) and applies to an
+entire true chunk; a batch-32 run may need a larger setting than batch-8. Failed
+runs remain in their own result directory instead of being silently retried.
 
 ## Streamed SQLite-contained DiskANN benchmark
 
@@ -291,7 +352,9 @@ Driven by environment variables; defaults in `benchmark/benchmark.py`.
 | Variable | Default | Effect |
 |---|---|---|
 | `NUM_ELEMENTS` | `3000` | Number of random vectors indexed per case. |
+| `BENCHMARK_SEED` | unset | Optional integer seed shared by every backend. |
 | `VECTORLITE_PATH` | wheel default | Vectorlite shared library to load. |
+| `BENCHMARK_DISKANN` | `0` | `1` enables vectorlite's SQLite-backed Rust DiskANN. |
 | `BENCHMARK_VSS` | `0` | `1` enables the `sqlite_vss` backend (Linux/macOS). |
 | `BENCHMARK_SQLITE_VEC` | `0` | `1` enables the `sqlite_vec` backend (Linux/macOS). |
 | `BENCHMARK_MILVUS_LITE` | `0` | `1` enables the `milvus-lite` backend (Linux/macOS). |
@@ -355,5 +418,6 @@ raises `AttributeError` or `OperationalError` and you'll need a different
 Python build.
 
 The benchmark itself does not use vectorlite's metadata-filter (rowid
-pushdown) feature, so any SQLite version that vectorlite loads on works
-here. The bundled SQLite version is reported in the session header.
+pushdown) feature. Existing HNSW cases work with any SQLite version that loads
+the extension; opt-in DiskANN cases require SQLite 3.38 or newer. The bundled
+SQLite version is reported in the session header.

@@ -78,7 +78,7 @@ cmake --build build/release --target ops_benchmark -j8
 
 ## Key Dependencies
 
-- Rust: bytemuck (checked byte views), serde_json, tempfile, pinned DiskANN 0.60.0 algorithm/provider crates, and the vendored vectorlite-sqlite-sys crate.
+- Rust: bytemuck (checked byte views), serde/serde_json, tempfile, pinned DiskANN 0.60.0 algorithm/provider crates with recorded batch failure-handling patch, an operation-private current-thread Tokio batch executor, and the vendored vectorlite-sqlite-sys crate.
 - DiskANN storage: host-connection SQLite shadow tables with lazy record access; scoped callback-thread adapters and an ordinary multirow statement journal carrier own mutation atomicity. Do not substitute an in-memory index, independent connection, or bare multi-statement callback writes.
 - Build: Cargo and the cc crate for the native shim/ops compilation.
 - Native runtime: hnswlib and Highway; SQLite calls go through the host's loadable-extension API table, not a linked SQLite library.
@@ -94,6 +94,7 @@ cmake --build build/release --target ops_benchmark -j8
 - Do not let Rust panics or C++ exceptions cross C ABI boundaries. Keep panic-abort library profiles and native exception translation.
 - SQLite serializes callbacks per connection. HNSW registry entries use shared ownership so index/space lifetimes survive reparses; DiskANN state is authoritative in SQLite, not the registry. Do not add unjustified Send/Sync implementations. Scoped tokens must validate thread/connection/generation/reentrancy before pointer access, and bound statements must finalize before their pointer leases end.
 - Preserve DiskANN's journal-carrier boundary, pre/post validation, original SQL errors, and rollback-capable journal requirements. Budget graph/query/prune workspaces; validate persisted payloads before SQLite or Rust materializes them. Direct shadow edits are not a supported API.
+- Native batch INSERT accepts only the tagged versioned descriptor documented in [vectorlite_batch.h](<vectorlite/include/vectorlite_batch.h>), never SQL integer addresses. Borrow caller buffers only in the current callback, copy bounded owned chunks, keep all task polling/SQLite access on the original callback thread, and destroy the private runtime/tasks/guards before closing the scoped token or accepting success. Do not remove strict vendored batch error propagation, weaken whole-INSERT rollback, or reuse a runtime with escaped tasks.
 - Run rustfmt and Clippy when changing Rust code.
 
 ### Retained C++ / Highway

@@ -6,6 +6,7 @@
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod atomic_callback;
+mod batch_input;
 mod core;
 mod diskann_core;
 mod diskann_store;

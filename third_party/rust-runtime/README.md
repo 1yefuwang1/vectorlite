@@ -18,7 +18,10 @@ notices are retained alongside its declared MIT license, not relabeled as MIT.
 The DiskANN crates' published archives omit their root license/notice files.
 Their copies use the previously verified repository revision and upstream text
 recorded in [the DiskANN provenance](<../diskann-0.60.0/PROVENANCE.json>).
-No selected crate currently lacks collected notice text. This is not a legal
+The patched `diskann` crate is included even though Cargo reports a local path
+source: its upstream archive checksum, baseline revision, modified-file hashes,
+and patch description are recorded separately from registry origin. Upstream
+notice text remains unmodified. No selected crate currently lacks collected notice text. This is not a legal
 review, SPDX interpretation, binary-reachability audit, or compliance certification.
 Rust standard-library/toolchain redistribution licensing is outside this crate
 inventory; source notices embedded outside leading comments and unlisted upstream

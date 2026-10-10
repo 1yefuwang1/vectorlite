@@ -1,0 +1,2121 @@
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! A pedantic provider implementation used for testing alorithmic logic.
+
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    num::NonZeroUsize,
+    sync::Arc,
+};
+
+use dashmap::{DashMap, mapref::entry::Entry};
+use diskann_utils::views::rowmajor;
+use diskann_vector::{PreprocessedDistanceFunction, distance::Metric};
+use thiserror::Error;
+
+use crate::{
+    ANNResult, convert_error, default_post_processor,
+    error::ranked::ErrorExt,
+    error::{Infallible, RankedError, StandardError, ToRanked, TransientError, message},
+    graph::{AdjacencyList, SearchOutputBuffer, glue, test::synthetic, workingset},
+    internal::counter::{Counter, LocalCounter},
+    neighbor::Neighbor,
+    provider,
+    utils::VectorRepr,
+};
+
+#[cfg(any(test, feature = "testing"))]
+use crate::ANNError;
+
+/// A starting point for graph search algorithms.
+///
+/// # Examples
+///
+/// ```rust
+/// use diskann::graph::test::provider::StartPoint;
+///
+/// // Create a starting point with ID 1 and a 3-dimensional vector
+/// let start_point = StartPoint::new(1, vec![0.5, 1.2, -0.8]);
+///
+/// assert_eq!(start_point.id(), 1);
+/// assert_eq!(start_point.vector(), &[0.5, 1.2, -0.8]);
+/// ```
+#[derive(Debug)]
+pub struct StartPoint {
+    id: u32,
+    vector: Vec<f32>,
+}
+
+impl StartPoint {
+    /// Construct a new start point with the given ID and vector.
+    pub fn new(id: u32, vector: Vec<f32>) -> Self {
+        Self { id, vector }
+    }
+
+    //// Return the ID of the start point.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Return the vector of the start point.
+    pub fn vector(&self) -> &[f32] {
+        &self.vector
+    }
+}
+
+impl IntoIterator for StartPoint {
+    type Item = Self;
+    type IntoIter = std::iter::Once<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        std::iter::once(self)
+    }
+}
+
+/// Configuration for the test provider.
+///
+/// # Examples
+///
+/// ```rust
+/// use diskann::graph::test::provider::{Config, StartPoint};
+/// use diskann_vector::distance::Metric;
+///
+/// let start_points = vec![
+///     StartPoint::new(0, vec![1.0, 2.0, 3.0]),
+///     StartPoint::new(1, vec![4.0, 5.0, 6.0]),
+/// ];
+///
+/// let config = Config::new(Metric::L2, 10, start_points).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct Config {
+    start_points: HashMap<u32, Vec<f32>>,
+    max_degree: NonZeroUsize,
+    dim: NonZeroUsize,
+    metric: Metric,
+}
+
+impl Config {
+    /// Create a new [`Config`] instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in the following cases:
+    ///
+    /// * `max_degree` is zero.
+    /// * No start points are provided.
+    /// * The dimensions of the provided start points do not match or are zero.
+    /// * The provided start points are not unique.
+    pub fn new<I>(metric: Metric, max_degree: usize, start_points: I) -> Result<Self, ConfigError>
+    where
+        I: IntoIterator<Item = StartPoint>,
+    {
+        let max_degree = match NonZeroUsize::new(max_degree) {
+            Some(max_degree) => max_degree,
+            None => return Err(ConfigError::MaxDegreeCannotBeZero),
+        };
+
+        let mut dim: Option<NonZeroUsize> = None;
+        let mut count = 0;
+        let start_points = start_points
+            .into_iter()
+            .map(|point| {
+                match dim {
+                    None => {
+                        dim = NonZeroUsize::new(point.vector.len());
+                    }
+                    Some(dim) => {
+                        if dim.get() != point.vector.len() {
+                            return Err(ConfigError::MismatchedDims);
+                        }
+                    }
+                }
+                count += 1;
+                Ok((point.id, point.vector))
+            })
+            .collect::<Result<HashMap<u32, Vec<f32>>, ConfigError>>()?;
+
+        if start_points.is_empty() {
+            return Err(ConfigError::NeedStartPoint);
+        }
+
+        if start_points.len() != count {
+            return Err(ConfigError::StartPointsNotUnique);
+        }
+
+        let dim = match dim {
+            None => return Err(ConfigError::DimCannotBeZero),
+            Some(dim) => dim,
+        };
+
+        Ok(Self {
+            start_points,
+            max_degree,
+            dim,
+            metric,
+        })
+    }
+}
+
+/// Error conditions for [`Config::new`].
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("at least one start point must be specified")]
+    NeedStartPoint,
+    #[error("start points must be unique")]
+    StartPointsNotUnique,
+    #[error("not all start points have the same dimension")]
+    MismatchedDims,
+    #[error("start point dimension must be non-zero")]
+    DimCannotBeZero,
+    #[error("max degree must be non-zero")]
+    MaxDegreeCannotBeZero,
+}
+
+convert_error!(ConfigError);
+
+/// A test data provider for validating DiskANN API guarantees.
+///
+/// The following is a list of properties this provider seeks to maintain:
+///
+/// * Start points provided at construction time are immutable and cannot be deleted or modified.
+/// * All calls to [`provider::NeighborAccessorMut::set_neighbors`] do not contain duplicates.
+/// * All calls to [`provider::NeighborAccessorMut::append_vector`] do not contain duplicates
+///   and are disjoint with the current adjacency list.
+/// * Vectors can be marked as deleted, but their data remains accessible.
+/// * Vectors that are deleted but not [`provider::Delete::release`]d cannot be overwritten.
+/// * Attempting to retrieve and ID that is not present is an error.
+/// * All attempts to mutate the graph via [`provider::NeighborAccessorMut`] must be preceeded
+///   by [`provider::SetElement`].
+///
+/// This provider allows for some amount of concurrent access, but is not optimized for performance.
+#[derive(Debug)]
+pub struct Provider {
+    terms: DashMap<u32, Term>,
+    config: Config,
+
+    // Counters
+    pub(crate) get_vector: Counter,
+    pub(crate) set_vector: Counter,
+    pub(crate) get_neighbors: Counter,
+    pub(crate) set_neighbors: Counter,
+    pub(crate) append_neighbors: Counter,
+}
+
+impl Provider {
+    /// Create a new [`Provider`].
+    ///
+    /// All counters will be initialized to zero.
+    pub fn new(config: Config) -> Self {
+        let this = Self {
+            terms: DashMap::new(),
+            config,
+            get_vector: Counter::new(),
+            set_vector: Counter::new(),
+            get_neighbors: Counter::new(),
+            set_neighbors: Counter::new(),
+            append_neighbors: Counter::new(),
+        };
+
+        for (id, value) in this.config.start_points.iter() {
+            this.terms.insert(
+                *id,
+                Term {
+                    data: Vector::Valid(value.clone()),
+                    neighbors: AdjacencyList::new(),
+                },
+            );
+        }
+
+        this
+    }
+
+    /// Create a new [`Provider`] from the given configuration, start points, and points.
+    ///
+    /// This method is used to pre-initialize a provider to assist with search-only tests
+    /// and performs the following checks:
+    ///
+    /// * All IDs yielded by the `start_points` iterator must indeed be start points in `config`.
+    /// * The IDs in the `points` iterator must not overlap with the start points.
+    /// * All data vectors in the `points` iterator must be equal to the dimension in `config`.
+    /// * All adjacency lists must be within the maximum degree specified in `config`.
+    ///
+    /// After initialization, all adjacency lists are verified to ensure that they only
+    /// contain either start point IDs or IDs yielded by the `points` iterator.
+    pub fn new_from<I, T>(config: Config, start_points: I, points: T) -> ANNResult<Self>
+    where
+        I: IntoIterator<Item = (u32, AdjacencyList<u32>)>,
+        T: IntoIterator<Item = (u32, Vec<f32>, AdjacencyList<u32>)>,
+    {
+        let this = Self::new(config);
+        let max_degree = this.config.max_degree.get();
+
+        // Add the start points.
+        for (id, neighbors) in start_points {
+            if neighbors.len() > max_degree {
+                return Err(message!(
+                    "start point {} has neighbors with length {} when max degree is {}",
+                    id,
+                    neighbors.len(),
+                    max_degree
+                ));
+            }
+
+            if let Some(mut term) = this.terms.get_mut(&id) {
+                term.neighbors = neighbors;
+            } else {
+                return Err(message!("id {} is not a valid start point", id));
+            }
+        }
+
+        // Add the remaining points.
+        for (id, data, neighbors) in points {
+            if this.is_start_point(id) {
+                return Err(message!(
+                    "cannot assign start point {} through a regular point",
+                    id
+                ));
+            }
+
+            if neighbors.len() > max_degree {
+                return Err(message!(
+                    "point {} has neighbors with length {} when max degree is {}",
+                    id,
+                    neighbors.len(),
+                    max_degree
+                ));
+            }
+
+            if data.len() != this.dim() {
+                return Err(message!(
+                    "data for id {} has length {} but the provider is expecting dim {}",
+                    id,
+                    data.len(),
+                    this.dim(),
+                ));
+            }
+
+            let term = Term {
+                data: Vector::Valid(data),
+                neighbors,
+            };
+
+            this.terms.insert(id, term);
+        }
+
+        // Now that we have inserted all the points - ensure our graph is consistent.
+        this.is_consistent()?;
+        Ok(this)
+    }
+
+    /// Return a fully-formed provider with a grid of points.
+    ///
+    /// The start point will have internal ID `u32::MAX`.
+    ///
+    /// See the documentation for [`synthetic::Grid`] and [`synthetic::Grid::data`] for
+    /// more details.
+    pub fn grid(grid: synthetic::Grid, size: usize) -> ANNResult<Self> {
+        let max_degree: usize = (grid.dim() * 2).into();
+        let start_id = u32::MAX;
+
+        let setup = grid.setup(size, start_id);
+
+        // Create the provider config with the grid start point.
+        let provider_config = Config::new(
+            Metric::L2,
+            max_degree,
+            StartPoint::new(setup.start_id(), setup.start_point()),
+        )?;
+
+        // Initialize the provider.
+        Self::new_from(provider_config, setup.start_neighbors(), setup.setup())
+    }
+
+    /// Return the dimensionality of data contained by this provider.
+    pub fn dim(&self) -> usize {
+        self.config.dim.get()
+    }
+
+    /// Return the largest degree this provider is capable of holding.
+    pub fn max_degree(&self) -> usize {
+        self.config.max_degree.get()
+    }
+
+    /// Return the [`Metric`] used by this provider.
+    pub fn distance_metric(&self) -> Metric {
+        self.config.metric
+    }
+
+    /// Return `true` is `id` is a start point. Otherwise, return `false`.
+    pub(crate) fn is_start_point(&self, id: u32) -> bool {
+        self.config.start_points.contains_key(&id)
+    }
+
+    /// Return an approximation of the collection of internal IDs currently in the index.
+    ///
+    /// This is approximate as it is not atomic. Thus, it is possible for other threads to
+    /// update the collection of internal IDs while this operation is executing.
+    pub fn all_internal_ids(&self) -> HashSet<u32> {
+        self.terms
+            .iter()
+            .map(|ref_multi| *ref_multi.key())
+            .collect()
+    }
+
+    /// Check whether all adjacency lists in `self` point to valid IDs.
+    pub fn is_consistent(&self) -> ANNResult<()> {
+        let all = self.all_internal_ids();
+        for ref_multi in self.terms.iter() {
+            let id = ref_multi.key();
+            let term = ref_multi.value();
+            for neighbor in term.neighbors.iter() {
+                if !all.contains(neighbor) {
+                    return Err(message!(
+                        "term with id {} has neighbors {:?} \
+                         but neighbor {} is not in the provider",
+                        id,
+                        term.neighbors,
+                        neighbor,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Return `true` if `id` is present in the provider but marked as deleted.
+    ///
+    /// If `id` is present but not marked deleted, returns `false`.
+    ///
+    /// An error is returned if `id` is not present in the provider.
+    fn is_deleted(&self, id: u32) -> Result<bool, InvalidId> {
+        if let Some(term) = self.terms.get(&id) {
+            Ok(term.is_deleted())
+        } else {
+            Err(InvalidId::Internal(id))
+        }
+    }
+
+    /// Return the metrics recorded in the provider.
+    pub fn metrics(&self) -> Metrics {
+        Metrics {
+            get_vector: self.get_vector.value(),
+            set_vector: self.set_vector.value(),
+            get_neighbors: self.get_neighbors.value(),
+            set_neighbors: self.set_neighbors.value(),
+            append_neighbors: self.append_neighbors.value(),
+        }
+    }
+
+    /// Return a [`provider::NeighborAccessor`] for this provider.
+    pub fn neighbors(&self) -> NeighborAccessor<'_> {
+        NeighborAccessor::new(self)
+    }
+
+    /// Return the adjacency lists in `self` as `source -> { destinations ... }` pairs.
+    ///
+    /// If `sort == true` then:
+    ///
+    /// * The returned vector will be ordered with the `source` entry increasing.
+    /// * Each `destination` adjacency list will be sorted by increasing ID.
+    pub fn dump_neighbors(&self, sort: bool) -> Vec<(u32, AdjacencyList<u32>)> {
+        let mut neighbors: Vec<_> = self
+            .terms
+            .iter()
+            .map(|ref_multi| {
+                let mut neighbors = ref_multi.value().neighbors.clone();
+                if sort {
+                    neighbors.sort();
+                }
+                (*ref_multi.key(), neighbors)
+            })
+            .collect();
+
+        if sort {
+            // Unstable sort is fine: `DashMap` ensures the keys are unique.
+            neighbors.sort_unstable_by_key(|(id, _)| *id);
+        }
+
+        neighbors
+    }
+
+    pub(crate) fn get_neighbors(
+        &self,
+        id: u32,
+        neighbors: &mut AdjacencyList<u32>,
+    ) -> ANNResult<()> {
+        match self.terms.get(&id) {
+            Some(v) => {
+                self.get_neighbors.increment();
+                neighbors.overwrite_trusted(&v.neighbors);
+                Ok(())
+            }
+            None => Err(ANNError::new(AccessedInvalidId(id))),
+        }
+    }
+
+    /// Return an iterator over all IDs, including soft deleted points and fixed start points.
+    pub fn all_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.terms.iter().map(|ref_multi| *ref_multi.key())
+    }
+
+    /// Return an iterator over all non-start-point IDs, including soft deleted points.
+    pub fn non_start_points_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.terms
+            .iter()
+            .map(|ref_multi| *ref_multi.key())
+            .filter(|id| !self.is_start_point(*id))
+    }
+
+    /// Return an iterator over the start point IDs.
+    pub fn start_point_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.config.start_points.keys().copied()
+    }
+
+    /// Run the provided closure on the associated term.
+    fn get<F, R>(&self, id: u32, f: F) -> Result<R, AccessedInvalidId>
+    where
+        F: FnOnce(&[f32]) -> R,
+    {
+        match self.terms.get(&id) {
+            Some(term) => Ok(f(&term.data)),
+            None => Err(AccessedInvalidId(id)),
+        }
+    }
+}
+
+/// Provider level metrics.
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct Metrics {
+    pub get_vector: usize,
+    pub set_vector: usize,
+    pub get_neighbors: usize,
+    pub set_neighbors: usize,
+    pub append_neighbors: usize,
+}
+
+#[cfg(test)]
+crate::test::cmp::verbose_eq!(Metrics {
+    get_vector,
+    set_vector,
+    get_neighbors,
+    set_neighbors,
+    append_neighbors
+});
+
+#[derive(Debug)]
+struct Term {
+    neighbors: AdjacencyList<u32>,
+    data: Vector,
+}
+
+impl Term {
+    fn mark_deleted(&mut self) {
+        self.data.mark_deleted()
+    }
+
+    fn is_deleted(&self) -> bool {
+        self.data.is_deleted()
+    }
+}
+
+/// A data vector that records whether or not it has been deleted.
+#[derive(Debug)]
+enum Vector {
+    Valid(Vec<f32>),
+    Deleted(Vec<f32>),
+}
+
+impl Vector {
+    /// Change `self` to be `Self::Deleted`, leaving the internal data unchanged.
+    fn mark_deleted(&mut self) {
+        *self = match self.take() {
+            Self::Valid(v) => Self::Deleted(v),
+            Self::Deleted(v) => Self::Deleted(v),
+        }
+    }
+
+    /// Take the internal data and construct a new instance of `Self`.
+    ///
+    /// Leave the caller with an empty data.
+    fn take(&mut self) -> Self {
+        match self {
+            Self::Valid(v) => Self::Valid(std::mem::take(v)),
+            Self::Deleted(v) => Self::Deleted(std::mem::take(v)),
+        }
+    }
+
+    /// Return `true` if `self` has been marked as deleted. Otherwise, return `false`.
+    fn is_deleted(&self) -> bool {
+        matches!(self, Self::Deleted(_))
+    }
+}
+
+impl std::ops::Deref for Vector {
+    type Target = [f32];
+    fn deref(&self) -> &[f32] {
+        match self {
+            Self::Valid(v) => v,
+            Self::Deleted(v) => v,
+        }
+    }
+}
+
+/////////////
+// Context //
+/////////////
+
+/// The execution context used by the test provider.
+///
+/// This records the number of task spawns launched by this context.
+#[derive(Debug)]
+pub struct Context(Arc<ContextInner>);
+
+impl Context {
+    /// Create a new context.
+    pub fn new() -> Self {
+        let inner = ContextInner {
+            spawns: Counter::new(),
+            clones: Counter::new(),
+        };
+
+        Self(Arc::new(inner))
+    }
+
+    /// Return the number of spawns made through this context.
+    pub fn spawns(&self) -> usize {
+        self.0.spawns.value()
+    }
+
+    /// Return the number of clones made of the context.
+    pub fn clones(&self) -> usize {
+        self.0.clones.value()
+    }
+
+    /// Aggregate the context level metrics.
+    pub fn metrics(&self) -> ContextMetrics {
+        ContextMetrics {
+            spawns: self.spawns(),
+            clones: self.clones(),
+        }
+    }
+}
+
+/// Metrics recorded by [`Context`].
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+pub struct ContextMetrics {
+    pub spawns: usize,
+    pub clones: usize,
+}
+
+#[cfg(test)]
+crate::test::cmp::verbose_eq!(ContextMetrics { spawns, clones });
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl provider::ExecutionContext for Context {
+    fn wrap_spawn<F, T>(&self, f: F) -> impl Future<Output = T> + Send + 'static
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        self.0.spawns.increment();
+        f
+    }
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        self.0.clones.increment();
+        Self(self.0.clone())
+    }
+}
+
+#[derive(Debug)]
+struct ContextInner {
+    spawns: Counter,
+    clones: Counter,
+}
+
+//////////////////
+// DataProvider //
+//////////////////
+
+/// Light-weight error type for reporting access to an invalid ID.
+#[derive(Debug, Clone, Copy, Error)]
+pub enum InvalidId {
+    #[error("internal id {0} is not initialized")]
+    Internal(u32),
+    #[error("external id {0} is not initialized")]
+    External(u32),
+    #[error("cannot delete start point {0}")]
+    IsStartPoint(u32),
+}
+
+crate::always_escalate!(InvalidId);
+convert_error!(InvalidId);
+
+impl provider::DataProvider for Provider {
+    type Context = Context;
+    type InternalId = u32;
+    type ExternalId = u32;
+
+    type Error = InvalidId;
+    type Guard = provider::NoopGuard<u32>;
+
+    fn to_internal_id(&self, _context: &Context, gid: &u32) -> Result<u32, InvalidId> {
+        let valid = self.terms.contains_key(gid);
+        if valid {
+            Ok(*gid)
+        } else {
+            Err(InvalidId::External(*gid))
+        }
+    }
+
+    fn to_external_id(&self, _context: &Context, id: u32) -> Result<u32, InvalidId> {
+        let valid = self.terms.contains_key(&id);
+        if valid {
+            Ok(id)
+        } else {
+            Err(InvalidId::Internal(id))
+        }
+    }
+}
+
+impl provider::Delete for Provider {
+    async fn delete(
+        &self,
+        _context: &Self::Context,
+        gid: &Self::ExternalId,
+    ) -> Result<(), Self::Error> {
+        if self.is_start_point(*gid) {
+            return Err(InvalidId::IsStartPoint(*gid));
+        }
+
+        match self.terms.entry(*gid) {
+            Entry::Occupied(mut occupied) => {
+                occupied.get_mut().mark_deleted();
+                Ok(())
+            }
+            Entry::Vacant(_) => Err(InvalidId::External(*gid)),
+        }
+    }
+
+    async fn release(
+        &self,
+        _context: &Self::Context,
+        id: Self::InternalId,
+    ) -> Result<(), Self::Error> {
+        if self.is_start_point(id) {
+            return Err(InvalidId::IsStartPoint(id));
+        }
+
+        if self.terms.remove(&id).is_none() {
+            Err(InvalidId::Internal(id))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn status_by_internal_id(
+        &self,
+        _context: &Context,
+        id: u32,
+    ) -> Result<provider::ElementStatus, Self::Error> {
+        if self.is_deleted(id)? {
+            Ok(provider::ElementStatus::Deleted)
+        } else {
+            Ok(provider::ElementStatus::Valid)
+        }
+    }
+
+    fn status_by_external_id(
+        &self,
+        context: &Context,
+        gid: &u32,
+    ) -> impl Future<Output = Result<provider::ElementStatus, Self::Error>> + Send {
+        self.status_by_internal_id(context, *gid)
+    }
+}
+
+impl provider::SetElement<&[f32]> for Provider {
+    type SetError = ANNError;
+
+    async fn set_element(
+        &self,
+        _context: &Context,
+        id: &Self::ExternalId,
+        element: &[f32],
+    ) -> Result<Self::Guard, Self::SetError> {
+        #[derive(Debug, Clone, Copy, Error)]
+        enum SetError {
+            #[error("vector id {0} is already assigned")]
+            AlreadyAssigned(u32),
+            #[error("wrong dim - got {0}, expected {1}")]
+            WrongDim(usize, usize),
+        }
+
+        crate::always_escalate!(SetError);
+        convert_error!(SetError);
+
+        // Ensure that the assigned vector has the correct length.
+        if element.len() != self.dim() {
+            return Err(SetError::WrongDim(element.len(), self.dim()).into());
+        }
+
+        match self.terms.entry(*id) {
+            Entry::Occupied(_) => Err(SetError::AlreadyAssigned(*id).into()),
+            Entry::Vacant(term) => {
+                term.insert(Term {
+                    neighbors: AdjacencyList::new(),
+                    data: Vector::Valid(element.into()),
+                });
+                self.set_vector.increment();
+                Ok(provider::NoopGuard::new(*id))
+            }
+        }
+    }
+}
+
+//////////////////////
+// NeighborAccessor //
+//////////////////////
+
+#[derive(Debug, Clone, Copy, Error)]
+#[error("Attempt to access an invalid id: {0}")]
+pub struct AccessedInvalidId(u32);
+
+crate::always_escalate!(AccessedInvalidId);
+convert_error!(AccessedInvalidId);
+
+/// A transient error from the test accessor — the ID exists but the retrieval
+/// temporarily failed. Must be acknowledged or escalated before being dropped.
+#[derive(Debug)]
+pub struct TransientAccessError {
+    id: u32,
+    handled: bool,
+}
+
+impl TransientAccessError {
+    fn new(id: u32) -> Self {
+        Self { id, handled: false }
+    }
+}
+
+impl std::fmt::Display for TransientAccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "transient error accessing id: {}", self.id)
+    }
+}
+
+impl std::error::Error for TransientAccessError {}
+
+impl Drop for TransientAccessError {
+    fn drop(&mut self) {
+        assert!(
+            self.handled,
+            "dropping an unhandled transient error for id {}!",
+            self.id
+        );
+    }
+}
+
+impl TransientError<AccessedInvalidId> for TransientAccessError {
+    fn acknowledge<D>(mut self, _why: D)
+    where
+        D: std::fmt::Display,
+    {
+        self.handled = true;
+    }
+
+    fn escalate<D>(mut self, _why: D) -> AccessedInvalidId
+    where
+        D: std::fmt::Display,
+    {
+        self.handled = true;
+        AccessedInvalidId(self.id)
+    }
+}
+
+/// A test error that can represent both transient (flaky) and critical (invalid
+/// ID) errors.
+///
+/// Paired with [`Accessor`]'s configurable flakiness to exercise transient error
+/// handling paths in both `Map::fill_with` and `index.rs` operations.
+#[derive(Debug)]
+pub enum AccessError {
+    /// The ID does not exist in the provider.
+    InvalidId(AccessedInvalidId),
+    /// The ID exists but the retrieval temporarily failed.
+    Transient(TransientAccessError),
+}
+
+impl std::fmt::Display for AccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidId(e) => e.fmt(f),
+            Self::Transient(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for AccessError {}
+
+impl ToRanked for AccessError {
+    type Transient = TransientAccessError;
+    type Error = AccessedInvalidId;
+
+    fn to_ranked(self) -> RankedError<TransientAccessError, AccessedInvalidId> {
+        match self {
+            Self::InvalidId(e) => RankedError::Error(e),
+            Self::Transient(e) => RankedError::Transient(e),
+        }
+    }
+
+    fn from_transient(transient: TransientAccessError) -> Self {
+        Self::Transient(transient)
+    }
+
+    fn from_error(error: AccessedInvalidId) -> Self {
+        Self::InvalidId(error)
+    }
+}
+
+impl provider::DefaultAccessor for Provider {
+    type Accessor<'a> = NeighborAccessor<'a>;
+
+    fn default_accessor(&self) -> Self::Accessor<'_> {
+        NeighborAccessor::new(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NeighborAccessor<'a> {
+    provider: &'a Provider,
+}
+
+impl<'a> NeighborAccessor<'a> {
+    pub fn new(provider: &'a Provider) -> Self {
+        Self { provider }
+    }
+}
+
+impl provider::HasId for NeighborAccessor<'_> {
+    type Id = u32;
+}
+
+impl provider::NeighborAccessor for NeighborAccessor<'_> {
+    async fn get_neighbors(
+        &mut self,
+        id: Self::Id,
+        neighbors: &mut AdjacencyList<Self::Id>,
+    ) -> ANNResult<()> {
+        self.provider.get_neighbors(id, neighbors)
+    }
+}
+
+impl provider::NeighborAccessorMut for NeighborAccessor<'_> {
+    async fn set_neighbors(&mut self, id: Self::Id, neighbors: &[Self::Id]) -> ANNResult<()> {
+        if neighbors.len() > self.provider.max_degree() {
+            return Err(message!(
+                "trying to assign neighbors with length {} when max degree is {}",
+                neighbors.len(),
+                self.provider.max_degree()
+            ));
+        }
+
+        match self.provider.terms.get_mut(&id) {
+            Some(mut term) => {
+                term.neighbors.clear();
+                term.neighbors.extend_from_slice(neighbors);
+
+                // Even if we return an error due to duplicate neighbors, the assignment
+                // still sticks. Since it doesn't exceed the graph degree, it's still a valid
+                // assignment.
+                self.provider.set_neighbors.increment();
+
+                // Check whether or not the input slice was unique. We can do this with
+                // a length check because `extend_from_slice` deduplicates.
+                //
+                // If `neighbors` did have duplicates, then the final length of `v` will
+                // be smaller.
+                if term.neighbors.len() != neighbors.len() {
+                    Err(message!("duplicate neighbors detected"))
+                } else {
+                    Ok(())
+                }
+            }
+            None => Err(ANNError::new(AccessedInvalidId(id))),
+        }
+    }
+
+    async fn append_vector(&mut self, id: Self::Id, neighbors: &[Self::Id]) -> ANNResult<()> {
+        match self.provider.terms.get_mut(&id) {
+            Some(mut term) => {
+                // Do not allow `append_vector` to exceed the max degree.
+                if let Some(estimate) = term.neighbors.len().checked_add(neighbors.len()) {
+                    if estimate > self.provider.max_degree() {
+                        return Err(message!(
+                            "append neighbors to {} will exceed the max degree",
+                            id
+                        ));
+                    }
+                } else {
+                    return Err(message!("the number of neighbors is way too high"));
+                }
+
+                let added = term.neighbors.extend_from_slice(neighbors);
+                self.provider.append_neighbors.increment();
+                if added != neighbors.len() {
+                    Err(message!("duplicate ids in append-vector"))
+                } else {
+                    Ok(())
+                }
+            }
+            None => Err(ANNError::new(AccessedInvalidId(id))),
+        }
+    }
+}
+
+//-------//
+// Flaky //
+//-------//
+
+#[derive(Debug)]
+struct Flaky<'a>(Option<Cow<'a, HashSet<u32>>>);
+
+impl<'a> Flaky<'a> {
+    fn new(ids: Option<Cow<'a, HashSet<u32>>>) -> Self {
+        Self(ids)
+    }
+
+    fn check(&self, id: u32) -> Result<(), TransientAccessError> {
+        if let Some(ids) = self.0.as_ref()
+            && ids.contains(&id)
+        {
+            Err(TransientAccessError::new(id))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+///////////////////
+// PruneAccessor //
+///////////////////
+
+#[derive(Debug)]
+pub struct PruneAccessor<'a> {
+    provider: &'a Provider,
+    get_vector: LocalCounter<'a>,
+    transient_ids: Flaky<'a>,
+    distance: <f32 as VectorRepr>::Distance,
+    set: WorkingSet,
+}
+
+type WorkingSet = workingset::Map<u32, Box<[f32]>, workingset::map::Ref<[f32]>>;
+type View<'a> = workingset::map::View<'a, u32, Box<[f32]>, workingset::map::Ref<[f32]>>;
+
+impl<'a> PruneAccessor<'a> {
+    fn new(
+        provider: &'a Provider,
+        transient_ids: Option<Cow<'a, HashSet<u32>>>,
+        set: WorkingSet,
+    ) -> Self {
+        Self {
+            provider,
+            get_vector: provider.get_vector.local(),
+            transient_ids: Flaky::new(transient_ids),
+            distance: f32::distance(provider.distance_metric(), Some(provider.dim())),
+            set,
+        }
+    }
+}
+
+impl provider::HasId for PruneAccessor<'_> {
+    type Id = u32;
+}
+
+impl glue::PruneAccessor for PruneAccessor<'_> {
+    type ElementRef<'a> = &'a [f32];
+    type View<'a>
+        = View<'a>
+    where
+        Self: 'a;
+    type Distance<'a>
+        = <f32 as VectorRepr>::Distance
+    where
+        Self: 'a;
+    type Neighbors<'a>
+        = NeighborAccessor<'a>
+    where
+        Self: 'a;
+
+    async fn fill<Itr>(&mut self, itr: Itr) -> ANNResult<(Self::View<'_>, Self::Distance<'_>)>
+    where
+        Itr: ExactSizeIterator<Item = Self::Id> + Clone + Send + Sync,
+    {
+        let view = self.set.fill(itr, |i| {
+            let f = |data: &[f32]| -> Result<Box<[f32]>, TransientAccessError> {
+                self.transient_ids.check(i)?;
+                self.get_vector.increment();
+                Ok(data.into())
+            };
+
+            match self.provider.get(i, f) {
+                Ok(Ok(buf)) => Ok(Some(buf)),
+                Ok(Err(transient)) => {
+                    transient.acknowledge("transient failures allowed");
+                    Ok(None)
+                }
+                Err(invalid) => Err(invalid),
+            }
+        })?;
+
+        Ok((view, self.distance))
+    }
+
+    fn neighbors(&mut self) -> Self::Neighbors<'_> {
+        NeighborAccessor::new(self.provider)
+    }
+}
+
+//////////////
+// Accessor //
+//////////////
+
+#[derive(Debug)]
+pub struct Accessor<'a> {
+    provider: &'a Provider,
+    get_vector: LocalCounter<'a>,
+    distance: <f32 as VectorRepr>::QueryDistance,
+    neighbors: AdjacencyList<u32>,
+    /// IDs that will produce transient errors when accessed.
+    transient_ids: Flaky<'a>,
+}
+
+impl<'a> Accessor<'a> {
+    /// Return the underlying [`Provider`] reference.
+    pub fn provider(&self) -> &'a Provider {
+        self.provider
+    }
+
+    /// Return the number of `get_vector` calls made by this accessor (local, not yet
+    /// flushed to the provider).
+    pub fn get_vector_count(&self) -> usize {
+        self.get_vector.value()
+    }
+
+    /// Creates an accessor with no flaky behavior (backward-compatible).
+    pub fn new(provider: &'a Provider, query: &[f32]) -> Result<Self, DimMismatch> {
+        Self::new_inner(provider, query, None)
+    }
+
+    /// Creates an accessor where `get_element` returns a transient error for
+    /// any ID in `transient_ids`. The ID must still exist in the provider —
+    /// accessing a truly missing ID remains a critical `InvalidId` error.
+    pub fn flaky(
+        provider: &'a Provider,
+        query: &[f32],
+        transient_ids: Cow<'a, HashSet<u32>>,
+    ) -> Result<Self, DimMismatch> {
+        Self::new_inner(provider, query, Some(transient_ids))
+    }
+
+    fn new_inner(
+        provider: &'a Provider,
+        query: &[f32],
+        transient_ids: Option<Cow<'a, HashSet<u32>>>,
+    ) -> Result<Self, DimMismatch> {
+        if query.len() != provider.dim() {
+            Err(DimMismatch {
+                got: query.len(),
+                expected: provider.dim(),
+            })
+        } else {
+            Ok(Self {
+                provider,
+                get_vector: provider.get_vector.local(),
+                distance: f32::query_distance(query, provider.distance_metric()),
+                neighbors: AdjacencyList::new(),
+                transient_ids: Flaky::new(transient_ids),
+            })
+        }
+    }
+
+    fn get_distance(&mut self, id: u32) -> Result<f32, AccessError> {
+        let f = |data: &[f32]| -> Result<f32, TransientAccessError> {
+            self.transient_ids.check(id)?;
+            self.get_vector.increment();
+            Ok(self.distance.evaluate_similarity(data))
+        };
+
+        match self.provider.get(id, f) {
+            Ok(Ok(dist)) => Ok(dist),
+            Ok(Err(transient)) => Err(AccessError::Transient(transient)),
+            Err(invalid) => Err(AccessError::InvalidId(invalid)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Error)]
+#[error("query has dim {} but the provider expected {}", self.got, self.expected)]
+pub struct DimMismatch {
+    got: usize,
+    expected: usize,
+}
+
+convert_error!(DimMismatch);
+
+impl provider::HasId for Accessor<'_> {
+    type Id = u32;
+}
+
+//------//
+// glue //
+//------//
+
+impl glue::SearchAccessor for Accessor<'_> {
+    fn starting_points(&self) -> impl Future<Output = ANNResult<Vec<u32>>> + Send {
+        futures_util::future::ok(self.provider.start_point_ids().collect())
+    }
+
+    async fn start_point_distances<F>(&mut self, mut f: F) -> ANNResult<()>
+    where
+        F: FnMut(Self::Id, f32) + Send,
+    {
+        for i in self.provider().start_point_ids() {
+            f(i, self.get_distance(i).escalate("start points must exist")?)
+        }
+        Ok(())
+    }
+
+    async fn expand_beam<Itr, P, F>(
+        &mut self,
+        ids: Itr,
+        mut pred: P,
+        mut on_neighbors: F,
+    ) -> ANNResult<()>
+    where
+        Itr: Iterator<Item = Self::Id> + Send,
+        P: glue::HybridPredicate<Self::Id> + Send + Sync,
+        F: FnMut(Self::Id, f32) + Send,
+    {
+        // Temporarily pilfer `neighbors` so we can call `self.get_distance` while
+        // iterating over `neighbors` and not run into a borrowing conflict.
+        //
+        // We put it back when we're done.
+        let mut neighbors = std::mem::take(&mut self.neighbors);
+        for id in ids {
+            self.provider().get_neighbors(id, &mut neighbors)?;
+            for &n in neighbors.iter().filter(|i| pred.eval_mut(i)) {
+                if let Some(distance) = self
+                    .get_distance(n)
+                    .allow_transient("transient failures allowed")?
+                {
+                    on_neighbors(n, distance)
+                }
+            }
+        }
+        self.neighbors = neighbors;
+        Ok(())
+    }
+}
+
+//////////////
+// Strategy //
+//////////////
+
+#[derive(Debug, Clone)]
+pub struct Strategy {
+    // Set this flag to enable reuse within the [`workingset::Map`]. For multi-threaded
+    // baseline tests, this must be set to `false` to obtain repeatable `get_vector` calls.
+    working_set_reuse: bool,
+    transient_ids: Option<Arc<HashSet<u32>>>,
+}
+
+impl Strategy {
+    pub fn new() -> Self {
+        Self {
+            working_set_reuse: true,
+            transient_ids: None,
+        }
+    }
+
+    pub fn with_options(working_set_reuse: bool) -> Self {
+        Self {
+            working_set_reuse,
+            transient_ids: None,
+        }
+    }
+
+    pub fn with_transient(
+        working_set_reuse: bool,
+        transient_ids: impl IntoIterator<Item = u32>,
+    ) -> Self {
+        Self {
+            working_set_reuse,
+            transient_ids: Some(Arc::new(transient_ids.into_iter().collect())),
+        }
+    }
+}
+
+impl Default for Strategy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a> glue::SearchStrategy<'a, Provider, &'a [f32]> for Strategy {
+    type SearchAccessorError = DimMismatch;
+    type SearchAccessor = Accessor<'a>;
+
+    fn search_accessor(
+        &'a self,
+        provider: &'a Provider,
+        _context: &'a Context,
+        query: &'a [f32],
+    ) -> Result<Accessor<'a>, DimMismatch> {
+        Accessor::new(provider, query)
+    }
+}
+
+impl<'a> glue::DefaultPostProcessor<'a, Provider, &'a [f32]> for Strategy {
+    default_post_processor!(glue::Pipeline<glue::FilterStartPoints, glue::CopyIds>);
+}
+
+impl glue::PruneStrategy<Provider> for Strategy {
+    type PruneAccessor<'a> = PruneAccessor<'a>;
+    type PruneAccessorError = Infallible;
+
+    fn prune_accessor<'a>(
+        &'a self,
+        provider: &'a Provider,
+        _context: &'a Context,
+        capacity: usize,
+    ) -> Result<Self::PruneAccessor<'a>, Self::PruneAccessorError> {
+        let cap = if self.working_set_reuse {
+            workingset::map::Capacity::Default
+        } else {
+            workingset::map::Capacity::None
+        };
+
+        let set = workingset::map::Builder::new(cap).build(capacity);
+
+        match &self.transient_ids {
+            Some(ids) => Ok(PruneAccessor::new(provider, Some(Cow::Borrowed(ids)), set)),
+            None => Ok(PruneAccessor::new(provider, None, set)),
+        }
+    }
+}
+
+impl<'a> glue::InsertStrategy<'a, Provider, &'a [f32]> for Strategy {
+    type SearchAccessor = Accessor<'a>;
+    type SearchAccessorError = DimMismatch;
+    type PruneStrategy = Self;
+
+    fn insert_search_accessor(
+        &'a self,
+        provider: &'a Provider,
+        _context: &'a Context,
+        vector: &'a [f32],
+    ) -> Result<Self::SearchAccessor, Self::SearchAccessorError> {
+        Accessor::new(provider, vector)
+    }
+
+    fn prune_strategy(&self) -> Self::PruneStrategy {
+        self.clone()
+    }
+}
+
+impl glue::MultiInsertStrategy<Provider, rowmajor::Owned<f32>> for Strategy {
+    type Seed = workingset::map::Builder<u32, workingset::map::Ref<[f32]>>;
+    type FinishError = Infallible;
+    type PruneStrategy = Self;
+    type InsertStrategy = Self;
+
+    fn insert_strategy(&self) -> Self::InsertStrategy {
+        self.clone()
+    }
+
+    fn finish<Itr>(
+        &self,
+        _provider: &Provider,
+        _ctx: &Context,
+        batch: &Arc<rowmajor::Owned<f32>>,
+        ids: Itr,
+    ) -> impl std::future::Future<Output = Result<Self::Seed, Self::FinishError>> + Send
+    where
+        Itr: ExactSizeIterator<Item = u32> + Send,
+    {
+        use workingset::map::{Builder, Capacity, Overlay};
+
+        let capacity = if self.working_set_reuse {
+            Capacity::Default
+        } else {
+            Capacity::None
+        };
+
+        std::future::ready(Ok(
+            Builder::new(capacity).with_overlay(Overlay::from_batch(batch.clone(), ids))
+        ))
+    }
+
+    fn seeded_prune_accessor<'a>(
+        &'a self,
+        provider: &'a Provider,
+        _context: &'a Context,
+        builder: &'a Self::Seed,
+        capacity: usize,
+    ) -> ANNResult<PruneAccessor<'a>> {
+        let set = builder.clone().build(capacity);
+        let transient_ids = self.transient_ids.as_deref().map(Cow::Borrowed);
+
+        Ok(PruneAccessor::new(provider, transient_ids, set))
+    }
+}
+
+/// A [`glue::SearchPostProcessStep`] that removes deleted IDs from the candidate stream.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FilterDeleted;
+
+impl<'a, 'b, O> glue::SearchPostProcessStep<Accessor<'a>, &'b [f32], O> for FilterDeleted {
+    type Error<NextError>
+        = NextError
+    where
+        NextError: StandardError;
+
+    type NextAccessor = Accessor<'a>;
+
+    fn post_process_step<I, B, Next>(
+        &self,
+        next: &Next,
+        accessor: &mut Accessor<'a>,
+        query: &'b [f32],
+        candidates: I,
+        output: &mut B,
+    ) -> impl std::future::Future<Output = Result<usize, Self::Error<Next::Error>>> + Send
+    where
+        I: Iterator<Item = Neighbor<u32>> + Send,
+        B: SearchOutputBuffer<O> + Send + ?Sized,
+        Next: glue::SearchPostProcess<Self::NextAccessor, &'b [f32], O> + Sync,
+    {
+        let provider = accessor.provider;
+        next.post_process(
+            accessor,
+            query,
+            candidates.filter(|n| !provider.is_deleted(*n.id()).unwrap_or(true)),
+            output,
+        )
+    }
+}
+
+impl glue::InplaceDeleteStrategy<Provider> for Strategy {
+    type DeleteElement<'a> = &'a [f32];
+    type DeleteElementGuard = Box<[f32]>;
+    type DeleteElementError = AccessedInvalidId;
+    type PruneStrategy = Self;
+    type DeleteSearchAccessor<'a> = Accessor<'a>;
+    type SearchStrategy = Self;
+    type SearchPostProcessor = glue::Pipeline<FilterDeleted, glue::CopyIds>;
+
+    fn prune_strategy(&self) -> Self::PruneStrategy {
+        self.clone()
+    }
+
+    fn search_strategy(&self) -> Self::SearchStrategy {
+        self.clone()
+    }
+
+    fn search_post_processor(&self) -> Self::SearchPostProcessor {
+        glue::Pipeline::new(FilterDeleted, glue::CopyIds)
+    }
+
+    async fn get_delete_element<'a>(
+        &'a self,
+        provider: &'a Provider,
+        _context: &'a <Provider as provider::DataProvider>::Context,
+        id: <Provider as provider::DataProvider>::InternalId,
+    ) -> Result<Self::DeleteElementGuard, Self::DeleteElementError> {
+        provider
+            .terms
+            .get(&id)
+            .map(|v| (*v.data).into())
+            .ok_or(AccessedInvalidId(id))
+    }
+}
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test::tokio::current_thread_runtime;
+    use diskann_utils::assert_contains;
+
+    #[test]
+    fn test_start_point() {
+        let start_point = StartPoint::new(42, vec![1.0, 2.0, 3.0]);
+
+        assert_eq!(start_point.id(), 42);
+        assert_eq!(start_point.vector(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_config_new() {
+        let metric = Metric::L2;
+
+        // Happy path - valid configuration
+        {
+            let start_points = [
+                StartPoint::new(0, vec![1.0, 2.0, 3.0]),
+                StartPoint::new(1, vec![4.0, 5.0, 6.0]),
+            ];
+            let config = Config::new(metric, 10, start_points).unwrap();
+            assert_eq!(config.max_degree.get(), 10);
+            assert_eq!(config.dim.get(), 3);
+            assert_eq!(config.metric, metric);
+            assert_eq!(config.start_points.len(), 2);
+        }
+
+        // Error: max_degree is zero
+        {
+            let err = Config::new(metric, 0, StartPoint::new(0, vec![1.0, 2.0])).unwrap_err();
+            assert!(matches!(err, ConfigError::MaxDegreeCannotBeZero));
+
+            let msg = err.to_string();
+            let ann: ANNError = err.into();
+            assert!(
+                ann.to_string().contains(&msg),
+                "ANNError message \"{}\" does not contain original error: \"{}\"",
+                ann,
+                msg,
+            );
+        }
+
+        // Error: no start points provided
+        {
+            let err = Config::new(metric, 10, []).unwrap_err();
+            assert!(matches!(err, ConfigError::NeedStartPoint));
+        }
+
+        // Error: mismatched dimensions
+        {
+            let start_points = [
+                StartPoint::new(0, vec![1.0, 2.0, 3.0]),
+                StartPoint::new(1, vec![4.0, 5.0]), // Different dimension
+            ];
+            let err = Config::new(metric, 10, start_points).unwrap_err();
+            assert!(matches!(err, ConfigError::MismatchedDims));
+        }
+
+        // Error: zero dimension (empty vectors)
+        {
+            let err = Config::new(metric, 10, StartPoint::new(0, vec![])).unwrap_err();
+            assert!(matches!(err, ConfigError::DimCannotBeZero));
+        }
+
+        // Error: duplicate start point IDs
+        {
+            let start_points = [
+                StartPoint::new(0, vec![1.0, 2.0]),
+                StartPoint::new(0, vec![3.0, 4.0]), // Same ID
+            ];
+            let err = Config::new(metric, 10, start_points).unwrap_err();
+            assert!(matches!(err, ConfigError::StartPointsNotUnique));
+        }
+    }
+
+    #[test]
+    fn test_vector() {
+        let vector = vec![1.0, 2.0, 3.0];
+        let ptr = vector.as_ptr();
+        let mut v = Vector::Valid(vector);
+        assert!(!v.is_deleted());
+
+        // `v.as_ptr` goes through `Deref` to a slice.
+        assert_eq!(v.as_ptr(), ptr);
+
+        v.mark_deleted();
+        assert!(v.is_deleted());
+        assert_eq!(v.as_ptr(), ptr);
+
+        v.mark_deleted();
+        assert!(v.is_deleted());
+        assert_eq!(v.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn test_term() {
+        let vector = vec![1.0, 2.0, 3.0];
+        let ptr = vector.as_ptr();
+        let mut t = Term {
+            neighbors: AdjacencyList::new(),
+            data: Vector::Valid(vector),
+        };
+
+        assert!(!t.is_deleted());
+        assert_eq!(t.data.as_ptr(), ptr);
+
+        t.mark_deleted();
+        assert!(t.is_deleted());
+        assert_eq!(t.data.as_ptr(), ptr);
+
+        t.mark_deleted();
+        assert!(t.is_deleted());
+        assert_eq!(t.data.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn test_context() {
+        use provider::ExecutionContext;
+
+        let context = Context::default();
+        let ContextMetrics { spawns, clones } = context.metrics();
+        assert_eq!(spawns, 0);
+        assert_eq!(clones, 0);
+
+        // Test clones are recorded
+        {
+            let c0 = context.clone();
+            let _c1 = c0.clone();
+        }
+
+        let ContextMetrics { spawns, clones } = context.metrics();
+        assert_eq!(spawns, 0);
+        assert_eq!(clones, 2);
+
+        // Test spawns are recorded.
+        let rt = current_thread_runtime();
+        let v = rt.block_on(context.clone().wrap_spawn(async { 2usize }));
+        assert_eq!(v, 2);
+
+        let ContextMetrics { spawns, clones } = context.metrics();
+        assert_eq!(spawns, 1);
+        assert_eq!(clones, 3);
+    }
+
+    #[test]
+    fn test_provider_new_from() {
+        // Happy path - valid provider with start points and additional points
+        {
+            let config = Config::new(
+                Metric::L2,
+                3,
+                [
+                    StartPoint::new(0, vec![1.0, 0.0]),
+                    StartPoint::new(1, vec![0.0, 1.0]),
+                ],
+            )
+            .unwrap();
+
+            let start_points = [(0, AdjacencyList::from_iter_untrusted([1, 2]))];
+            let points = [(
+                2,
+                vec![1.0, 1.0],
+                AdjacencyList::from_iter_untrusted([0, 1]),
+            )];
+
+            let provider = Provider::new_from(config, start_points, points).unwrap();
+            assert_eq!(provider.dim(), 2);
+            assert_eq!(provider.max_degree(), 3);
+        }
+
+        // Happy Path: empty iterators (only start points from config)
+        {
+            let config = Config::new(Metric::L2, 5, [StartPoint::new(0, vec![1.0])]).unwrap();
+            let provider = Provider::new_from(config, [], []).unwrap();
+            assert_eq!(provider.dim(), 1);
+        }
+
+        // Error: start point neighbors exceed max degree
+        {
+            let config = Config::new(Metric::L2, 2, [StartPoint::new(0, vec![1.0])]).unwrap();
+            // Exceeds max degree of 2
+            let start_points = [(0, AdjacencyList::from_iter_untrusted([1, 2, 3]))];
+            let err = Provider::new_from(config, start_points, []).unwrap_err();
+            assert_contains!(err.to_string(), "max degree");
+        }
+
+        // Error: invalid start point ID
+        {
+            let config = Config::new(Metric::L2, 5, [StartPoint::new(0, vec![1.0])]).unwrap();
+            let start_points = [(999, AdjacencyList::new())]; // 999 is not a valid start point
+            let err = Provider::new_from(config, start_points, []).unwrap_err();
+            assert_contains!(err.to_string(), "not a valid start point");
+        }
+
+        // Error: regular point neighbors exceed max degree
+        {
+            let config = Config::new(Metric::L2, 2, [StartPoint::new(0, vec![1.0])]).unwrap();
+
+            // Exceeds max degree
+            let points = [(1, vec![2.0], AdjacencyList::from_iter_untrusted([0, 2, 3]))];
+            let err = Provider::new_from(config, [], points).unwrap_err();
+            assert_contains!(err.to_string(), "max degree");
+        }
+
+        // Error: trying to assign start point through regular points
+        {
+            let config = Config::new(Metric::L2, 5, [StartPoint::new(0, vec![1.0])]).unwrap();
+            let points = [(0, vec![2.0], AdjacencyList::new())]; // 0 is already a start point
+            let err = Provider::new_from(config, [], points).unwrap_err();
+            assert_contains!(err.to_string(), "cannot assign start point");
+        }
+
+        // Error: dimension mismatch in regular points
+        {
+            let config = Config::new(Metric::L2, 5, [StartPoint::new(0, vec![1.0, 2.0])]).unwrap();
+            let points = [(1, vec![3.0], AdjacencyList::new())]; // Wrong dimension (1 instead of 2)
+            let err = Provider::new_from(config, [], points).unwrap_err();
+            assert_contains!(err.to_string(), "expecting dim");
+        }
+
+        // Error: inconsistent graph (neighbor points to non-existent ID)
+        {
+            let config = Config::new(Metric::L2, 5, [StartPoint::new(0, vec![1.0])]).unwrap();
+            let points = [(
+                1,
+                vec![2.0],
+                AdjacencyList::from_iter_unique(std::iter::once(999)),
+            )]; // 999 doesn't exist
+            let err = Provider::new_from(config, [], points).unwrap_err();
+            assert_contains!(err.to_string(), "not in the provider");
+        }
+    }
+
+    fn create_test_provider() -> Provider {
+        // Edge case: complex valid graph
+        let config = Config::new(
+            Metric::L2,
+            4,
+            [
+                StartPoint::new(0, vec![1.0, 0.0]),
+                StartPoint::new(1, vec![0.0, 1.0]),
+            ],
+        )
+        .unwrap();
+        let start_points = [
+            (0, AdjacencyList::from_iter_untrusted([1, 2, 3])),
+            (1, AdjacencyList::from_iter_untrusted([0, 3])),
+        ];
+
+        let points = [
+            (
+                2,
+                vec![0.5, 0.5],
+                AdjacencyList::from_iter_untrusted([0, 3]),
+            ),
+            (
+                3,
+                vec![-1.0, 1.0],
+                AdjacencyList::from_iter_untrusted([0, 1, 2]),
+            ),
+        ];
+        let provider = Provider::new_from(config, start_points, points).unwrap();
+
+        assert_eq!(provider.dim(), 2);
+        assert_eq!(provider.max_degree(), 4);
+        assert_eq!(provider.distance_metric(), Metric::L2);
+
+        provider
+    }
+
+    #[test]
+    fn id_conversion() {
+        use provider::DataProvider;
+
+        let provider = create_test_provider();
+
+        let context = Context::default();
+        for i in 0u32..3u32 {
+            let internal = provider.to_internal_id(&context, &i).unwrap();
+            assert_eq!(internal, i);
+
+            let external = provider.to_external_id(&context, i).unwrap();
+            assert_eq!(external, i);
+        }
+
+        let err = provider.to_internal_id(&context, &5).unwrap_err();
+        let message = err.to_string();
+        assert_eq!(
+            message, "external id 5 is not initialized",
+            "got {}",
+            message
+        );
+
+        let err = provider.to_external_id(&context, 5).unwrap_err();
+        let message = err.to_string();
+        assert_eq!(
+            message, "internal id 5 is not initialized",
+            "got {}",
+            message
+        );
+    }
+
+    #[test]
+    fn test_set_element() {
+        use provider::{Guard, SetElement};
+
+        let provider = create_test_provider();
+        let rt = current_thread_runtime();
+
+        let context = Context::new();
+        let query = vec![0.0; provider.dim()];
+        let mut accessor = super::Accessor::new(&provider, &query).unwrap();
+        let id = 5;
+
+        assert!(accessor.get_distance(5).is_err());
+
+        // Setting with the wrong dimension is an error.
+        {
+            let v = vec![1.0f32; provider.dim() + 1];
+            let err = rt
+                .block_on(provider.set_element(&context, &id, &v))
+                .unwrap_err();
+            let msg = err.to_string();
+            assert_contains!(msg, "wrong dim");
+            assert!(accessor.get_distance(id).is_err());
+        }
+
+        // Setting with the correct dimension is successful.
+        {
+            let v = vec![1.0f32; provider.dim()];
+            let guard = rt
+                .block_on(provider.set_element(&context, &id, &v))
+                .unwrap();
+            rt.block_on(guard.complete());
+
+            let distance = accessor.get_distance(id).unwrap();
+            assert_eq!(distance, provider.dim() as f32);
+        }
+
+        // Setting again is an error.
+        {
+            let v = vec![1.0f32; provider.dim()];
+            let err = rt
+                .block_on(provider.set_element(&context, &id, &v))
+                .unwrap_err();
+            let msg = err.to_string();
+            assert_contains!(msg, "vector id 5 is already assigned");
+        }
+    }
+
+    #[test]
+    fn test_neighbor_accessor() {
+        use provider::{DefaultAccessor, NeighborAccessor};
+
+        let provider = create_test_provider();
+        let mut accessor = provider.default_accessor();
+        let mut v = AdjacencyList::new();
+
+        let rt = current_thread_runtime();
+
+        // The following accesses should all be successful and reflact the initialization
+        // performed in `create_test_provider`.
+        rt.block_on(accessor.get_neighbors(0, &mut v)).unwrap();
+        assert_eq!(&*v, &[1, 2, 3]);
+
+        rt.block_on(accessor.get_neighbors(1, &mut v)).unwrap();
+        assert_eq!(&*v, &[0, 3]);
+
+        rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+        assert_eq!(&*v, &[0, 3]);
+
+        rt.block_on(accessor.get_neighbors(3, &mut v)).unwrap();
+        assert_eq!(&*v, &[0, 1, 2]);
+
+        // Accessing an uninitialized vector is an error.
+        let err = rt.block_on(accessor.get_neighbors(4, &mut v)).unwrap_err();
+        assert_contains!(err.to_string(), "Attempt to access an invalid id");
+    }
+
+    #[test]
+    fn test_set_neighbors() {
+        use provider::{DefaultAccessor, NeighborAccessor, NeighborAccessorMut};
+
+        let provider = create_test_provider();
+        let mut accessor = provider.default_accessor();
+        let mut v = AdjacencyList::new();
+
+        let rt = current_thread_runtime();
+
+        // Test that emptying neighbors works.
+        rt.block_on(accessor.set_neighbors(2, &[])).unwrap();
+        rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+        assert!(v.is_empty());
+        assert_eq!(provider.set_neighbors.value(), 1);
+
+        // Adding a few neighbors behaves well.
+        rt.block_on(accessor.set_neighbors(2, &[1, 3])).unwrap();
+        rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+        assert_eq!(&*v, &[1, 3]);
+        assert_eq!(provider.set_neighbors.value(), 2);
+
+        // Adding too many neighbors is an error.
+        {
+            assert_eq!(
+                provider.max_degree(),
+                4,
+                "if this changes - update this mini test"
+            );
+            let err = rt
+                .block_on(accessor.set_neighbors(2, &[1, 2, 3, 4, 5]))
+                .unwrap_err();
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(&*v, &[1, 3], "original neighbors should be unchanged");
+
+            let msg = err.to_string();
+            assert_contains!(msg, "trying to assign neighbors with length 5");
+
+            assert_eq!(
+                provider.set_neighbors.value(),
+                2,
+                "number of successful `set_neighbors` should not change"
+            );
+        }
+
+        // Assigning duplicates is an error.
+        {
+            let err = rt
+                .block_on(accessor.set_neighbors(2, &[1, 2, 3, 2]))
+                .unwrap_err();
+
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(
+                &*v,
+                &[1, 2, 3],
+                "final neighbors should still be deduplicated"
+            );
+            let msg = err.to_string();
+            assert_contains!(msg, "duplicate neighbors detected");
+
+            assert_eq!(
+                provider.set_neighbors.value(),
+                3,
+                "number of successful `set_neighbors` should change"
+            );
+        }
+
+        // Invalid ID is caught
+        {
+            let err = rt
+                .block_on(accessor.set_neighbors(10, &[1, 2]))
+                .unwrap_err();
+
+            let msg = err.to_string();
+            assert_contains!(msg, "access an invalid id");
+        }
+    }
+
+    #[test]
+    fn test_append_vector() {
+        use provider::{DefaultAccessor, NeighborAccessor, NeighborAccessorMut};
+
+        let provider = create_test_provider();
+        let mut accessor = provider.default_accessor();
+        let mut v = AdjacencyList::new();
+
+        let rt = current_thread_runtime();
+
+        rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+        assert_eq!(&*v, &[0, 3]);
+
+        // We can successfully add neighbors.
+        rt.block_on(accessor.append_vector(2, &[1])).unwrap();
+        rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+        assert_eq!(&*v, &[0, 3, 1]);
+        assert_eq!(provider.append_neighbors.value(), 1);
+
+        // We can add multiple neighbors.
+        {
+            rt.block_on(accessor.set_neighbors(2, &[])).unwrap();
+            rt.block_on(accessor.append_vector(2, &[1, 3, 4])).unwrap();
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(&*v, &[1, 3, 4]);
+            assert_eq!(provider.append_neighbors.value(), 2);
+        }
+
+        // Appending duplicates is an error.
+        {
+            let err = rt.block_on(accessor.append_vector(2, &[1])).unwrap_err();
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(&*v, &[1, 3, 4]);
+
+            let msg = err.to_string();
+            assert_contains!(msg, "duplicate ids in append-vector");
+            assert_eq!(
+                provider.append_neighbors.value(),
+                3,
+                "number of append calls should still increase",
+            );
+        }
+
+        // Appending fully deduplicates.
+        {
+            rt.block_on(accessor.set_neighbors(2, &[])).unwrap();
+            let err = rt
+                .block_on(accessor.append_vector(2, &[1, 1, 1]))
+                .unwrap_err();
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(&*v, &[1]);
+
+            let msg = err.to_string();
+            assert_contains!(msg, "duplicate ids in append-vector");
+            assert_eq!(
+                provider.append_neighbors.value(),
+                4,
+                "number of append calls should still increase",
+            );
+        }
+
+        // Adding too many neighbors is an error.
+        {
+            let err = rt
+                .block_on(accessor.append_vector(2, &[2, 3, 4, 5]))
+                .unwrap_err();
+            rt.block_on(accessor.get_neighbors(2, &mut v)).unwrap();
+            assert_eq!(&*v, &[1]);
+
+            let msg = err.to_string();
+            assert_contains!(msg, "will exceed the max degree");
+            assert_eq!(provider.append_neighbors.value(), 4);
+        }
+
+        // Invalid IDs are caught.
+        {
+            let err = rt
+                .block_on(accessor.append_vector(10, &[1, 2]))
+                .unwrap_err();
+
+            let msg = err.to_string();
+            assert_contains!(msg, "access an invalid id");
+        }
+    }
+
+    #[test]
+    fn test_delete() {
+        use provider::Delete;
+
+        let provider = create_test_provider();
+        let rt = current_thread_runtime();
+
+        let ids = [0, 1, 2, 3];
+        let invalid_id = 5;
+
+        // Ensure the test provider is not updated too dramatically.
+        {
+            let mut check: Vec<_> = provider.all_internal_ids().into_iter().collect();
+            check.sort();
+            assert_eq!(&*check, &ids);
+
+            assert!(provider.is_start_point(0));
+            assert!(provider.is_start_point(1));
+            assert!(!provider.is_start_point(2));
+            assert!(!provider.is_start_point(3));
+        }
+
+        let context = Context::new();
+        for i in ids {
+            let is_deleted = provider.is_deleted(i).unwrap();
+            assert!(!is_deleted);
+
+            let status = rt
+                .block_on(provider.status_by_internal_id(&context, i))
+                .unwrap();
+            assert_eq!(status, provider::ElementStatus::Valid);
+
+            let status = rt
+                .block_on(provider.status_by_external_id(&context, &i))
+                .unwrap();
+            assert_eq!(status, provider::ElementStatus::Valid);
+        }
+
+        // Accessing an invalid ID in all APIs returns an error.
+        {
+            let err = provider.is_deleted(invalid_id).unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+
+            let err = rt
+                .block_on(provider.status_by_internal_id(&context, invalid_id))
+                .unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+
+            let err = rt
+                .block_on(provider.status_by_external_id(&context, &invalid_id))
+                .unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+        }
+
+        // Deleting works.
+        {
+            let id = 3;
+            rt.block_on(provider.delete(&context, &id)).unwrap();
+            let is_deleted = provider.is_deleted(id).unwrap();
+            assert!(is_deleted);
+
+            let status = rt
+                .block_on(provider.status_by_internal_id(&context, id))
+                .unwrap();
+            assert_eq!(status, provider::ElementStatus::Deleted);
+
+            let status = rt
+                .block_on(provider.status_by_external_id(&context, &id))
+                .unwrap();
+            assert_eq!(status, provider::ElementStatus::Deleted);
+        }
+
+        // Releasing works and completely remove the id.
+        {
+            let id = 3;
+            rt.block_on(provider.release(&context, id)).unwrap();
+            let err = provider.is_deleted(id).unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+
+            let err = rt
+                .block_on(provider.status_by_internal_id(&context, id))
+                .unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+
+            let err = rt
+                .block_on(provider.status_by_external_id(&context, &id))
+                .unwrap_err();
+            assert_contains!(err.to_string(), "not initialized");
+        }
+    }
+
+    #[test]
+    fn test_start_points_cannot_be_deleted() {
+        use provider::Delete;
+
+        let provider = create_test_provider();
+        let rt = current_thread_runtime();
+
+        assert!(provider.is_start_point(0));
+        assert!(provider.is_start_point(1));
+
+        let context = Context::new();
+        let err = rt.block_on(provider.delete(&context, &0)).unwrap_err();
+        let msg = err.to_string();
+        assert_contains!(msg, "cannot delete start point");
+        assert!(!provider.is_deleted(0).unwrap());
+
+        let err = rt.block_on(provider.release(&context, 0)).unwrap_err();
+        let msg = err.to_string();
+        assert_contains!(msg, "cannot delete start point");
+        assert!(!provider.is_deleted(0).unwrap());
+    }
+}

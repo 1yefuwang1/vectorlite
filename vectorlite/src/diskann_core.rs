@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context as TaskContext, Poll, Waker};
 use std::thread::{self, ThreadId};
 
-use diskann::graph::config::{Builder, MaxDegree, PruneKind};
+use diskann::graph::config::{Builder, IntraBatchCandidates, MaxDegree, PruneKind};
 use diskann::graph::glue::{self, FilteredAccessor, HybridPredicate, SearchAccessor};
 use diskann::graph::search::{InlineFilterSearch, Knn};
 use diskann::graph::{workingset, AdjacencyList, DiskANNIndex};
@@ -122,6 +122,10 @@ impl GraphConfig {
             PruneKind::TriangleInequality,
             |b| {
                 b.alpha(self.alpha);
+                // Private current-thread execution still uses the upstream spawned
+                // element/backedge phases; only one worker is active at a time.
+                b.max_minibatch_par(1);
+                b.intra_batch_candidates(IntraBatchCandidates::new(8));
             },
         )
         .build()
@@ -132,7 +136,8 @@ impl GraphConfig {
         // records visited Neighbors, inline search collects matching Neighbors.
         // Account geometric Vec/hash capacities, their initial degree*L reserve,
         // default750 prune states, and OneHop's degree-squared topology work.
-        // Upgrades must re-audit these bounds; no bulk/paged/resize APIs are used.
+        // Single-operation bounds; batch_scratch_bytes separately admits the
+        // batch structures and scheduler. No paged/resize APIs are used.
         let search_l = self
             .search_l
             .max(self.construction_l)
@@ -168,6 +173,55 @@ impl GraphConfig {
         }
         Ok(bytes)
     }
+    fn batch_scratch_bytes(
+        &self,
+        physical_degree: usize,
+        width: usize,
+        input_bytes: usize,
+    ) -> StoreResult<usize> {
+        // Pinned 0.60.0, par=1, B<=32: one candidate/bootstrap accessor,
+        // then one backedge worker. Do not treat the 750 occlusion cap as a
+        // bound on materialization: bootstrap/backedge fill can hold B+R+1.
+        // Reserve geometric capacities and allocator/container overhead for
+        // both pending edge generations and both aggregation maps (bootstrap
+        // overlaps the old map), guards/contexts/Arcs, task results, hot-target
+        // sort scratch, and a private runtime/scheduler with two spawned phases.
+        let overflow = || limit("DiskANN batch scratch estimate overflow");
+        let edges = width.checked_mul(physical_degree).ok_or_else(overflow)?;
+        let list = width
+            .checked_add(physical_degree)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(overflow)?;
+        let batch = edges
+            .checked_mul(1024)
+            .and_then(|n| width.checked_mul(4096).and_then(|b| n.checked_add(b)))
+            .and_then(|n| list.checked_mul(256).and_then(|b| n.checked_add(b)))
+            .and_then(|n| n.checked_add(512 * 1024))
+            .and_then(|n| n.checked_add(input_bytes))
+            .ok_or_else(overflow)?;
+        let bytes = self
+            .scratch_bytes(physical_degree)?
+            .checked_add(batch)
+            .ok_or_else(overflow)?;
+        // Vector leases still charge actual live payloads in this same state.
+        // Verify space for worst-case simultaneous search-cache + prune fill
+        // before mutations, rather than relying on a late allocation failure.
+        let snapshots = list.max(750).checked_add(33).ok_or_else(overflow)?;
+        let snapshot_bytes = self
+            .dimension
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(vector_metadata_bytes()))
+            .and_then(|n| n.checked_mul(snapshots))
+            .ok_or_else(overflow)?;
+        if snapshots > self.limits.max_cached_vectors
+            || bytes
+                .checked_add(snapshot_bytes)
+                .is_none_or(|n| n > self.limits.max_vector_bytes)
+        {
+            return Err(limit("DiskANN batch scratch exceeds workspace limit"));
+        }
+        Ok(bytes)
+    }
     fn validate_vector(&self, vector: &[f32]) -> StoreResult<()> {
         if vector.len() != self.dimension || vector.iter().any(|x| !x.is_finite()) {
             return Err(IndexError::new(
@@ -180,9 +234,12 @@ impl GraphConfig {
 #[derive(Default)]
 struct OperationState {
     fatal: Option<IndexError>,
+    incomplete_insertion: bool,
     visits: usize,
     vectors: usize,
     bytes: usize,
+    tasks: usize,
+    guards: usize,
 }
 #[derive(Clone)]
 struct OperationContext {
@@ -192,7 +249,33 @@ struct OperationContext {
     physical_degree: usize,
     state: Arc<Mutex<OperationState>>,
 }
-impl provider::ExecutionContext for OperationContext {}
+impl provider::ExecutionContext for OperationContext {
+    fn wrap_spawn<F, T>(&self, future: F) -> impl Future<Output = T> + Send + 'static
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        // Account at construction, not first poll, so an unpolled cancelled
+        // task cannot evade the cleanup check. No store pointer crosses tasks.
+        self.lock().tasks += 1;
+        let lease = TaskLease(self.clone());
+        async move {
+            let _lease = lease;
+            future.await
+        }
+    }
+}
+struct TaskLease(OperationContext);
+impl Drop for TaskLease {
+    fn drop(&mut self) {
+        if thread::current().id() != self.0.thread {
+            self.0.fail(IndexError::new(
+                "DiskANN task destroyed on the wrong thread",
+            ));
+        }
+        let mut state = self.0.lock();
+        state.tasks = state.tasks.saturating_sub(1);
+    }
+}
 impl OperationContext {
     fn lock(&self) -> MutexGuard<'_, OperationState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
@@ -209,8 +292,18 @@ impl OperationContext {
                 "DiskANN operation used on the wrong thread",
             )));
         }
-        if let Some(error) = self.lock().fatal.clone() {
-            return Err(error);
+        {
+            let state = self.lock();
+            if let Some(error) = state.fatal.clone() {
+                return Err(error);
+            }
+            if state.incomplete_insertion {
+                // Stop subsequent provider writes, but do not latch this generic
+                // fallback ahead of the original algorithm/task failure.
+                return Err(IndexError::new(
+                    "DiskANN insertion did not complete; rollback required",
+                ));
+            }
         }
         if !ACTIVE.with(|active| active.get().is_some_and(|frame| frame.token == self.token)) {
             return Err(self.fail(IndexError::new(
@@ -342,6 +435,19 @@ impl<'slot> StoreScope<'slot> {
         config: &GraphConfig,
         physical_degree: usize,
     ) -> StoreResult<Self> {
+        Self::enter_reserved(
+            slot,
+            config,
+            physical_degree,
+            config.scratch_bytes(physical_degree)?,
+        )
+    }
+    fn enter_reserved(
+        slot: &'slot mut StoreSlot<'_>,
+        config: &GraphConfig,
+        physical_degree: usize,
+        reserved_bytes: usize,
+    ) -> StoreResult<Self> {
         let token = NEXT_TOKEN
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| IndexError::new("DiskANN operation token exhausted"))?;
@@ -351,7 +457,7 @@ impl<'slot> StoreScope<'slot> {
             config: config.clone(),
             physical_degree,
             state: Arc::new(Mutex::new(OperationState {
-                bytes: config.scratch_bytes(physical_degree)?,
+                bytes: reserved_bytes,
                 ..OperationState::default()
             })),
         };
@@ -441,11 +547,30 @@ fn operation<T>(
     let scope = StoreScope::enter(&mut slot, config, physical_degree)?;
     let index = DiskANNIndex::new(core_config, Provider, None);
     let result = f(&index, &scope.context);
-    let fatal = scope.context.lock().fatal.clone();
-    match fatal {
-        Some(error) => Err(error),
-        None => result,
+    drop(index);
+    finish_operation(&scope.context, result, false)
+}
+fn finish_operation<T>(
+    context: &OperationContext,
+    result: StoreResult<T>,
+    require_cleanup: bool,
+) -> StoreResult<T> {
+    let state = context.lock();
+    if let Some(error) = state.fatal.clone() {
+        return Err(error);
     }
+    let result = result?;
+    if require_cleanup && (state.tasks != 0 || state.guards != 0 || state.vectors != 0) {
+        return Err(IndexError::new(
+            "DiskANN batch resources escaped the operation scope",
+        ));
+    }
+    if state.incomplete_insertion {
+        return Err(IndexError::new(
+            "DiskANN insertion did not complete; rollback required",
+        ));
+    }
+    Ok(result)
 }
 fn ann(error: IndexError) -> ANNError {
     ANNError::message(error.to_string())
@@ -461,10 +586,19 @@ struct InsertGuard {
 }
 impl Drop for InsertGuard {
     fn drop(&mut self) {
-        if !self.complete {
+        if thread::current().id() != self.context.thread {
             self.context.fail(IndexError::new(
-                "DiskANN insertion did not complete; rollback required",
+                "DiskANN guard destroyed on the wrong thread",
             ));
+        }
+        {
+            let mut state = self.context.lock();
+            state.guards = state.guards.saturating_sub(1);
+        }
+        if !self.complete {
+            // Defer this fallback until the real algorithm/SQL error is known.
+            // Guard destruction must not mask the first pure upstream failure.
+            self.context.lock().incomplete_insertion = true;
         }
     }
 }
@@ -506,10 +640,13 @@ impl provider::SetElement<&[f32]> for Provider {
     ) -> impl Future<Output = ANNResult<InsertGuard>> + Send {
         ready(
             with_store(context, |store| store.allocate(*rowid, vector))
-                .map(|id| InsertGuard {
-                    context: context.clone(),
-                    id,
-                    complete: false,
+                .map(|id| {
+                    context.lock().guards += 1;
+                    InsertGuard {
+                        context: context.clone(),
+                        id,
+                        complete: false,
+                    }
                 })
                 .map_err(ann),
         )
@@ -943,6 +1080,51 @@ impl<'a> glue::InsertStrategy<'a, Provider, &'a [f32]> for Strategy {
         *self
     }
 }
+/// Owned bounded row-major input; constructing it never copies the matrix.
+struct FlatBatch {
+    encoded: Vec<f32>,
+    dimension: usize,
+}
+impl glue::Batch for FlatBatch {
+    type Element<'a> = &'a [f32];
+    fn len(&self) -> usize {
+        self.encoded.len() / self.dimension
+    }
+    fn get(&self, i: usize) -> &[f32] {
+        let start = i * self.dimension;
+        &self.encoded[start..start + self.dimension]
+    }
+}
+impl glue::MultiInsertStrategy<Provider, FlatBatch> for Strategy {
+    type Seed = ();
+    type FinishError = ANNError;
+    type PruneStrategy = Self;
+    type InsertStrategy = Self;
+    fn insert_strategy(&self) -> Self {
+        *self
+    }
+    fn finish<Itr>(
+        &self,
+        _: &Provider,
+        context: &OperationContext,
+        _: &Arc<FlatBatch>,
+        _: Itr,
+    ) -> impl Future<Output = ANNResult<()>> + Send
+    where
+        Itr: ExactSizeIterator<Item = u64> + Send,
+    {
+        ready(context.check().map_err(ann))
+    }
+    fn seeded_prune_accessor<'a>(
+        &'a self,
+        provider: &'a Provider,
+        context: &'a OperationContext,
+        _: &'a (),
+        capacity: usize,
+    ) -> ANNResult<PruneAccessor> {
+        glue::PruneStrategy::prune_accessor(self, provider, context, capacity)
+    }
+}
 struct Output;
 impl glue::SearchPostProcess<Accessor<'_>, &[f32]> for Output {
     type Error = ANNError;
@@ -1016,6 +1198,107 @@ pub(crate) fn insert(
         drive(index.insert(&Strategy, context, &rowid, vector))?.map_err(index_error)
     })
 }
+/// Reject contexts visible to this linked Tokio instance before any graph writes.
+/// In particular, even an entered (not currently polling) ambient runtime is
+/// unsupported. This does not claim to detect a separately linked host runtime.
+pub(crate) fn check_batch_execution_context() -> StoreResult<()> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(IndexError::new(
+            "DiskANN batch does not support an ambient Tokio runtime",
+        ));
+    }
+    if ACTIVE.with(|active| active.get().is_some()) {
+        return Err(IndexError::new("nested DiskANN operation is not supported"));
+    }
+    Ok(())
+}
+
+/// Consume finite, already encoded/normalized input. The SQL owner seeds the
+/// first live point with `insert` and owns whole-statement rollback on any error.
+pub(crate) fn insert_batch(
+    store: &mut dyn GraphStore,
+    config: &GraphConfig,
+    rowids: Vec<u64>,
+    encoded: Vec<f32>,
+) -> StoreResult<()> {
+    if rowids.is_empty() && encoded.is_empty() {
+        return Ok(());
+    }
+    check_batch_execution_context()?;
+    let width = rowids.len();
+    if width == 0 || width > 32 {
+        return Err(limit("DiskANN batch width must be between 1 and 32"));
+    }
+    let length = width
+        .checked_mul(config.dimension)
+        .filter(|_| config.dimension != 0)
+        .ok_or_else(|| limit("DiskANN batch input length overflow"))?;
+    if encoded.len() != length || encoded.iter().any(|x| !x.is_finite()) {
+        return Err(IndexError::new(
+            "DiskANN batch has wrong dimension or non-finite values",
+        ));
+    }
+    for (i, rowid) in rowids.iter().enumerate() {
+        if *rowid > i64::MAX as u64 {
+            return Err(IndexError::new(
+                "DiskANN rowid exceeds SQLite INTEGER range",
+            ));
+        }
+        if rowids[..i].contains(rowid) {
+            return Err(IndexError::new("duplicate DiskANN batch rowid"));
+        }
+    }
+    let core_config = config.core_config()?;
+    let physical_degree = core_config.max_degree().get();
+    // Account actual caller capacities, plus Vec -> Arc<[id]> allocation overlap.
+    // The latter is bounded by B<=32 and never copies a corpus of vectors.
+    let input_bytes = encoded
+        .capacity()
+        .checked_mul(4)
+        .and_then(|n| {
+            rowids
+                .capacity()
+                .checked_mul(8)
+                .and_then(|b| n.checked_add(b))
+        })
+        .and_then(|n| width.checked_mul(8).and_then(|b| n.checked_add(b)))
+        .ok_or_else(|| limit("DiskANN batch input byte estimate overflow"))?;
+    let reserved = config.batch_scratch_bytes(physical_degree, width, input_bytes)?;
+    let mut slot = StoreSlot { store };
+    let scope = StoreScope::enter_reserved(&mut slot, config, physical_degree, reserved)?;
+    let result = (|| {
+        // Build, execute, and destroy every task/future/runtime on the original
+        // callback thread INSIDE the TLS store scope. No timer/I/O drivers, reused
+        // runtime, background shutdown, or worker-thread connection access.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(|e| IndexError::new(format!("DiskANN batch runtime creation failed: {e}")))?;
+        let index = Arc::new(DiskANNIndex::new(core_config, Provider, None));
+        let vectors = Arc::new(FlatBatch {
+            encoded,
+            dimension: config.dimension,
+        });
+        let ids: Arc<[u64]> = rowids.into();
+        let result = runtime.block_on(index.multi_insert::<Strategy, FlatBatch>(
+            Strategy,
+            &scope.context,
+            vectors.clone(),
+            ids.clone(),
+        ));
+        // block_on consumes/drops the top future. Strict upstream joins all
+        // relevant tasks before returning; runtime destruction also cancels and
+        // destroys any unexpected queued task while the store scope is live.
+        drop(runtime);
+        drop(vectors);
+        drop(ids);
+        drop(index);
+        result.map_err(index_error)
+    })();
+    let result = finish_operation(&scope.context, result, true);
+    drop(scope);
+    result
+}
+
 pub(crate) fn delete(
     store: &mut dyn GraphStore,
     config: &GraphConfig,

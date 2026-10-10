@@ -170,9 +170,13 @@ def test_sdist_explicitly_includes_new_build_and_notice_inputs():
     includes = configuration["tool"]["scikit-build"]["sdist"]["include"]
     assert {
         "cmake/triplets/*.cmake", "scripts/check_macos_artifact.py",
-        "scripts/collect_runtime_licenses.py", "third_party/**",
-        "vectorlite/src/**/*.rs", "vectorlite/tests/*.py", "doc/diskann.md",
-        "benchmark/diskann_benchmark.py", "benchmark/test_diskann_benchmark_utils.py",
+        "scripts/collect_runtime_licenses.py", "scripts/run_batch_native_test.py",
+        "scripts/run_batch_tokio_host.py", "third_party/**",
+        "vectorlite/src/**/*.rs", "vectorlite/include/*.h", "vectorlite/tests/*.py",
+        "vectorlite/tests/*.c", "vectorlite/tests/batch_tokio_host/Cargo.toml",
+        "vectorlite/tests/batch_tokio_host/Cargo.lock", "vectorlite/tests/batch_tokio_host/src/*.rs",
+        "doc/diskann.md", "benchmark/diskann_benchmark.py", "benchmark/test_diskann_benchmark_utils.py",
+        "benchmark/diskann_batch_benchmark.c", "benchmark/diskann_batch_benchmark.py",
     } <= set(includes)
     excludes = configuration["tool"]["scikit-build"]["sdist"]["exclude"]
     assert {"build/**", "target/**", ".cache/**"} <= set(excludes)
@@ -210,7 +214,14 @@ def test_runtime_inventory_retains_expressions_targets_and_every_exact_notice():
     assert manifest["cargo_lock_sha256"] == hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()
     assert manifest["unresolved_notice_gaps"] == []
     packages = {p["name"]: p for p in manifest["packages"]}
-    assert len(packages) == 41
+    assert len(packages) == 42
+    assert packages["diskann"]["registry_source"] is None
+    patch = packages["diskann"]["local_patch"]
+    assert patch == json.loads((ROOT / "third_party/diskann-0.60.0/PROVENANCE.json").read_text())["local_patch"]
+    assert {entry["path"] for entry in patch["modified_files"]} == {"src/graph/index.rs"}
+    for entry in patch["modified_files"]:
+        payload = (ROOT / patch["source_directory"] / entry["path"]).read_bytes()
+        assert hashlib.sha256(payload).hexdigest() == entry["local_sha256"]
     assert "cc" not in packages and "bytemuck_derive" not in packages
     assert "bindgen" not in packages and "rayon" not in packages
     assert packages["zerocopy"]["declared_spdx"] == "BSD-2-Clause OR Apache-2.0 OR MIT"

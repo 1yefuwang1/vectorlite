@@ -33,7 +33,7 @@ Repository = "https://github.com/1yefuwang1/vectorlite"
 # ignored/stale source-tree extension binary into the wheel.
 wheel.packages = []
 # Include new implementation inputs even before a local dirty checkout is committed.
-sdist.include = ["scripts/install_rust.sh", "scripts/check_macos_artifact.py", "scripts/collect_runtime_licenses.py", "cmake/triplets/*.cmake", "third_party/**", "bindings/nodejs/packages/*/LICENSE", "vectorlite/src/**/*.rs", "vectorlite/tests/*.py", "doc/diskann.md", "benchmark/diskann_benchmark.py", "benchmark/test_diskann_benchmark_utils.py"]
+sdist.include = ["scripts/install_rust.sh", "scripts/check_macos_artifact.py", "scripts/collect_runtime_licenses.py", "scripts/run_batch_native_test.py", "scripts/run_batch_tokio_host.py", "cmake/triplets/*.cmake", "third_party/**", "bindings/nodejs/packages/*/LICENSE", "vectorlite/src/**/*.rs", "vectorlite/include/*.h", "vectorlite/tests/*.py", "vectorlite/tests/*.c", "vectorlite/tests/batch_tokio_host/Cargo.toml", "vectorlite/tests/batch_tokio_host/Cargo.lock", "vectorlite/tests/batch_tokio_host/src/*.rs", "doc/diskann.md", "benchmark/diskann_benchmark.py", "benchmark/test_diskann_benchmark_utils.py", "benchmark/diskann_batch_benchmark.c", "benchmark/diskann_batch_benchmark.py"]
 sdist.exclude = ["build/**", "target/**", "vectorlite/target/**", ".cache/**", "**/__pycache__/**", "bindings/python/vectorlite_py/vectorlite.so", "bindings/python/vectorlite_py/vectorlite.dylib", "bindings/python/vectorlite_py/vectorlite.dll"]
 # Minimum version of CMake
 cmake.version = ">=3.22"
