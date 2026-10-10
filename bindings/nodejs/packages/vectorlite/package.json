@@ -4,11 +4,13 @@
   "homepage": "https://github.com/1yefuwang1/vectorlite",
   "main": "src/index.js",
   "files": [
-    "src"
+    "src",
+    "LICENSE"
   ],
   "scripts": {
-    "test": "npm run test:platforms && node test/test.js",
-    "test:platforms": "node --test test/platforms.test.js"
+    "test": "npm run test:platforms && node --test test/notices.test.js && npm run test:node-sqlite && node test/test.js",
+    "test:platforms": "node --test test/platforms.test.js",
+    "test:node-sqlite": "node --test test/node_sqlite.test.js"
   },
   "author": "1yefuwang1@gmail.com",
   "license": "Apache-2.0",

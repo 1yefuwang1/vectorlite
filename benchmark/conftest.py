@@ -60,6 +60,7 @@ from benchmark import (
     SqliteVssBackend,
     VectorliteBackend,
     VectorliteBruteForceBackend,
+    VectorliteDiskAnnBackend,
     is_supported_platform,
 )
 
@@ -210,8 +211,10 @@ def sqlite_cursor(sqlite_conn: sqlite3.Connection) -> sqlite3.Cursor:
 
 @pytest.fixture(scope="session")
 def benchmark_data(num_elements: int) -> BenchmarkData:
+    seed = os.environ.get("BENCHMARK_SEED")
     return BenchmarkData.generate(
-        DIMS, num_elements, NUM_QUERIES, K, DISTANCE_TYPES)
+        DIMS, num_elements, NUM_QUERIES, K, DISTANCE_TYPES,
+        seed=None if seed is None else int(seed))
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +229,14 @@ def benchmark_data(num_elements: int) -> BenchmarkData:
 @pytest.fixture
 def vectorlite_backend(sqlite_cursor, benchmark_data) -> VectorliteBackend:
     return VectorliteBackend(sqlite_cursor, benchmark_data)
+
+
+@pytest.fixture
+def vectorlite_diskann_backend(sqlite_cursor,
+                              benchmark_data) -> VectorliteDiskAnnBackend:
+    if not _env_flag("BENCHMARK_DISKANN"):
+        pytest.skip("set BENCHMARK_DISKANN=1 to enable SQLite-backed DiskANN")
+    return VectorliteDiskAnnBackend(sqlite_cursor, benchmark_data)
 
 
 @pytest.fixture

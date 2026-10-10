@@ -17,9 +17,20 @@ path = "vectorlite/tests/build_support.rs"
 
 [dependencies]
 bytemuck = { version = "1", default-features = false, features = ["derive"] }
+# Keep the pre-1.0 graph/provider contracts behind our private SQLite adapter.
+diskann = { version = "=0.60.0", default-features = false }
+diskann-utils = { version = "=0.60.0", default-features = false }
+diskann-vector = { version = "=0.60.0", default-features = false }
+serde = "1"
 serde_json = "1"
 tempfile = { version = "3", default-features = false }
+# Batch tasks are driven only by an operation-private current-thread runtime.
+tokio = { version = "=1.53.2", default-features = false, features = ["rt"] }
 vectorlite-sqlite-sys = { path = "vectorlite/vectorlite-sqlite-sys" }
+
+# Retain the pinned algorithm while making every batch phase fail atomically.
+[patch.crates-io]
+diskann = { path = "third_party/diskann-0.60.0/vendor" }
 
 [build-dependencies]
 cc = "1"

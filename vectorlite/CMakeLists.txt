@@ -24,6 +24,24 @@ if(APPLE)
     endif()
     set(_rust_target "${_rust_arch}-apple-darwin")
     set(_cargo_library libvectorlite.dylib)
+    # vcpkg can restore archives built on a newer host. Check every object now,
+    # before linking or packaging it with a lower final deployment target.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_macos_native_archives "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/libhwy.a")
+    set(_macos_optional_archives debug/lib/libhwy.a)
+    if(BUILD_TESTING)
+        list(APPEND _macos_optional_archives lib/libgtest.a debug/lib/libgtest.a)
+    endif()
+    foreach(_native_archive IN LISTS _macos_optional_archives)
+        set(_candidate "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/${_native_archive}")
+        if(EXISTS "${_candidate}")
+            list(APPEND _macos_native_archives "${_candidate}")
+        endif()
+    endforeach()
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_macos_artifact.py"
+                ${_macos_native_archives}
+        COMMAND_ERROR_IS_FATAL ANY)
 elseif(MSVC)
     set(_rust_target "${_rust_arch}-pc-windows-msvc")
     set(_cargo_library vectorlite.dll)
@@ -97,6 +115,28 @@ add_custom_target(vectorlite ALL
     VERBATIM)
 
 install(FILES "${VECTORLITE_EXTENSION}" DESTINATION vectorlite_py)
+install(FILES "${PROJECT_SOURCE_DIR}/vectorlite/include/vectorlite_batch.h"
+        DESTINATION vectorlite_py/include)
+
+# Ship component notices with the binary, not merely SPDX package metadata.
+# Use native copyrights from this exact selected triplet installation.
+install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+        DESTINATION vectorlite_py/licenses RENAME LICENSE.txt)
+set(_diskann_notices "${PROJECT_SOURCE_DIR}/third_party/diskann-0.60.0")
+install(FILES "${_diskann_notices}/LICENSE.txt"
+              "${_diskann_notices}/NOTICE.txt"
+              "${_diskann_notices}/PROVENANCE.json"
+        DESTINATION vectorlite_py/licenses/diskann-0.60.0)
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/third_party/rust-runtime/"
+        DESTINATION vectorlite_py/licenses/rust-runtime)
+foreach(_native_component IN ITEMS hnswlib highway)
+    set(_native_copyright "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${_native_component}/copyright")
+    if(NOT EXISTS "${_native_copyright}")
+        message(FATAL_ERROR "Missing selected ${_native_component} copyright: ${_native_copyright}")
+    endif()
+    install(FILES "${_native_copyright}"
+            DESTINATION "vectorlite_py/licenses/${_native_component}" RENAME LICENSE.txt)
+endforeach()
 
 if(BUILD_TESTING)
     add_test(NAME rust_unit_tests
@@ -108,6 +148,35 @@ if(BUILD_TESTING)
                 "${CARGO_EXECUTABLE}" test --locked --manifest-path "${_cargo_manifest}"
                 -p vectorlite-sqlite-sys --features abi-check
                 --target "${VECTORLITE_RUST_TARGET}")
+
+    # This executable is a host application: only it links SQLite. The loaded
+    # extension continues routing every call through the host API table.
+    find_package(unofficial-sqlite3 CONFIG REQUIRED)
+    add_executable(diskann_batch_native_test tests/diskann_batch_native.c)
+    target_link_libraries(diskann_batch_native_test PRIVATE unofficial::sqlite3::sqlite3)
+    target_include_directories(diskann_batch_native_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    set_target_properties(diskann_batch_native_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+    add_dependencies(diskann_batch_native_test vectorlite)
+    add_executable(diskann_batch_benchmark EXCLUDE_FROM_ALL
+        "${PROJECT_SOURCE_DIR}/benchmark/diskann_batch_benchmark.c")
+    target_link_libraries(diskann_batch_benchmark PRIVATE unofficial::sqlite3::sqlite3)
+    target_include_directories(diskann_batch_benchmark PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    set_target_properties(diskann_batch_benchmark PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME diskann_batch_native
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run_batch_native_test.py"
+                --executable "$<TARGET_FILE:diskann_batch_native_test>"
+                --extension "${VECTORLITE_EXTENSION}"
+                --work-root "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME diskann_batch_tokio_host
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run_batch_tokio_host.py"
+                --cargo "${CARGO_EXECUTABLE}"
+                --manifest "${PROJECT_SOURCE_DIR}/vectorlite/tests/batch_tokio_host/Cargo.toml"
+                --target "${VECTORLITE_RUST_TARGET}"
+                --target-dir "${CMAKE_CURRENT_BINARY_DIR}/batch-tokio-host"
+                --sqlite-lib-dir "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+                --extension "${VECTORLITE_EXTENSION}")
+    set_tests_properties(diskann_batch_tokio_host PROPERTIES TIMEOUT 120)
 endif()
 
 if(BUILD_TESTING OR VECTORLITE_BUILD_BENCHMARKS)

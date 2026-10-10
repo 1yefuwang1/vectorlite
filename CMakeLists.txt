@@ -2,6 +2,32 @@ cmake_minimum_required(VERSION 3.22 FATAL_ERROR)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" VECTORLITE_VERSION)
 
+# Native ports are configured separately from this project. Pin their macOS
+# floor in a repository-owned triplet, whose contents enter vcpkg's ABI hash.
+# Caller overlays retain priority; artifact checks still reject higher floors.
+# A previous configure may have cached our appended path through vcpkg. Move
+# only that managed path to the end again before considering new caller paths.
+list(REMOVE_ITEM VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/triplets")
+if(DEFINED ENV{VCPKG_OVERLAY_TRIPLETS})
+    cmake_path(CONVERT "$ENV{VCPKG_OVERLAY_TRIPLETS}" TO_CMAKE_PATH_LIST _vectorlite_env_triplets)
+    list(APPEND VCPKG_OVERLAY_TRIPLETS ${_vectorlite_env_triplets})
+endif()
+list(APPEND VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/triplets")
+list(REMOVE_DUPLICATES VCPKG_OVERLAY_TRIPLETS)
+
+# Set the project/Cargo floor before compiler initialization, including when an
+# older local CMake cache contains an empty deployment target. An explicit newer
+# local target is permitted, but is not a macOS 11 release artifact.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+   (NOT CMAKE_SYSTEM_NAME AND CMAKE_HOST_APPLE))
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+    endif()
+    if(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "11.0")
+        message(FATAL_ERROR "Supported macOS arm64 builds require macOS 11.0 or newer")
+    endif()
+endif()
+
 # Source distributions do not contain Git submodules. Fetch the exact pinned
 # vcpkg checkout into the build directory when neither the repository toolchain
 # nor an explicit external toolchain is available.

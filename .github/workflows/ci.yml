@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/vcpkg-binary-cache
-          key: vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
           restore-keys: |
             vcpkg-native-${{ matrix.os }}-${{ matrix.vcpkg_triplet }}-
 
@@ -128,6 +128,10 @@ jobs:
       - name: Build and deploy the Rust extension and SIMD tests
         run: cmake --build build/release --parallel 4
 
+      - name: Check macOS arm64 artifact deployment metadata
+        if: runner.os == 'macOS'
+        run: python scripts/check_macos_artifact.py build/release/vectorlite/vectorlite.dylib
+
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::missing_safety_doc
 
@@ -173,6 +177,11 @@ jobs:
             build/release/vectorlite/vectorlite.so
             build/release/vectorlite/vectorlite.dylib
             build/release/vectorlite/vectorlite.dll
+            LICENSE
+            third_party/diskann-0.60.0/
+            third_party/rust-runtime/
+            build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}/share/hnswlib/copyright
+            build/release/vcpkg_installed/${{ matrix.vcpkg_triplet }}/share/highway/copyright
 
   build_wheels:
     name: Build Rust wheels on ${{ matrix.os }}
@@ -226,7 +235,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-${{ hashFiles('vcpkg.json', 'pyproject.toml') }}
+          key: vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-${{ hashFiles('vcpkg.json', 'pyproject.toml', 'cmake/triplets/*.cmake') }}
           restore-keys: |
             vcpkg-wheel-${{ matrix.os }}-${{ matrix.wheel_arch }}-
 
@@ -284,6 +293,9 @@ jobs:
             docker; create_args: --volume="${{ env.VCPKG_DEFAULT_BINARY_CACHE }}:/project/vcpkg-binary-cache"
         run: python -m cibuildwheel --output-dir wheelhouse
 
+      - name: Check wheel notices and macOS binary deployment metadata
+        run: python scripts/check_macos_artifact.py wheelhouse/*.whl
+
       - uses: actions/upload-artifact@v7
         with:
           name: vectorlite-wheel-${{ matrix.os }}-${{ steps.short_sha.outputs.sha }}
@@ -328,7 +340,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test the platform Node package against the built Rust wheel
+      - name: Test HNSW and DiskANN Node smoke against the built Rust wheel
         working-directory: bindings/nodejs/packages/vectorlite
         run: |
           "$TEST_PYTHON" - <<'PY'
@@ -342,7 +354,9 @@ jobs:
           source = Path(vectorlite_py.vectorlite_path()).with_suffix(suffix)
           destination = Path(os.environ["GITHUB_WORKSPACE"]) / "bindings/nodejs/packages" / os.environ["NODE_PLATFORM_PACKAGE"] / "src" / source.name
           shutil.copy2(source, destination)
-          print(f"Testing Node package with {destination}")
+          shutil.copytree(source.parent / "licenses", destination.parent / "licenses", dirs_exist_ok=True)
+          shutil.copy2(source.parent / "licenses/LICENSE.txt", destination.parent.parent / "LICENSE")
+          print(f"Testing Node package binary and bundled notices: {destination}")
           PY
           npm install --include=dev --omit=optional
           npm link "../$NODE_PLATFORM_PACKAGE"
@@ -382,6 +396,21 @@ jobs:
             --benchmark-max-time=0.1 --benchmark-min-rounds=1
           "$TEST_PYTHON" plot.py benchmark-smoke.json
 
+      # These bounded reports exercise worker/RSS accounting, not a beyond-RAM
+      # claim or production-scale recall validation.
+      - name: Run streamed DiskANN production and storage smoke reports
+        working-directory: benchmark
+        run: |
+          extension=$("$TEST_PYTHON" -c 'from pathlib import Path; import sys, vectorlite_py; suffix={"win32":".dll","darwin":".dylib"}.get(sys.platform,".so"); print(Path(vectorlite_py.vectorlite_path()).with_suffix(suffix).resolve())')
+          "$TEST_PYTHON" diskann_benchmark.py --extension "$extension" \
+            --database diskann-production-smoke.db --count 128 --dim 16 --metric l2 \
+            --queries 4 --k 10 --warm-runs 1 --updates 4 --deletes 4 \
+            --output diskann-production-smoke.json
+          "$TEST_PYTHON" diskann_benchmark.py --extension "$extension" \
+            --database diskann-storage-smoke.db --fixture storage-linear \
+            --count 2048 --dim 128 --metric l2 --queries 4 --k 10 --warm-runs 1 \
+            --updates 0 --deletes 0 --output diskann-storage-smoke.json
+
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
         with:
@@ -390,6 +419,8 @@ jobs:
             benchmark/vector*.png
             benchmark/vector*.csv
             benchmark/benchmark-smoke.json
+            benchmark/diskann-production-smoke.json
+            benchmark/diskann-storage-smoke.json
 
 
   upload_release_assets:

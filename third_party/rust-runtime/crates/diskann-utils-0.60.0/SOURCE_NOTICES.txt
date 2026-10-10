@@ -1,0 +1,149 @@
+===== Unmodified leading source comments: src/future.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+////////////////
+// SendFuture //
+////////////////
+
+/// A simplified type alias for `Future<Output = T> + Send`.
+
+===== Unmodified leading source comments: src/internal.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/io.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Read and write vectors in the DiskANN binary format.
+//!
+//! The binary format is:
+//! - 8-byte header
+//!   - `npoints` (u32 LE)
+//!   - `ndims` (u32 LE)
+//! - Payload: `npoints × ndims` elements of `T`, tightly packed in row-major order
+
+
+===== Unmodified leading source comments: src/lazystring.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/lib.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Shared utilities for DiskANN crates.
+
+
+===== Unmodified leading source comments: src/object_pool.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The [`ObjectPool<C>`] class is a thread-safe queue that allows concurrent access and is
+//! used for reusing allocated objects.
+//!
+//! # How this works
+//!
+//! The Pool struct can contain objects for which there is at least one implemention of the
+//! [`AsPooled`] or [`TryAsPooled`] trait.
+//!
+//! The [`AsPooled`] trait is used for types that can be pooled (i.e, created or modified)
+//! without supporting failures, while the [`TryAsPooled`] trait is used for types that can
+//! where creation or modification is fallible.
+
+
+===== Unmodified leading source comments: src/reborrow.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! A collection of tools for working with generalized references and scrounging through types.
+
+
+===== Unmodified leading source comments: src/sampling/latin_hypercube.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/sampling/medoid.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/sampling/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/sampling/random.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/strided.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/testing/assert_contains.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Return whether or not the `self` contains `item`.
+
+===== Unmodified leading source comments: src/testing/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/views/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/views/rowmajor/iter.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/views/rowmajor.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+

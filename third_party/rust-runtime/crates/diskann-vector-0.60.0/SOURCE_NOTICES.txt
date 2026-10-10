@@ -1,0 +1,203 @@
+===== Unmodified leading source comments: src/contains/fallback.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/contains/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/contains/x86_64.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/conversion.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/distance_provider.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/implementations.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/metric.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+===== Unmodified leading source comments: src/distance/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/reference.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/simd.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/test/cosine.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/test/distance_test.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/test/l2.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/distance/test/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/half.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// Legacy export.
+
+===== Unmodified leading source comments: src/lib.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+//! # vector
+//!
+//! This crate contains SIMD accelerated functions for operating on vector data. Note that the name 'vector'
+//! does not exclusively mean embedding vectors, but any array of data appropriate for SIMD. Therefor, aside
+//! from fast implementations of distance for real vectors, this crate also includes things like SIMD
+//! accelerated contains for slices.
+
+===== Unmodified leading source comments: src/norm.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/sparse.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Distance kernels for **sparse** float32/float16 vectors.
+//!
+//! # Storage model
+//!
+//! Each operand is a pair of parallel slices:
+//!
+//! * `idx`: `nnz` dimension indices of a generic integer type (`u16`, `u32`, …), **sorted
+//!   ascending and unique**;
+//! * `val`: `nnz` values parallel to `idx` (`f32`, or `f16` via [`Half`]).
+//!
+//! Indices absent from an operand are implicit zeros.
+//!
+//! # Warning
+//!
+//! The kernels do not verify that `idx` is sorted and unique. Violating this yields
+//! incorrect results, not undefined behavior. Callers that cannot otherwise guarantee this
+//! invariant can check it with [`indices_sorted_unique`].
+//!
+//! # Kernels
+//!
+//! * **Inner product / cosine numerator** — intersection merge over the two sorted index
+//!   arrays; only matching indices contribute.
+//! * **Cosine denominator** — each operand's own L2 norm, computed by reusing
+//!   [`crate::norm::FastL2Norm`] (a sparse vector's norm is just the L2 norm of its value
+//!   array).
+//! * **L2** — direct union merge of squared differences, `sqrt(Σ (x_i − y_i)²)`.
+//!
+//! Accumulation is in `f32`. The merge is scalar. A disjoint-range fast-out skips the
+//! intersection merge when the two index ranges cannot overlap.
+//!
+//! These functions return the **mathematical** value of each metric. Any similarity-score
+//! transform (inner product `x -> -x`, cosine `x -> 1 - x`) is applied by the caller.
+
+
+===== Unmodified leading source comments: src/test_util.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+===== Unmodified leading source comments: src/traits.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// An overloadable, 2-argument distance function with a parameterized return type.
+///
+/// Pure distance functions depend only on the values of the argument and the type of the
+/// return value.
+
+===== Unmodified leading source comments: src/unaligned.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/value.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// The DiskANN library uses `f32` values to represent similarity scores, but distance
+/// functions can return either similarity-scores (those that are potentially transformed
+/// so that minimization yields higher similarity) and mathematical values (those that
+/// are computed from the mathematical definition of the operation.
+///
+/// Since those are currently mixed in the library with the more common use being a
+/// similarity-score, make the `MathematicalValue` the type to represent no transformation
+/// was performed.
+
