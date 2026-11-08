@@ -334,38 +334,46 @@ macro_rules! statement_api {
     };
 }
 
-statement_api!(prepare_v2(
-    db: *mut sqlite3,
-    sql: *const c_char,
-    length: c_int,
-    statement: *mut *mut sqlite3_stmt,
-    tail: *mut *const c_char,
-) -> c_int);
+statement_api!(
+    prepare_v2(
+        db: *mut sqlite3,
+        sql: *const c_char,
+        length: c_int,
+        statement: *mut *mut sqlite3_stmt,
+        tail: *mut *const c_char,
+    ) -> c_int
+);
 statement_api!(finalize(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(reset(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(clear_bindings(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(bind_int64(statement: *mut sqlite3_stmt, index: c_int, value: i64) -> c_int);
-statement_api!(bind_blob(
-    statement: *mut sqlite3_stmt,
-    index: c_int,
-    value: *const c_void,
-    length: c_int,
-    destructor: sqlite3_destructor_type,
-) -> c_int);
-statement_api!(bind_text(
-    statement: *mut sqlite3_stmt,
-    index: c_int,
-    value: *const c_char,
-    length: c_int,
-    destructor: sqlite3_destructor_type,
-) -> c_int);
-statement_api!(bind_pointer(
-    statement: *mut sqlite3_stmt,
-    index: c_int,
-    value: *mut c_void,
-    tag: *const c_char,
-    destructor: sqlite3_destructor_type,
-) -> c_int);
+statement_api!(
+    bind_blob(
+        statement: *mut sqlite3_stmt,
+        index: c_int,
+        value: *const c_void,
+        length: c_int,
+        destructor: sqlite3_destructor_type,
+    ) -> c_int
+);
+statement_api!(
+    bind_text(
+        statement: *mut sqlite3_stmt,
+        index: c_int,
+        value: *const c_char,
+        length: c_int,
+        destructor: sqlite3_destructor_type,
+    ) -> c_int
+);
+statement_api!(
+    bind_pointer(
+        statement: *mut sqlite3_stmt,
+        index: c_int,
+        value: *mut c_void,
+        tag: *const c_char,
+        destructor: sqlite3_destructor_type,
+    ) -> c_int
+);
 statement_api!(context_db_handle(context: *mut sqlite3_context) -> *mut sqlite3);
 statement_api!(result_error_code(context: *mut sqlite3_context, code: c_int) -> ());
 statement_api!(step(statement: *mut sqlite3_stmt) -> c_int);
