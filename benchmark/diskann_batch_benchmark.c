@@ -1,7 +1,12 @@
-/* Focused native INSERT benchmark; each invocation builds exactly one index. */
+/* Focused native INSERT benchmark; each invocation builds exactly one index.
+ * Optional VECTORLITE_BENCH_ environment controls: METRIC (l2/cosine),
+ * DATABASE (fresh plain path; default :memory:), SNAPSHOT (fresh backup path),
+ * TIMEOUT_SECONDS (default 90), MAX_VISITS (default 65536). No SQL tracing.
+ * Dataset loading, queries and snapshot backup are outside the build timer. */
 #include <sqlite3.h>
 #include "vectorlite_batch.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +64,54 @@ static unsigned char *read_exact(const char *path, size_t bytes) {
   return output;
 }
 
+/* Reserve with exclusive creation before SQLite opens the empty file. Never
+ * point sqlite3_open at an unreserved caller-owned database. */
+static int reserve_destination(const char *path) {
+  /* SQLite special names/URIs could redirect away from the reserved file. */
+  if (!path[0] || strcmp(path, ":memory:") == 0 || strncmp(path, "file:", 5) == 0) {
+    fprintf(stderr, "Destination must be a plain filesystem path: %s\n", path);
+    return 0;
+  }
+  FILE *file = fopen(path, "wbx");
+  if (!file) { perror(path); return 0; }
+  if (fclose(file) != 0) { perror(path); return 0; }
+  return 1;
+}
+
+static int save_snapshot(sqlite3 *source, const char *path) {
+  if (!reserve_destination(path)) return 0;
+  sqlite3 *destination = NULL;
+  sqlite3_backup *backup = NULL;
+  int status = sqlite3_open(path, &destination);
+  if (status == SQLITE_OK) {
+    backup = sqlite3_backup_init(destination, "main", source, "main");
+    if (!backup) status = sqlite3_errcode(destination);
+  }
+  if (backup) {
+    status = sqlite3_backup_step(backup, -1);
+    int finished = sqlite3_backup_finish(backup);
+    if (status == SQLITE_DONE) status = finished;
+    else if (status == SQLITE_OK) status = SQLITE_ERROR; /* Incomplete backup. */
+  }
+  if (status != SQLITE_OK) {
+    fprintf(stderr, "Snapshot failed: %d %s\n", status,
+            destination ? sqlite3_errmsg(destination) : "cannot open destination");
+  }
+  int closed = destination ? sqlite3_close(destination) : SQLITE_OK;
+  if (closed != SQLITE_OK) fprintf(stderr, "Snapshot close failed: %d\n", closed);
+  return status == SQLITE_OK && closed == SQLITE_OK;
+}
+
+static void json_string(const char *text) {
+  putchar('"');
+  for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+    if (*p == '"' || *p == '\\') printf("\\%c", *p);
+    else if (*p < 0x20) printf("\\u%04x", *p);
+    else putchar(*p); /* Preserve UTF-8 paths rather than escaping each byte. */
+  }
+  putchar('"');
+}
+
 static uint64_t random_state = 42;
 static float random_float(void) {
   random_state ^= random_state << 13;
@@ -104,8 +157,25 @@ int main(int argc, char **argv) {
   if (!rowids) return 1;
   for (int i = 0; i < count; ++i) rowids[i] = i;
 
+  const char *metric = getenv("VECTORLITE_BENCH_METRIC");
+  if (!metric) metric = "l2";
+  if (strcmp(metric, "l2") && strcmp(metric, "cosine")) {
+    fprintf(stderr, "Invalid VECTORLITE_BENCH_METRIC (l2 or cosine)\n");
+    return 2;
+  }
+  const char *database = getenv("VECTORLITE_BENCH_DATABASE");
+  if (!database) database = ":memory:";
+  const char *snapshot = getenv("VECTORLITE_BENCH_SNAPSHOT");
+  double timeout = 90.0;
+  const char *timeout_setting = getenv("VECTORLITE_BENCH_TIMEOUT_SECONDS");
+  if (timeout_setting) {
+    char *end = NULL;
+    timeout = strtod(timeout_setting, &end);
+    if (!timeout_setting[0] || !end || *end || !isfinite(timeout) || timeout <= 0) return 2;
+  }
+  if (strcmp(database, ":memory:") && !reserve_destination(database)) return 1;
   sqlite3 *db = NULL;
-  require(db, sqlite3_open(":memory:", &db), SQLITE_OK, "open");
+  require(db, sqlite3_open(database, &db), SQLITE_OK, "open");
   require(db, sqlite3_extended_result_codes(db, 1), SQLITE_OK, "extended errors");
   require(db, sqlite3_enable_load_extension(db, 1), SQLITE_OK, "enable extension");
   char *error = NULL;
@@ -130,16 +200,16 @@ int main(int argc, char **argv) {
   if (!hnsw && batch_size == 0 && strcmp(argv[2], "single") != 0) return 2;
   if (hnsw) {
     snprintf(sql, sizeof(sql),
-        "CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[%d] l2,"
-        "hnsw(max_elements=%d,ef_construction=100,M=30))", dimension, count);
+        "CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[%d] %s,"
+        "hnsw(max_elements=%d,ef_construction=100,M=30))", dimension, metric, count);
   } else {
     snprintf(sql, sizeof(sql),
-        "CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[%d] l2,"
+        "CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[%d] %s,"
         "diskann(degree=32,build_list_size=100,search_list_size=64,max_visits=%lu))",
-        dimension, max_visits);
+        dimension, metric, max_visits);
   }
   execute(db, sql);
-  deadline = seconds() + 90.0;
+  deadline = seconds() + timeout;
   sqlite3_progress_handler(db, 1000, interrupt_for_deadline, NULL);
   double start = seconds();
   execute(db, "BEGIN");
@@ -180,9 +250,15 @@ int main(int argc, char **argv) {
     if (sqlite3_column_int64(counter, 0) != count) return 1;
     require(db, sqlite3_finalize(counter), SQLITE_OK, "finalize count");
   }
-  printf("{\"mode\":\"%s\",\"count\":%d,\"dimension\":%d,\"metric\":\"l2\","
-         "\"sqlite\":\"%s\",\"build_seconds\":%.9f,\"query_windows\":[",
-         argv[2], count, dimension, sqlite3_libversion(), build_seconds);
+  printf("{\"mode\":\"%s\",\"count\":%d,\"dimension\":%d,\"metric\":\"%s\","
+         "\"sqlite\":\"%s\",\"build_seconds\":%.9f,\"storage\":\"%s\",\"database\":",
+         argv[2], count, dimension, metric, sqlite3_libversion(), build_seconds,
+         strcmp(database, ":memory:") ? "file" : "memory");
+  json_string(database);
+  printf(",\"snapshot\":");
+  if (snapshot) json_string(snapshot); else printf("null");
+  printf(",\"tracing\":false,\"max_visits\":%lu,\"timeout_seconds\":%.9f,"
+         "\"query_windows\":[", max_visits, timeout);
   int windows[] = {10, 50, 100};
   for (int w = 0; w < 3; ++w) {
     int window = windows[w];
@@ -226,6 +302,11 @@ int main(int argc, char **argv) {
     printf("]}");
     free(labels);
     require(db, sqlite3_finalize(query), SQLITE_OK, "finalize query");
+  }
+  if (snapshot && !save_snapshot(db, snapshot)) {
+    sqlite3_close(db);
+    free(rowids); free(vectors); free(queries);
+    return 1;
   }
   printf("]}\n");
   require(db, sqlite3_close(db), SQLITE_OK, "close");

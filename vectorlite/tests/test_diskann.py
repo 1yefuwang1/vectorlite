@@ -198,6 +198,147 @@ def test_diskann_invalid_budgets_and_options_fail_before_creation(conn, options)
     assert not {"bad", "bad_diskann_meta", "bad_diskann_nodes"} & _schema_names(conn)
 
 
+def _trace_identity_reads(events):
+    def trace(statement):
+        text = statement.lstrip()
+        while text.startswith("-- "):
+            text = text[3:]
+        if text.startswith("SELECT state,public_rowid FROM "):
+            events.append("identity")
+        elif text.startswith("SELECT state,public_rowid,"):
+            events.append("payload")
+    return trace
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+@pytest.mark.parametrize("fault", ["node", "metadata"])
+def test_diskann_identity_cache_rechecks_after_shadow_write(extension_path, metric, fault):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        observed = _observe_allocations(connection)
+        events = []
+        connection.create_function("record_identity_cache_fault", 0,
+                                   lambda: events.append("write") or 0)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        when = ("AFTER INSERT ON v_diskann_nodes WHEN NEW.state=0" if fault == "node"
+                else "AFTER UPDATE OF live_count ON v_diskann_meta WHEN NEW.live_count=4")
+        connection.execute(
+            f"CREATE TRIGGER damage_cached_identity {when} BEGIN "
+            "UPDATE v_diskann_nodes SET public_rowid=999 WHERE node_id=0; "
+            "SELECT record_identity_cache_fault(); END"
+        )
+        connection.execute("CREATE TABLE app_metadata(value)")
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO app_metadata VALUES('prior')")
+        before = _snapshot(connection)
+        connection.set_trace_callback(_trace_identity_reads(events))
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="state/public rowid") as error:
+                _insert(connection, 100, [2, 1])
+        finally:
+            connection.set_trace_callback(None)
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        # Root identity was already read before allocation. After the trigger,
+        # the same root must be queried again, not trusted until a later payload
+        # read happens to rediscover the corruption.
+        changed = events.index("write")
+        assert "identity" in events[:changed]
+        assert events[changed + 1] == "identity"
+        assert observed == [100]
+        assert _snapshot(connection) == before
+        assert connection.in_transaction
+        assert connection.execute("SELECT * FROM app_metadata").fetchall() == [("prior",)]
+        connection.execute("ROLLBACK")
+        connection.execute("DROP TRIGGER damage_cached_identity")
+        connection.execute("PRAGMA ignore_check_constraints=OFF")
+        _insert(connection, 100, [1, 0])
+        assert _get(connection, 100) == (1.0, 0.0)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+@pytest.mark.parametrize("fault", ["retire", "adjacency", "metadata"])
+def test_diskann_identity_cache_rechecks_consolidation_bypass_writes(extension_path, metric, fault):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        connection.execute("DELETE FROM v WHERE rowid=7")
+        observed = _observe_allocations(connection)
+        events = []
+        connection.create_function("record_identity_cache_fault", 0,
+                                   lambda: events.append("write") or 0)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        clauses = {
+            "retire": ("AFTER UPDATE OF state ON v_diskann_nodes "
+                       "WHEN NEW.node_id>0 AND OLD.state=0 AND NEW.state=1"),
+            "adjacency": ("AFTER UPDATE OF neighbors ON v_diskann_nodes "
+                          "WHEN NEW.node_id=0 AND length(NEW.neighbors)=0"),
+            "metadata": "AFTER UPDATE OF live_count ON v_diskann_meta WHEN NEW.live_count=0",
+        }
+        connection.execute(
+            f"CREATE TRIGGER damage_cached_identity {clauses[fault]} BEGIN "
+            "UPDATE v_diskann_nodes SET public_rowid=999 WHERE node_id=0; "
+            "SELECT record_identity_cache_fault(); END"
+        )
+        connection.execute("CREATE TABLE app_metadata(value)")
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO app_metadata VALUES('prior')")
+        before = _snapshot(connection)
+        connection.set_trace_callback(_trace_identity_reads(events))
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="state/public rowid") as error:
+                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        finally:
+            connection.set_trace_callback(None)
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert "identity" in events[:events.index("write")]
+        # The root was warmed before the direct maintenance writes. A stale hit
+        # would permit a new allocation and fail only after an ordinary DML
+        # invalidation; correct bypass bracketing rejects before that allocation.
+        assert observed == []
+        assert _snapshot(connection) == before
+        assert connection.in_transaction
+        assert connection.execute("SELECT * FROM app_metadata").fetchall() == [("prior",)]
+        connection.execute("ROLLBACK")
+        connection.execute("DROP TRIGGER damage_cached_identity")
+        connection.execute("PRAGMA ignore_check_constraints=OFF")
+        connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        assert connection.execute("SELECT live_count,deleted_count FROM v_diskann_meta").fetchone() == (2, 0)
+        assert _get(connection, 7) is None
+        assert _get(connection, 1) == (1.0, 0.0)
+        assert _get(connection, 19) is not None
+    finally:
+        connection.close()
+
+
+def test_diskann_identity_cache_charge_rejects_near_boundary_before_ddl(extension_path):
+    connection = _open(extension_path)
+    try:
+        # The old fixed workspace admitted this CREATE. The complete checked-
+        # identity cache does not fit too, and must be charged before any DDL.
+        shadow_names = {"v_diskann_meta", "v_diskann_nodes", "v_diskann_txn", "v_diskann_rebuild"}
+        attempted_shadows = []
+
+        def authorize(operation, name, _column, _database, _source):
+            if operation == sqlite3.SQLITE_CREATE_TABLE and name in shadow_names:
+                attempted_shadows.append(name)
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(authorize)
+        with pytest.raises(sqlite3.DatabaseError) as error:
+            _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=24576,max_visits=128)")
+        connection.set_authorizer(None)
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_TOOBIG
+        assert attempted_shadows == []  # Not merely DDL later rolled back.
+        assert not ({"v"} | shadow_names) & _schema_names(connection)
+    finally:
+        connection.close()
+
+
 def test_diskann_tiny_cache_rejects_before_frozen_or_user_allocation(extension_path):
     connection = _open(extension_path)
     try:

@@ -451,6 +451,53 @@ static void test_late_write_effects(const char *extension, int failure) {
   ++checks;
 }
 
+static void observe_identity_allocation(sqlite3_context *context, int argc,
+                                        sqlite3_value **argv) {
+  (void)argv;
+  REQUIRE(argc == 0);
+  int *observed = (int *)sqlite3_user_data(context);
+  ++*observed;
+  sqlite3_result_int(context, 0);
+}
+
+static void test_identity_cache_write_invalidation(const char *extension,
+                                                   const char *metric) {
+  sqlite3 *db = open_host(extension, ":memory:");
+  create_index(db, metric);
+  execute(db, "INSERT INTO v(rowid,embedding) VALUES(1,X'0000803F00000000')");
+  save_snapshot(db);
+  int observed = 0;
+  REQUIRE(sqlite3_create_function_v2(db, "observe_identity_allocation", 0,
+      SQLITE_UTF8, &observed, observe_identity_allocation, NULL, NULL, NULL) == SQLITE_OK);
+  execute(db,
+      "PRAGMA ignore_check_constraints=ON;PRAGMA count_changes=ON;"
+      "CREATE TRIGGER damage_cached_identity AFTER INSERT ON v_diskann_nodes "
+      "WHEN NEW.state=0 BEGIN SELECT observe_identity_allocation();"
+      "UPDATE v_diskann_nodes SET public_rowid=999 WHERE node_id=0;END;"
+      "CREATE TABLE app_metadata(value);BEGIN;INSERT INTO app_metadata VALUES('prior')");
+  float vectors[34]; int64_t rowids[17]; generate(vectors, rowids, 17, 100);
+  BatchF32V1 batch = descriptor(vectors, rowids, 17);
+  char error[256];
+  int rc = run_batch(db,
+      "INSERT INTO v(operation,embedding,path) VALUES('insert_batch',?1,?2)",
+      &batch, VECTORLITE_BATCH_F32_V1_TAG, "{\"batch_size\":8}", error, sizeof(error));
+  REQUIRE((rc & 0xff) == SQLITE_CORRUPT);
+  REQUIRE(strstr(error, "state/public rowid") != NULL);
+  /* The first allocation warms frozen0 before its INSERT's trigger damages it.
+   * A stale identity hit would allow the rest of the chunk to allocate before a
+   * later vector read finds corruption. Bracketing rejects the very next point. */
+  REQUIRE(observed == 1);
+  REQUIRE(sqlite3_get_autocommit(db) == 0);
+  REQUIRE(integer(db, "SELECT count(*) FROM app_metadata") == 1);
+  assert_snapshot(db);
+  execute(db, "ROLLBACK;DROP TRIGGER damage_cached_identity;"
+              "PRAGMA ignore_check_constraints=OFF;PRAGMA count_changes=OFF");
+  REQUIRE(batch_insert(db, &batch, "{\"batch_size\":8}") == SQLITE_OK);
+  REQUIRE(integer(db, "SELECT live_count FROM v_diskann_meta") == 18);
+  REQUIRE(sqlite3_close(db) == SQLITE_OK);
+  ++checks;
+}
+
 static void test_invalid_descriptor_and_options(const char *extension) {
   sqlite3 *db = open_host(extension, ":memory:");
   create_index(db, "l2");
@@ -663,6 +710,8 @@ int main(int argc, char **argv) {
   test_late_failure_atomic(argv[1], "FAIL", "OR FAIL");
   test_late_failure_atomic(argv[1], "ABORT", "OR REPLACE");
   test_invalid_descriptor_and_options(argv[1]);
+  test_identity_cache_write_invalidation(argv[1], "l2");
+  test_identity_cache_write_invalidation(argv[1], "cosine");
   test_guard_and_count_changes(argv[1]);
   test_journal_off_and_budget(argv[1]);
   test_binding_lifetime(argv[1]);

@@ -15,6 +15,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::mem::size_of;
 
+mod identity_cache;
+use identity_cache::{Identity, IdentityCache};
+
 use crate::batch_input::BatchView;
 use crate::core::{SearchFilter, SearchResult};
 use crate::diskann_core::{self, GraphConfig, GraphStore, NodeState, ResourceLimits};
@@ -69,16 +72,20 @@ struct Metadata {
     entrypoints: Vec<u64>,
 }
 
-/// Every instance exists for only one callback. All graph operations issue SQL
-/// against the same host connection, including while a cursor anchor is active.
+/// Every instance exists for only one callback. All storage I/O uses the same
+/// host connection, including while a cursor anchor is active; checked identity
+/// values may be reused only until a shadow write invalidates them.
 struct SqliteGraphStore<'a> {
     table: &'a DiskAnnTable,
     // Counts vector visits across multiple upstream scopes (UPDATE and exact
     // fallback), not just one core invocation. Maintenance resets per node.
     visits: usize,
-    // Fixed, lazy prepared plans only; neither graph data nor metadata is cached.
-    // Bindings are cleared after every use, and all plans finalize in this callback.
+    // Fixed, lazy prepared plans. Bindings are cleared after every use, and
+    // all plans finalize in this callback.
     statements: [Option<Statement<'static>>; 11],
+    // Checked values only, valid between writes on this callback's snapshot.
+    // No vectors, adjacency, metadata counters, or SQLite pointers are retained.
+    identities: IdentityCache,
 }
 
 #[derive(Clone, Copy)]
@@ -96,12 +103,63 @@ enum GraphStatement {
     DeleteMetadata,
 }
 
+impl GraphStatement {
+    fn is_write(self) -> bool {
+        // Exhaustive classification makes any future statement kind choose its
+        // coherence boundary explicitly, including metadata/adjacency writes
+        // whose triggers may change identities in other rows.
+        match self {
+            Self::Identity | Self::Vector | Self::Neighbors | Self::Lookup | Self::Metadata => {
+                false
+            }
+            Self::SetNeighbors
+            | Self::Frozen
+            | Self::InsertNode
+            | Self::AllocateMetadata
+            | Self::DeleteNode
+            | Self::DeleteMetadata => true,
+        }
+    }
+}
+
 fn corrupt(message: impl Into<String>) -> IndexError {
     IndexError::with_code(ffi::SQLITE_CORRUPT as i32, message)
 }
 
 fn too_big(message: impl Into<String>) -> IndexError {
     IndexError::with_code(ffi::SQLITE_TOOBIG as i32, message)
+}
+
+fn transient_workspace_bytes(
+    vector_bytes: usize,
+    adjacency_bytes: usize,
+    nodes_name_len: usize,
+    meta_name_len: usize,
+    txn_name_len: usize,
+) -> Result<usize> {
+    // Eight fixed plans contain nodes_name and four occurrences contain
+    // meta_name. Charge identifier-sized SQL/CString/compiler copies too;
+    // a fixed allowance alone undercounts unusually long legal identifiers.
+    let plan_names = checked_product(nodes_name_len, 8, "cached node SQL names")?
+        .checked_add(checked_product(
+            meta_name_len,
+            4,
+            "cached metadata SQL names",
+        )?)
+        .ok_or_else(|| too_big("DiskANN cached SQL name workspace overflow"))?;
+    let plan_bytes = checked_product(plan_names, 8, "cached SQL name copies")?
+        .checked_add(STATEMENT_CACHE_WORKSPACE)
+        .ok_or_else(|| too_big("DiskANN cached SQL workspace overflow"))?;
+    let guard_bytes = checked_product(txn_name_len, 3, "atomic SQL workspace")?
+        .checked_add(ATOMIC_GUARD_WORKSPACE)
+        .ok_or_else(|| too_big("DiskANN atomic scope workspace overflow"))?;
+    checked_product(vector_bytes, 3, "vector workspace")?
+        .checked_add(checked_product(adjacency_bytes, 3, "adjacency workspace")?)
+        .and_then(|bytes| bytes.checked_add(CONSOLIDATE_BATCH * size_of::<u64>()))
+        .and_then(|bytes| bytes.checked_add(guard_bytes))
+        .and_then(|bytes| bytes.checked_add(plan_bytes))
+        .and_then(|bytes| bytes.checked_add(size_of::<IdentityCache>()))
+        .ok_or_else(|| too_big("DiskANN transient workspace overflow"))
 }
 
 fn no_memory() -> IndexError {
@@ -957,32 +1015,13 @@ impl DiskAnnTable {
     }
 
     fn transient_workspace(&self) -> Result<usize> {
-        // Eight fixed plans contain nodes_name and four occurrences contain
-        // meta_name. Charge identifier-sized SQL/CString/compiler copies too;
-        // a fixed allowance alone undercounts unusually long legal identifiers.
-        let plan_names = checked_product(self.nodes_name.len(), 8, "cached node SQL names")?
-            .checked_add(checked_product(
-                self.meta_name.len(),
-                4,
-                "cached metadata SQL names",
-            )?)
-            .ok_or_else(|| too_big("DiskANN cached SQL name workspace overflow"))?;
-        let plan_bytes = checked_product(plan_names, 8, "cached SQL name copies")?
-            .checked_add(STATEMENT_CACHE_WORKSPACE)
-            .ok_or_else(|| too_big("DiskANN cached SQL workspace overflow"))?;
-        let guard_bytes = checked_product(self.txn_name.len(), 3, "atomic SQL workspace")?
-            .checked_add(ATOMIC_GUARD_WORKSPACE)
-            .ok_or_else(|| too_big("DiskANN atomic scope workspace overflow"))?;
-        checked_product(self.vector_bytes, 3, "vector workspace")?
-            .checked_add(checked_product(
-                self.adjacency_bytes,
-                3,
-                "adjacency workspace",
-            )?)
-            .and_then(|bytes| bytes.checked_add(CONSOLIDATE_BATCH * size_of::<u64>()))
-            .and_then(|bytes| bytes.checked_add(guard_bytes))
-            .and_then(|bytes| bytes.checked_add(plan_bytes))
-            .ok_or_else(|| too_big("DiskANN transient workspace overflow"))
+        transient_workspace_bytes(
+            self.vector_bytes,
+            self.adjacency_bytes,
+            self.nodes_name.len(),
+            self.meta_name.len(),
+            self.txn_name.len(),
+        )
     }
 
     fn mutation_config(&self) -> Result<GraphConfig> {
@@ -1261,36 +1300,47 @@ impl GraphStore for SqliteGraphStore<'_> {
     fn vector(&mut self, id: u64) -> Result<Vec<f32>> {
         let table = self.table;
         table.visit(&mut self.visits)?;
-        self.with_statement(GraphStatement::Vector, |statement| {
+        let (identity, vector) = self.with_statement(GraphStatement::Vector, |statement| {
             statement.bind_i64(1, checked_id(id)?)?;
             if statement.step()? != Step::Row {
                 return Err(corrupt("DiskANN referenced node is missing"));
             }
-            let (state, _) = node_identity(statement, 0, 1)?;
-            if (id == 0) != (state == NodeState::Frozen) {
+            let identity = node_identity(statement, 0, 1)?;
+            if (id == 0) != (identity.0 == NodeState::Frozen) {
                 return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
             }
             let bytes = bounded_blob(statement, 2, 3, table.vector_bytes, true, "vector")?;
-            decode_vector(&bytes, table.space.dim)
-        })
+            Ok((identity, decode_vector(&bytes, table.space.dim)?))
+        })?;
+        // Never bypass vector payload/visit checks. Seed only after the row and
+        // statement have both completed successfully.
+        self.identities.insert(id, identity);
+        Ok(vector)
     }
 
     fn neighbors(&mut self, id: u64) -> Result<Vec<u64>> {
         let table = self.table;
-        let neighbors = self.with_statement(GraphStatement::Neighbors, |statement| {
-            statement.bind_i64(1, checked_id(id)?)?;
-            if statement.step()? != Step::Row {
-                return Err(corrupt("DiskANN referenced node is missing"));
-            }
-            let (state, _) = node_identity(statement, 0, 1)?;
-            if (id == 0) != (state == NodeState::Frozen) {
-                return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
-            }
-            let bytes = bounded_blob(statement, 2, 3, table.adjacency_bytes, false, "neighbors")?;
-            decode_ids(&bytes, table.options.physical_degree(), Some(id))
-        })?;
-        // Deleted nodes remain legal bridges. Check EVERY referenced identity;
-        // statement reuse removes reprepare costs, not corruption checks.
+        let (identity, neighbors) =
+            self.with_statement(GraphStatement::Neighbors, |statement| {
+                statement.bind_i64(1, checked_id(id)?)?;
+                if statement.step()? != Step::Row {
+                    return Err(corrupt("DiskANN referenced node is missing"));
+                }
+                let identity = node_identity(statement, 0, 1)?;
+                if (id == 0) != (identity.0 == NodeState::Frozen) {
+                    return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
+                }
+                let bytes =
+                    bounded_blob(statement, 2, 3, table.adjacency_bytes, false, "neighbors")?;
+                Ok((
+                    identity,
+                    decode_ids(&bytes, table.options.physical_degree(), Some(id))?,
+                ))
+            })?;
+        self.identities.insert(id, identity);
+        // Deleted nodes remain legal bridges. EVERY referenced identity must
+        // either have been fully checked in this no-write interval or be read
+        // and checked now; caching never suppresses a dangling-edge check.
         for &neighbor in &neighbors {
             self.identity(neighbor)?;
         }
@@ -1349,11 +1399,11 @@ impl<'a> SqliteGraphStore<'a> {
             table,
             visits: 0,
             statements: std::array::from_fn(|_| None),
+            identities: IdentityCache::new(),
         }
     }
 
-    fn sql(&self, kind: GraphStatement) -> String {
-        let table = self.table;
+    fn sql(table: &DiskAnnTable, kind: GraphStatement) -> String {
         match kind {
             GraphStatement::Identity => format!("SELECT state,public_rowid FROM {} WHERE node_id=?1", table.nodes_name),
             GraphStatement::Vector => format!("SELECT state,public_rowid,{} FROM {} WHERE node_id=?1", blob_projection("vector", table.vector_bytes, true), table.nodes_name),
@@ -1377,10 +1427,29 @@ impl<'a> SqliteGraphStore<'a> {
         kind: GraphStatement,
         action: impl FnOnce(&mut Statement<'static>) -> Result<T>,
     ) -> Result<T> {
-        let slot = kind as usize;
-        let mut statement = match self.statements[slot].take() {
+        let table = self.table;
+        let slot = &mut self.statements[kind as usize];
+        let result = if kind.is_write() {
+            self.identities
+                .with_invalidated(|_| Self::run_statement(table, slot, kind, action))
+        } else {
+            Self::run_statement(table, slot, kind, action)
+        };
+        if result.is_err() {
+            self.identities.clear();
+        }
+        result
+    }
+
+    fn run_statement<T>(
+        table: &DiskAnnTable,
+        slot: &mut Option<Statement<'static>>,
+        kind: GraphStatement,
+        action: impl FnOnce(&mut Statement<'static>) -> Result<T>,
+    ) -> Result<T> {
+        let mut statement = match slot.take() {
             Some(statement) => statement,
-            None => self.table.connection.prepare(&self.sql(kind))?,
+            None => table.connection.prepare(&Self::sql(table, kind))?,
         };
         // Copy the primary error BEFORE reset/finalize can overwrite SQLite's
         // extended error. An unsuccessful plan is never returned to the cache.
@@ -1393,7 +1462,7 @@ impl<'a> SqliteGraphStore<'a> {
         })();
         match result {
             Ok(value) => {
-                self.statements[slot] = Some(statement);
+                *slot = Some(statement);
                 Ok(value)
             }
             Err(error) => {
@@ -1401,6 +1470,13 @@ impl<'a> SqliteGraphStore<'a> {
                 Err(error)
             }
         }
+    }
+
+    /// Bracket shadow writes outside the fixed-plan executor, notably the
+    /// streamed consolidation DML. Trigger effects and failed writes invalidate
+    /// just as successful direct node updates do.
+    fn with_shadow_write<T>(&mut self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.identities.with_invalidated(|_| action())
     }
 
     fn finish(mut self) -> Result<()> {
@@ -1417,9 +1493,13 @@ impl<'a> SqliteGraphStore<'a> {
         error.map_or(Ok(()), Err)
     }
 
-    fn identity(&mut self, id: u64) -> Result<(NodeState, Option<u64>)> {
-        self.with_statement(GraphStatement::Identity, |statement| {
-            statement.bind_i64(1, checked_id(id)?)?;
+    fn identity(&mut self, id: u64) -> Result<Identity> {
+        let sqlite_id = checked_id(id)?;
+        if let Some(identity) = self.identities.get(id) {
+            return Ok(identity);
+        }
+        let identity = self.with_statement(GraphStatement::Identity, |statement| {
+            statement.bind_i64(1, sqlite_id)?;
             if statement.step()? != Step::Row {
                 return Err(corrupt("DiskANN referenced node is missing"));
             }
@@ -1428,7 +1508,9 @@ impl<'a> SqliteGraphStore<'a> {
                 return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
             }
             Ok(identity)
-        })
+        })?;
+        self.identities.insert(id, identity);
+        Ok(identity)
     }
 
     fn lookup_live_id(&mut self, rowid: u64) -> Result<Option<u64>> {
@@ -1463,7 +1545,7 @@ impl<'a> SqliteGraphStore<'a> {
     }
 }
 
-// Query and lifecycle methods follow below; no retained semantic state is added.
+// Query and lifecycle methods follow below; no semantic state survives a callback.
 
 #[derive(Debug)]
 struct Candidate {
@@ -1866,10 +1948,12 @@ impl DiskAnnTable {
             return Err(corrupt("DiskANN rebuild has no permanent frozen root"));
         }
 
-        self.connection.execute(&format!(
-            "UPDATE {} SET state=1,public_rowid=NULL WHERE state=0",
-            self.nodes_name
-        ))?;
+        store.with_shadow_write(|| {
+            self.connection.execute(&format!(
+                "UPDATE {} SET state=1,public_rowid=NULL WHERE state=0",
+                self.nodes_name
+            ))
+        })?;
         self.require_count(
             &format!("SELECT count(*) FROM {} WHERE state=0", self.nodes_name),
             0,
@@ -1883,19 +1967,23 @@ impl DiskAnnTable {
         // A fresh graph must not navigate any old live/deleted component. Keep
         // frozen0's encoded vector but remove ALL old adjacency, including its
         // outgoing edges. Old vectors remain present until the new graph verifies.
-        self.connection
-            .execute(&format!("UPDATE {} SET neighbors=X''", self.nodes_name))?;
+        store.with_shadow_write(|| {
+            self.connection
+                .execute(&format!("UPDATE {} SET neighbors=X''", self.nodes_name))
+        })?;
         self.require_no_row(&format!(
             "SELECT 1 FROM {} WHERE CASE WHEN typeof(neighbors)='blob' THEN length(neighbors)!=0 ELSE 1 END LIMIT 1",
             self.nodes_name
         ), "rebuild could not clear every old adjacency")?;
-        let mut reset = self.connection.prepare(&format!(
-            "UPDATE {} SET live_count=0,deleted_count=?1 WHERE singleton=1",
-            self.meta_name
-        ))?;
-        reset.bind_i64(1, checked_id(retired_count)?)?;
-        done(reset)?;
-        self.expect_one_change("rebuild metadata reset")?;
+        store.with_shadow_write(|| {
+            let mut reset = self.connection.prepare(&format!(
+                "UPDATE {} SET live_count=0,deleted_count=?1 WHERE singleton=1",
+                self.meta_name
+            ))?;
+            reset.bind_i64(1, checked_id(retired_count)?)?;
+            done(reset)?;
+            self.expect_one_change("rebuild metadata reset")
+        })?;
 
         self.for_each_staged_vector(|rowid, encoded| {
             // Explicit maintenance is O(N) disk I/O and rebuild CPU, not an O(N)
@@ -1934,14 +2022,18 @@ impl DiskAnnTable {
             "SELECT 1 FROM {} WHERE state=1 AND CASE WHEN typeof(neighbors)='blob' THEN length(neighbors)!=0 ELSE 1 END LIMIT 1",
             self.nodes_name
         ), "rebuild left nonempty tombstone adjacency")?;
-        self.connection
-            .execute(&format!("DELETE FROM {} WHERE state=1", self.nodes_name))?;
+        store.with_shadow_write(|| {
+            self.connection
+                .execute(&format!("DELETE FROM {} WHERE state=1", self.nodes_name))
+        })?;
         self.require_no_row(
             &format!("SELECT 1 FROM {} WHERE state=1 LIMIT 1", self.nodes_name),
             "rebuild could not remove every old tombstone",
         )?;
-        self.connection
-            .execute(&format!("DELETE FROM {}", self.rebuild_name))?;
+        store.with_shadow_write(|| {
+            self.connection
+                .execute(&format!("DELETE FROM {}", self.rebuild_name))
+        })?;
         self.verify_rebuild_empty()?;
         store.finish()?;
         self.write_consolidation_revision(revision)
@@ -2074,6 +2166,54 @@ impl DiskAnnTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_cache_workspace_is_fully_reserved_before_admission() {
+        let vector = 8;
+        let adjacency = 40;
+        let nodes = qualified_name("main", "v_diskann_nodes").unwrap().len();
+        let meta = qualified_name("main", "v_diskann_meta").unwrap().len();
+        let txn = qualified_name("main", "v_diskann_txn").unwrap().len();
+        let uncached = vector * 3
+            + adjacency * 3
+            + CONSOLIDATE_BATCH * size_of::<u64>()
+            + txn * 3
+            + ATOMIC_GUARD_WORKSPACE
+            + (nodes * 8 + meta * 4) * 8
+            + STATEMENT_CACHE_WORKSPACE;
+        let cached = transient_workspace_bytes(vector, adjacency, nodes, meta, txn).unwrap();
+        assert_eq!(cached, uncached + size_of::<IdentityCache>());
+        // This is the integration test's pre-DDL boundary, including the two
+        // additional minimum vectors admitted by DiskAnnTable::open.
+        assert!(uncached + vector * 2 < 24576);
+        assert!(cached + vector * 2 > 24576);
+        assert!(cached + vector * 2 < 32768);
+        assert!(transient_workspace_bytes(usize::MAX, adjacency, nodes, meta, txn).is_err());
+        assert!(transient_workspace_bytes(vector, adjacency, usize::MAX, meta, txn).is_err());
+    }
+
+    #[test]
+    fn identity_cache_invalidation_classifies_every_statement_kind() {
+        for kind in [
+            GraphStatement::Identity,
+            GraphStatement::Vector,
+            GraphStatement::Neighbors,
+            GraphStatement::Lookup,
+            GraphStatement::Metadata,
+        ] {
+            assert!(!kind.is_write());
+        }
+        for kind in [
+            GraphStatement::SetNeighbors,
+            GraphStatement::Frozen,
+            GraphStatement::InsertNode,
+            GraphStatement::AllocateMetadata,
+            GraphStatement::DeleteNode,
+            GraphStatement::DeleteMetadata,
+        ] {
+            assert!(kind.is_write());
+        }
+    }
 
     fn space(metric: DistanceType) -> NamedVectorSpace {
         NamedVectorSpace {

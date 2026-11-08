@@ -98,6 +98,61 @@ The work allowance is explicit (`--max-visits`, default 65536) and applies to an
 entire true chunk; a batch-32 run may need a larger setting than batch-8. Failed
 runs remain in their own result directory instead of being silently retried.
 
+## Matched build-optimization A/B comparison
+
+Use [the identity-cache comparison runner](<diskann_identity_benchmark.py>) to
+measure a storage-adapter optimization against an immutable uncached baseline.
+Build both extension variants with the same compiler, native dependencies, target
+and release flags, and preserve each under its own directory with the public
+extension basename unchanged. Use **one native host executable** for both.
+
+```bash
+cmake --build build/release --target diskann_batch_benchmark
+.venv/bin/python benchmark/diskann_identity_benchmark.py \
+  --executable build/release/vectorlite/diskann_batch_benchmark \
+  --baseline build/benchmarks/cache-ab/baseline/vectorlite.dylib \
+  --optimized build/benchmarks/cache-ab/optimized/vectorlite.dylib \
+  --output-dir build/benchmarks/cache-ab/results-new --timeout 120
+```
+
+The example uses macOS artifact names and the project's venv; adjust the library
+suffix and venv interpreter path for Linux/Windows. Output directories and native
+database/snapshot destinations must be new. Failures retain completed and partial
+artifacts and stop further builds instead of silently retrying failed variants.
+
+The default cases are 3,000x128D L2 native batch-8 (five measured pairs), ordinary
+L2 INSERT and cosine batch-8 (three pairs each), and 10,000x128D L2 batch-8 with a
+fresh file-backed database (three pairs). Construction settings stay fixed at
+degree 32, build list 100, alpha 1.2, 64 MiB adapter workspace and 65,536 visits;
+query windows are 10/50/100 with k=10. Inputs are shared immutable seeded float32
+files. Two baseline-only self-checks precede any candidate build in each case,
+followed by a warm-up per variant and alternating A/B, B/A measured pairs.
+`--case`, `--count`, `--pairs`, `--queries` and `--warmups` can restrict a diagnostic
+run; small override runs are not substitutes for full-size timing evidence.
+
+The native timer includes BEGIN, INSERT preparation/binding/execution/finalization
+and COMMIT. Input/oracle generation, queries, snapshot backup and streaming graph
+verification happen outside build timing. Timed runs install no SQL tracing.
+Each run must match the first baseline's **exact ordered graph BLOBs and stable
+metadata** (excluding only the random instance ID), ordered query labels and
+recall against the same float64 L2/cosine oracle. File-backed originals are also
+compared with their post-timing backups. The report retains individual timings,
+paired speedups, medians, input/artifact hashes and both native-host and Python
+snapshot-reader SQLite versions. A graph or recall mismatch fails the run.
+
+The [native host](<diskann_batch_benchmark.c>) retains its existing default L2
+`:memory:` CLI. Optional `VECTORLITE_BENCH_METRIC`, `VECTORLITE_BENCH_DATABASE`,
+`VECTORLITE_BENCH_SNAPSHOT` and `VECTORLITE_BENCH_TIMEOUT_SECONDS` environment
+controls support the matched runner; these are benchmark controls, not new SQL
+extension options. Snapshot creation/backup is outside timing and refuses an
+existing destination or SQLite URI/memory redirection.
+
+These are bounded local test datasets, not a physical beyond-RAM or cold-disk
+benchmark. The Python oracle materializes the test matrix outside timing, OS pages
+may be warm, and file-backed durability follows the native host's unchanged
+SQLite defaults. A high fraction of eliminated identity queries is **not** itself
+a wall-time speedup claim: use the repeated untraced build measurements.
+
 ## Streamed SQLite-contained DiskANN benchmark
 
 [The standalone DiskANN runner](<diskann_benchmark.py>) is separate from the

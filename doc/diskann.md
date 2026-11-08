@@ -270,6 +270,23 @@ streaming exact top-k fallback; a request covering the whole candidate populatio
 can also take the exact path. These paths may perform more I/O but do not require
 a full in-memory vector matrix.
 
+Each callback also has a fixed cache of at most 256 **validated node identities**
+(state and public rowid), organized as 64 four-entry sets. It never caches vectors,
+adjacency lists, missing records, or metadata counters. Successful row reads can
+reuse a checked identity only within the same no-write interval; every shadow
+write clears the entire cache before and after execution, including failures,
+metadata writes, consolidation writes, and their trigger effects. The cache is
+discarded before the callback returns, so it cannot retain stale state across
+rollback, later writes, reconnects, or cursor snapshots. Vector/adjacency payload
+checks and logical traversal work limits are unchanged.
+
+The full fixed identity-cache footprint (including layout padding) is charged to
+`cache_bytes` alongside the existing SQL buffers. Consequently, an unusually tight
+workspace budget that previously fitted may now return `SQLITE_TOOBIG` during
+preflight; increase that explicit budget rather than lowering graph work or
+silently dropping validation. This is bounded working memory, not an in-memory
+copy of the graph or a change to the persisted index format.
+
 `cache_bytes` is an **adapter workspace** budget, including admitted graph
 scratch, owned vector snapshots, filter/result/projection accounting, and bounded
 SQL-adapter buffers. It is not a process-wide RSS cap. SQLite's pager cache, OS
