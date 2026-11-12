@@ -20,7 +20,9 @@ use identity_cache::{Identity, IdentityCache};
 
 use crate::batch_input::BatchView;
 use crate::core::{SearchFilter, SearchResult};
-use crate::diskann_core::{self, GraphConfig, GraphStore, NodeState, ResourceLimits};
+use crate::diskann_core::{
+    self, GraphConfig, GraphStore, NodeState, ResourceLimits, VectorBatchAction,
+};
 use crate::ffi;
 use crate::index_error::IndexError;
 use crate::index_options::DiskAnnOptions;
@@ -72,9 +74,13 @@ struct Metadata {
     entrypoints: Vec<u64>,
 }
 
+const GRAPH_STATEMENT_COUNT: usize = 19;
+
 /// Every instance exists for only one callback. All storage I/O uses the same
 /// host connection, including while a cursor anchor is active; checked identity
-/// values may be reused only until a shadow write invalidates them.
+/// values are reused ONLY within a single no-write interval and are cleared
+/// before and after every attempted write (and on any read failure or detected
+/// reentrant DML). Vector payloads and adjacency lists are never cached here.
 struct SqliteGraphStore<'a> {
     table: &'a DiskAnnTable,
     // Counts vector visits across multiple upstream scopes (UPDATE and exact
@@ -82,16 +88,30 @@ struct SqliteGraphStore<'a> {
     visits: usize,
     // Fixed, lazy prepared plans. Bindings are cleared after every use, and
     // all plans finalize in this callback.
-    statements: [Option<Statement<'static>>; 11],
-    // Checked values only, valid between writes on this callback's snapshot.
-    // No vectors, adjacency, metadata counters, or SQLite pointers are retained.
+    statements: [Option<Statement<'static>>; GRAPH_STATEMENT_COUNT],
+    // Remaining byte budget carved specifically for the 8 optional `IN (...)`
+    // batch plans, decremented by actual `SQLITE_STMTSTATUS_MEMUSED` on prepare.
+    batch_plan_budget: usize,
+    // Monotonic connection `total_changes64()` watermark expected before our
+    // next statement or cache read.
+    expected_total_changes: i64,
+    stamp: Option<u64>,
     identities: IdentityCache,
+    decode_buffer: Vec<f32>,
 }
 
 #[derive(Clone, Copy)]
 enum GraphStatement {
     Identity,
+    IdentityBatch4,
+    IdentityBatch8,
+    IdentityBatch16,
+    IdentityBatch32,
     Vector,
+    VectorBatch4,
+    VectorBatch8,
+    VectorBatch16,
+    VectorBatch32,
     Neighbors,
     SetNeighbors,
     Lookup,
@@ -109,9 +129,19 @@ impl GraphStatement {
         // coherence boundary explicitly, including metadata/adjacency writes
         // whose triggers may change identities in other rows.
         match self {
-            Self::Identity | Self::Vector | Self::Neighbors | Self::Lookup | Self::Metadata => {
-                false
-            }
+            Self::Identity
+            | Self::IdentityBatch4
+            | Self::IdentityBatch8
+            | Self::IdentityBatch16
+            | Self::IdentityBatch32
+            | Self::Vector
+            | Self::VectorBatch4
+            | Self::VectorBatch8
+            | Self::VectorBatch16
+            | Self::VectorBatch32
+            | Self::Neighbors
+            | Self::Lookup
+            | Self::Metadata => false,
             Self::SetNeighbors
             | Self::Frozen
             | Self::InsertNode
@@ -119,6 +149,20 @@ impl GraphStatement {
             | Self::DeleteNode
             | Self::DeleteMetadata => true,
         }
+    }
+
+    fn is_optional_batch(self) -> bool {
+        matches!(
+            self,
+            Self::IdentityBatch4
+                | Self::IdentityBatch8
+                | Self::IdentityBatch16
+                | Self::IdentityBatch32
+                | Self::VectorBatch4
+                | Self::VectorBatch8
+                | Self::VectorBatch16
+                | Self::VectorBatch32
+        )
     }
 }
 
@@ -158,7 +202,7 @@ fn transient_workspace_bytes(
         .and_then(|bytes| bytes.checked_add(CONSOLIDATE_BATCH * size_of::<u64>()))
         .and_then(|bytes| bytes.checked_add(guard_bytes))
         .and_then(|bytes| bytes.checked_add(plan_bytes))
-        .and_then(|bytes| bytes.checked_add(size_of::<IdentityCache>()))
+        .and_then(|bytes| bytes.checked_add(IdentityCache::INLINE_BYTES))
         .ok_or_else(|| too_big("DiskANN transient workspace overflow"))
 }
 
@@ -316,12 +360,25 @@ fn encode_vector(vector: &[f32]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn single_blob_projection(column: &str, maximum: usize, exact: bool) -> String {
+    let comparison = if exact { "=" } else { "<=" };
+    format!(
+        "CASE WHEN typeof({column})='blob' AND length({column}){comparison}{maximum} THEN {column} ELSE NULL END"
+    )
+}
+
 fn decode_vector(bytes: &[u8], dimension: usize) -> Result<Vec<f32>> {
+    let mut vector = Vec::new();
+    decode_vector_into(bytes, dimension, &mut vector)?;
+    Ok(vector)
+}
+
+fn decode_vector_into(bytes: &[u8], dimension: usize, vector: &mut Vec<f32>) -> Result<()> {
     if bytes.len() != checked_product(dimension, 4, "vector")? {
         return Err(corrupt("DiskANN vector has an invalid byte length"));
     }
-    let mut vector = Vec::new();
-    reserve(&mut vector, dimension)?;
+    vector.clear();
+    reserve(vector, dimension)?;
     for chunk in bytes.as_chunks::<4>().0 {
         let value = f32::from_le_bytes(*chunk);
         if !value.is_finite() {
@@ -329,7 +386,28 @@ fn decode_vector(bytes: &[u8], dimension: usize) -> Result<Vec<f32>> {
         }
         vector.push(value);
     }
-    Ok(vector)
+    Ok(())
+}
+
+fn with_decoded_vector(
+    bytes: &[u8],
+    dimension: usize,
+    decode_buffer: &mut Vec<f32>,
+    action: &mut dyn FnMut(&[f32]) -> Result<()>,
+) -> Result<()> {
+    if bytes.len() != checked_product(dimension, 4, "vector")? {
+        return Err(corrupt("DiskANN vector has an invalid byte length"));
+    }
+    if cfg!(target_endian = "little") {
+        if let Ok(vector) = bytemuck::try_cast_slice::<u8, f32>(bytes) {
+            if vector.iter().any(|value| !value.is_finite()) {
+                return Err(corrupt("DiskANN stored vector contains a non-finite value"));
+            }
+            return action(vector);
+        }
+    }
+    decode_vector_into(bytes, dimension, decode_buffer)?;
+    action(decode_buffer)
 }
 
 fn validate_numeric_range(vector: &[f32], metric: DistanceType) -> Result<f64> {
@@ -948,7 +1026,7 @@ impl DiskAnnTable {
         // Open validates only the permanent root and its bounded adjacency,
         // never the graph population. Keep the metadata anchor at Row so these
         // checks use exactly the snapshot whose descriptor was validated.
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new_unbudgeted(self);
         if store.state(0)? != NodeState::Frozen {
             return Err(corrupt("DiskANN entrypoint is not frozen"));
         }
@@ -1012,6 +1090,19 @@ impl DiskAnnTable {
                 max_vector_bytes: available_bytes,
             },
         })
+    }
+
+    fn extra_plan_bytes(&self) -> usize {
+        // 8 additional optional IN-batch plans (4 identity + 4 vector) naming
+        // `nodes_name`, plus generous SQLite compiler/VDBE/ephemeral-B-tree
+        // workspace (~109 KiB measured across all 8 plans on SQLite 3.51–3.54;
+        // reserve 256 KiB + identifier copies and additionally enforce actual
+        // `SQLITE_STMTSTATUS_MEMUSED` per prepared plan at runtime).
+        self.nodes_name
+            .len()
+            .saturating_mul(8)
+            .saturating_mul(16)
+            .saturating_add(256 * 1024)
     }
 
     fn transient_workspace(&self) -> Result<usize> {
@@ -1093,13 +1184,13 @@ impl DiskAnnTable {
     pub(crate) fn insert(&self, rowid: u64, vector: &[f32]) -> Result<()> {
         checked_id(rowid)?;
         let encoded = self.encode_input(vector)?;
-        let config = self.mutation_config()?;
+        let mut config = self.mutation_config()?;
         // Validate revision before graph writes; late errors are still rolled
         // back by the parent callback's SQLite statement/transaction.
         let (metadata, anchor) = self.read_metadata()?;
         checked_increment(metadata.revision, "revision")?;
         anchor.finish()?;
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new(self, &mut config, 0)?;
         diskann_core::insert(&mut store, &config, rowid, &encoded)?;
         store.finish()?;
         self.bump_revision()
@@ -1115,13 +1206,13 @@ impl DiskAnnTable {
         if batch.len() == 0 {
             return Ok(());
         }
-        let config = self.mutation_config()?;
+        let mut config = self.mutation_config()?;
         let (metadata, anchor) = self.read_metadata()?;
         let (expected_next, expected_live, expected_revision) =
             batch_preflight(&metadata, batch.len())?;
         self.validate_root(&metadata)?;
         anchor.finish()?;
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new(self, &mut config, batch_size)?;
         let mut offset = 0;
         if metadata.live_count == 0 {
             // Existing single insertion owns frozen0 bootstrap/canonical storage.
@@ -1195,7 +1286,7 @@ impl DiskAnnTable {
             return Err(IndexError::new("DiskANN rowid cannot be changed by UPDATE"));
         }
         let encoded = self.encode_input(vector)?;
-        let config = self.mutation_config()?;
+        let mut config = self.mutation_config()?;
         let (metadata, anchor) = self.read_metadata()?;
         checked_increment(metadata.revision, "revision")?;
         // Preflight counts/ID exhaustion before the first delete write.
@@ -1211,7 +1302,7 @@ impl DiskAnnTable {
                 "DiskANN rowid already exists",
             ));
         }
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new(self, &mut config, 0)?;
         diskann_core::delete(&mut store, &config, old_rowid)?;
         diskann_core::insert(&mut store, &config, new_rowid, &encoded)?;
         store.finish()?;
@@ -1223,8 +1314,8 @@ impl DiskAnnTable {
         let (metadata, anchor) = self.read_metadata()?;
         checked_increment(metadata.revision, "revision")?;
         anchor.finish()?;
-        let config = self.mutation_config()?;
-        let mut store = SqliteGraphStore::new(self);
+        let mut config = self.mutation_config()?;
+        let mut store = SqliteGraphStore::new(self, &mut config, 0)?;
         diskann_core::delete(&mut store, &config, rowid)?;
         store.finish()?;
         self.bump_revision()
@@ -1258,12 +1349,16 @@ impl GraphStore for SqliteGraphStore<'_> {
         let metadata = self.read_metadata()?;
         let next_node_id = checked_increment(metadata.next_node_id, "next node ID")?;
         let live_count = checked_increment(metadata.live_count, "live count")?;
-        if metadata.entrypoints.is_empty() {
+        let bootstrapped_root = metadata.entrypoints.is_empty();
+        if bootstrapped_root {
             self.with_statement(GraphStatement::Frozen, |statement| {
                 statement.bind_blob(1, &bytes)?;
                 statement.bind_blob(2, &[])
             })?;
-            table.expect_one_change("frozen node insertion")?;
+            if let Err(error) = table.expect_one_change("frozen node insertion") {
+                self.invalidate_all();
+                return Err(error);
+            }
         } else if self.state(0)? != NodeState::Frozen {
             return Err(corrupt(
                 "DiskANN frozen entrypoint is missing or not frozen",
@@ -1276,13 +1371,19 @@ impl GraphStore for SqliteGraphStore<'_> {
             statement.bind_blob(3, &bytes)?;
             statement.bind_blob(4, &[])
         })?;
-        table.expect_one_change("live node insertion")?;
+        if let Err(error) = table.expect_one_change("live node insertion") {
+            self.invalidate_all();
+            return Err(error);
+        }
         self.with_statement(GraphStatement::AllocateMetadata, |statement| {
             statement.bind_i64(1, checked_id(next_node_id)?)?;
             statement.bind_i64(2, checked_id(live_count)?)?;
             statement.bind_blob(3, &0u64.to_le_bytes())
         })?;
-        table.expect_one_change("allocation metadata")?;
+        if let Err(error) = table.expect_one_change("allocation metadata") {
+            self.invalidate_all();
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -1297,10 +1398,33 @@ impl GraphStore for SqliteGraphStore<'_> {
         Ok(self.identity(id)?.0)
     }
 
+    fn mutation_stamp(&mut self) -> Option<u64> {
+        self.observe_external_mutations();
+        self.stamp
+    }
+
+    fn remaining_vector_visits(&self) -> usize {
+        self.table.options.max_visits.saturating_sub(self.visits)
+    }
+
     fn vector(&mut self, id: u64) -> Result<Vec<f32>> {
+        let mut out = Vec::new();
+        let dim = self.table.space.dim;
+        self.with_vector(id, &mut |slice| {
+            reserve(&mut out, dim)?;
+            out.extend_from_slice(slice);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn with_vector(&mut self, id: u64, action: &mut dyn FnMut(&[f32]) -> Result<()>) -> Result<()> {
+        checked_id(id)?;
         let table = self.table;
         table.visit(&mut self.visits)?;
-        let (identity, vector) = self.with_statement(GraphStatement::Vector, |statement| {
+        let dim = table.space.dim;
+        let mut decode_buffer = std::mem::take(&mut self.decode_buffer);
+        let result = self.with_statement(GraphStatement::Vector, |statement| {
             statement.bind_i64(1, checked_id(id)?)?;
             if statement.step()? != Step::Row {
                 return Err(corrupt("DiskANN referenced node is missing"));
@@ -1309,16 +1433,143 @@ impl GraphStore for SqliteGraphStore<'_> {
             if (id == 0) != (identity.0 == NodeState::Frozen) {
                 return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
             }
-            let bytes = bounded_blob(statement, 2, 3, table.vector_bytes, true, "vector")?;
-            Ok((identity, decode_vector(&bytes, table.space.dim)?))
-        })?;
-        // Never bypass vector payload/visit checks. Seed only after the row and
-        // statement have both completed successfully.
-        self.identities.insert(id, identity);
-        Ok(vector)
+            if statement.column_type(2)? != ffi::SQLITE_BLOB as i32 {
+                return Err(corrupt("DiskANN vector is not a BLOB"));
+            }
+            statement.with_column_blob(2, |bytes| {
+                with_decoded_vector(bytes, dim, &mut decode_buffer, action)
+            })?;
+            Ok(identity)
+        });
+        match result {
+            Ok(identity) => {
+                self.decode_buffer = decode_buffer;
+                self.identities.insert(id, identity);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn with_vectors_batch(
+        &mut self,
+        ids: &[u64],
+        need_rowid: bool,
+        action: &mut VectorBatchAction<'_>,
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if ids.len() == 1 {
+            let id = ids[0];
+            let rowid = if need_rowid { self.rowid(id)? } else { None };
+            return self.with_vector(id, &mut |vector| action(0, id, rowid, vector));
+        }
+        let table = self.table;
+        for &id in ids {
+            checked_id(id)?;
+            table.visit(&mut self.visits)?;
+        }
+
+        const MAX_BATCH: usize = 32;
+        debug_assert!(ids.len() <= MAX_BATCH);
+        let mut handled = [false; MAX_BATCH];
+        let mut misses = [(0u64, 0usize); MAX_BATCH];
+        for (index, &id) in ids.iter().enumerate() {
+            misses[index] = (id, index);
+        }
+        let miss_count = ids.len();
+
+        // Deduplicate any repeated IDs in `misses` while keeping all caller indices.
+        misses[..miss_count].sort_unstable_by_key(|&(id, _)| id);
+        let mut unique_ids = [0u64; MAX_BATCH];
+        let mut unique_len = 0usize;
+        for &(id, _) in &misses[..miss_count] {
+            if unique_len == 0 || unique_ids[unique_len - 1] != id {
+                unique_ids[unique_len] = id;
+                unique_len += 1;
+            }
+        }
+
+        let mut offset = 0usize;
+        while offset < unique_len {
+            let remaining = unique_len - offset;
+            let (kind, arity) = self.vector_batch_kind(remaining);
+            if arity == 1 || !self.admit_optional_batch_plan(kind)? {
+                let id = unique_ids[offset];
+                offset += 1;
+                for &(mid, mindex) in &misses[..miss_count] {
+                    if mid == id && !handled[mindex] {
+                        self.fetch_single_uncharged(mindex, id, need_rowid, action)?;
+                        handled[mindex] = true;
+                    }
+                }
+                continue;
+            }
+            let chunk_len = remaining.min(arity);
+            let chunk = &unique_ids[offset..offset + chunk_len];
+            offset += chunk_len;
+
+            let dim = table.space.dim;
+            let mut decode_buffer = std::mem::take(&mut self.decode_buffer);
+            let mut fetched_identities = [(0u64, (NodeState::Frozen, None)); MAX_BATCH];
+            let mut seen_mask: u32 = 0;
+            let mut seen_count = 0usize;
+
+            let result = self.with_statement(kind, |statement| {
+                for slot in 0..arity {
+                    let bind_id = chunk[slot.min(chunk_len - 1)];
+                    statement.bind_i64(slot + 1, checked_id(bind_id)?)?;
+                }
+                while statement.step()? == Step::Row {
+                    let id = nonnegative(statement, 0, "node ID")?;
+                    let Ok(pos) = chunk.binary_search(&id) else {
+                        return Err(corrupt("DiskANN batch vector read returned unrequested ID"));
+                    };
+                    let bit = 1u32 << pos;
+                    if seen_mask & bit != 0 {
+                        return Err(corrupt("DiskANN batch vector read returned duplicate ID"));
+                    }
+                    seen_mask |= bit;
+                    let identity = node_identity(statement, 1, 2)?;
+                    if (id == 0) != (identity.0 == NodeState::Frozen) {
+                        return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
+                    }
+                    if statement.column_type(3)? != ffi::SQLITE_BLOB as i32 {
+                        return Err(corrupt("DiskANN vector is not a BLOB"));
+                    }
+                    statement.with_column_blob(3, |bytes| {
+                        with_decoded_vector(bytes, dim, &mut decode_buffer, &mut |slice| {
+                            let rowid = if need_rowid { identity.1 } else { None };
+                            for &(mid, mindex) in &misses[..miss_count] {
+                                if mid == id && !handled[mindex] {
+                                    action(mindex, id, rowid, slice)?;
+                                    handled[mindex] = true;
+                                }
+                            }
+                            Ok(())
+                        })
+                    })?;
+                    fetched_identities[seen_count] = (id, identity);
+                    seen_count += 1;
+                }
+                if seen_count != chunk_len {
+                    return Err(corrupt("DiskANN referenced node is missing"));
+                }
+                Ok(())
+            });
+
+            result?;
+            self.decode_buffer = decode_buffer;
+            for &(id, identity) in &fetched_identities[..seen_count] {
+                self.identities.insert(id, identity);
+            }
+        }
+        Ok(())
     }
 
     fn neighbors(&mut self, id: u64) -> Result<Vec<u64>> {
+        checked_id(id)?;
         let table = self.table;
         let (identity, neighbors) =
             self.with_statement(GraphStatement::Neighbors, |statement| {
@@ -1330,20 +1581,19 @@ impl GraphStore for SqliteGraphStore<'_> {
                 if (id == 0) != (identity.0 == NodeState::Frozen) {
                     return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
                 }
-                let bytes =
-                    bounded_blob(statement, 2, 3, table.adjacency_bytes, false, "neighbors")?;
-                Ok((
-                    identity,
-                    decode_ids(&bytes, table.options.physical_degree(), Some(id))?,
-                ))
+                if statement.column_type(2)? != ffi::SQLITE_BLOB as i32 {
+                    return Err(corrupt("DiskANN neighbors is not a BLOB"));
+                }
+                let decoded = statement.with_column_blob(2, |bytes| {
+                    if bytes.len() > table.adjacency_bytes {
+                        return Err(corrupt("DiskANN neighbors has an invalid byte length"));
+                    }
+                    decode_ids(bytes, table.options.physical_degree(), Some(id))
+                })?;
+                Ok((identity, decoded))
             })?;
         self.identities.insert(id, identity);
-        // Deleted nodes remain legal bridges. EVERY referenced identity must
-        // either have been fully checked in this no-write interval or be read
-        // and checked now; caching never suppresses a dangling-edge check.
-        for &neighbor in &neighbors {
-            self.identity(neighbor)?;
-        }
+        self.validate_neighbor_identities(&neighbors)?;
         Ok(neighbors)
     }
 
@@ -1352,14 +1602,16 @@ impl GraphStore for SqliteGraphStore<'_> {
         self.identity(id)?;
         let table = self.table;
         let bytes = encode_ids(neighbors, table.options.physical_degree(), Some(id))?;
-        for &neighbor in neighbors {
-            self.identity(neighbor)?;
-        }
+        self.validate_neighbor_identities(neighbors)?;
         self.with_statement(GraphStatement::SetNeighbors, |statement| {
             statement.bind_blob(1, &bytes)?;
             statement.bind_i64(2, checked_id(id)?)
         })?;
-        table.expect_one_change("neighbor update")
+        if let Err(error) = table.expect_one_change("neighbor update") {
+            self.invalidate_all();
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn mark_delete(&mut self, rowid: u64) -> Result<()> {
@@ -1374,12 +1626,19 @@ impl GraphStore for SqliteGraphStore<'_> {
         self.with_statement(GraphStatement::DeleteNode, |statement| {
             statement.bind_i64(1, checked_id(id)?)
         })?;
-        table.expect_one_change("delete node")?;
+        if let Err(error) = table.expect_one_change("delete node") {
+            self.invalidate_all();
+            return Err(error);
+        }
         self.with_statement(GraphStatement::DeleteMetadata, |statement| {
             statement.bind_i64(1, checked_id(live_count)?)?;
             statement.bind_i64(2, checked_id(deleted_count)?)
         })?;
-        table.expect_one_change("delete metadata")
+        if let Err(error) = table.expect_one_change("delete metadata") {
+            self.invalidate_all();
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn start_points(&mut self) -> Result<Vec<u64>> {
@@ -1393,33 +1652,393 @@ impl GraphStore for SqliteGraphStore<'_> {
     }
 }
 
+fn in_clause(arity: usize) -> String {
+    let mut text = String::new();
+    for slot in 1..=arity {
+        if slot > 1 {
+            text.push(',');
+        }
+        text.push('?');
+        text.push_str(&slot.to_string());
+    }
+    text
+}
+
 impl<'a> SqliteGraphStore<'a> {
-    fn new(table: &'a DiskAnnTable) -> Self {
+    fn new_unbudgeted(table: &'a DiskAnnTable) -> Self {
         Self {
             table,
             visits: 0,
             statements: std::array::from_fn(|_| None),
+            batch_plan_budget: 0,
+            expected_total_changes: table.connection.total_changes64(),
+            stamp: Some(0),
             identities: IdentityCache::new(),
+            decode_buffer: Vec::new(),
         }
+    }
+
+    fn new(table: &'a DiskAnnTable, config: &mut GraphConfig, max_batch: usize) -> Result<Self> {
+        let mut store = Self::new_unbudgeted(table);
+        store.enable_caches(config, max_batch);
+        Ok(store)
+    }
+
+    fn enable_caches(&mut self, config: &mut GraphConfig, max_batch: usize) {
+        self.expected_total_changes = self.table.connection.total_changes64();
+        let physical_degree = self.table.options.physical_degree();
+        let Some(core_needed) = config.worst_case_core_bytes(physical_degree, max_batch) else {
+            return;
+        };
+        let Some(mut surplus) = config.limits.max_vector_bytes.checked_sub(core_needed) else {
+            return;
+        };
+        let plan_extra = self.table.extra_plan_bytes();
+        if surplus >= plan_extra {
+            self.batch_plan_budget = plan_extra;
+            surplus -= plan_extra;
+            config.limits.max_vector_bytes -= plan_extra;
+            config.limits.max_cached_vectors =
+                config.limits.max_vector_bytes / self.table.vector_bytes;
+        }
+        if surplus >= IdentityCache::LARGE_BYTES {
+            self.identities.enable_large();
+            config.limits.max_vector_bytes -= IdentityCache::LARGE_BYTES;
+            config.limits.max_cached_vectors =
+                config.limits.max_vector_bytes / self.table.vector_bytes;
+        }
+    }
+
+    fn admit_optional_batch_plan(&mut self, kind: GraphStatement) -> Result<bool> {
+        debug_assert!(kind.is_optional_batch());
+        if self.statements[kind as usize].is_some() {
+            return Ok(true);
+        }
+        if self.batch_plan_budget == 0 {
+            return Ok(false);
+        }
+        let statement = self
+            .table
+            .connection
+            .prepare(&Self::sql(self.table, kind))?;
+        let used = statement.memory_used();
+        if used > self.batch_plan_budget {
+            // Do not retain an unbudgeted optional plan; caller falls back to
+            // the already-reserved scalar plan.
+            statement.finish()?;
+            self.batch_plan_budget = 0;
+            return Ok(false);
+        }
+        self.batch_plan_budget -= used;
+        self.statements[kind as usize] = Some(statement);
+        Ok(true)
+    }
+
+    fn vector_batch_kind(&self, count: usize) -> (GraphStatement, usize) {
+        if count <= 1 {
+            (GraphStatement::Vector, 1)
+        } else if count <= 4 {
+            let kind = GraphStatement::VectorBatch4;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 4)
+            } else {
+                (GraphStatement::Vector, 1)
+            }
+        } else if count <= 8 {
+            let kind = GraphStatement::VectorBatch8;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 8)
+            } else {
+                (GraphStatement::Vector, 1)
+            }
+        } else if count <= 16 {
+            let kind = GraphStatement::VectorBatch16;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 16)
+            } else {
+                (GraphStatement::Vector, 1)
+            }
+        } else {
+            let kind = GraphStatement::VectorBatch32;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 32)
+            } else {
+                (GraphStatement::Vector, 1)
+            }
+        }
+    }
+
+    fn identity_batch_kind(&self, count: usize) -> (GraphStatement, usize) {
+        if count <= 1 {
+            (GraphStatement::Identity, 1)
+        } else if count <= 4 {
+            let kind = GraphStatement::IdentityBatch4;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 4)
+            } else {
+                (GraphStatement::Identity, 1)
+            }
+        } else if count <= 8 {
+            let kind = GraphStatement::IdentityBatch8;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 8)
+            } else {
+                (GraphStatement::Identity, 1)
+            }
+        } else if count <= 16 {
+            let kind = GraphStatement::IdentityBatch16;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 16)
+            } else {
+                (GraphStatement::Identity, 1)
+            }
+        } else {
+            let kind = GraphStatement::IdentityBatch32;
+            if self.statements[kind as usize].is_some() || self.batch_plan_budget > 0 {
+                (kind, 32)
+            } else {
+                (GraphStatement::Identity, 1)
+            }
+        }
+    }
+
+    fn fetch_single_uncharged(
+        &mut self,
+        index: usize,
+        id: u64,
+        need_rowid: bool,
+        action: &mut VectorBatchAction<'_>,
+    ) -> Result<()> {
+        let table = self.table;
+        let dim = table.space.dim;
+        let mut decode_buffer = std::mem::take(&mut self.decode_buffer);
+        let result = self.with_statement(GraphStatement::Vector, |statement| {
+            statement.bind_i64(1, checked_id(id)?)?;
+            if statement.step()? != Step::Row {
+                return Err(corrupt("DiskANN referenced node is missing"));
+            }
+            let identity = node_identity(statement, 0, 1)?;
+            if (id == 0) != (identity.0 == NodeState::Frozen) {
+                return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
+            }
+            if statement.column_type(2)? != ffi::SQLITE_BLOB as i32 {
+                return Err(corrupt("DiskANN vector is not a BLOB"));
+            }
+            let rowid = if need_rowid { identity.1 } else { None };
+            statement.with_column_blob(2, |bytes| {
+                with_decoded_vector(bytes, dim, &mut decode_buffer, &mut |slice| {
+                    action(index, id, rowid, slice)
+                })
+            })?;
+            Ok(identity)
+        });
+        let identity = result?;
+        self.decode_buffer = decode_buffer;
+        self.identities.insert(id, identity);
+        Ok(())
+    }
+
+    fn validate_neighbor_identities(&mut self, neighbors: &[u64]) -> Result<()> {
+        // Deleted nodes remain legal bridges. EVERY referenced identity must
+        // either have been fully checked in this coherent interval or be read
+        // and checked now; caching never suppresses a dangling-edge check.
+        const MAX_DEG: usize = 64;
+        if neighbors.len() > MAX_DEG {
+            for &neighbor in neighbors {
+                self.identity(neighbor)?;
+            }
+            return Ok(());
+        }
+        let mut misses = [0u64; MAX_DEG];
+        let mut miss_count = 0usize;
+        for &neighbor in neighbors {
+            checked_id(neighbor)?;
+            if self.identities.get(neighbor).is_none() {
+                misses[miss_count] = neighbor;
+                miss_count += 1;
+            }
+        }
+        if miss_count == 0 {
+            return Ok(());
+        }
+        if miss_count == 1 {
+            self.identity(misses[0])?;
+            return Ok(());
+        }
+        misses[..miss_count].sort_unstable();
+        let mut unique_len = 0usize;
+        for idx in 0..miss_count {
+            if unique_len == 0 || misses[unique_len - 1] != misses[idx] {
+                misses[unique_len] = misses[idx];
+                unique_len += 1;
+            }
+        }
+        let mut offset = 0usize;
+        while offset < unique_len {
+            let remaining = unique_len - offset;
+            let (kind, arity) = self.identity_batch_kind(remaining);
+            if arity == 1 || !self.admit_optional_batch_plan(kind)? {
+                self.identity(misses[offset])?;
+                offset += 1;
+                continue;
+            }
+            let chunk_len = remaining.min(arity);
+            let chunk = &misses[offset..offset + chunk_len];
+            offset += chunk_len;
+
+            let mut fetched = [(0u64, (NodeState::Frozen, None)); 32];
+            let mut seen_mask: u32 = 0;
+            let mut seen_count = 0usize;
+            self.with_statement(kind, |statement| {
+                for slot in 0..arity {
+                    let bind_id = chunk[slot.min(chunk_len - 1)];
+                    statement.bind_i64(slot + 1, checked_id(bind_id)?)?;
+                }
+                while statement.step()? == Step::Row {
+                    let id = nonnegative(statement, 0, "node ID")?;
+                    let Ok(pos) = chunk.binary_search(&id) else {
+                        return Err(corrupt(
+                            "DiskANN batch identity read returned unrequested ID",
+                        ));
+                    };
+                    let bit = 1u32 << pos;
+                    if seen_mask & bit != 0 {
+                        return Err(corrupt("DiskANN batch identity read returned duplicate ID"));
+                    }
+                    seen_mask |= bit;
+                    let identity = node_identity(statement, 1, 2)?;
+                    if (id == 0) != (identity.0 == NodeState::Frozen) {
+                        return Err(corrupt("DiskANN frozen node ID/state are inconsistent"));
+                    }
+                    fetched[seen_count] = (id, identity);
+                    seen_count += 1;
+                }
+                if seen_count != chunk_len {
+                    return Err(corrupt("DiskANN referenced node is missing"));
+                }
+                Ok(())
+            })?;
+            for &(id, identity) in &fetched[..seen_count] {
+                self.identities.insert(id, identity);
+            }
+        }
+        Ok(())
     }
 
     fn sql(table: &DiskAnnTable, kind: GraphStatement) -> String {
         match kind {
-            GraphStatement::Identity => format!("SELECT state,public_rowid FROM {} WHERE node_id=?1", table.nodes_name),
-            GraphStatement::Vector => format!("SELECT state,public_rowid,{} FROM {} WHERE node_id=?1", blob_projection("vector", table.vector_bytes, true), table.nodes_name),
-            GraphStatement::Neighbors => format!("SELECT state,public_rowid,{} FROM {} WHERE node_id=?1", blob_projection("neighbors", table.adjacency_bytes, false), table.nodes_name),
-            GraphStatement::SetNeighbors => format!("UPDATE {} SET neighbors=?1 WHERE node_id=?2", table.nodes_name),
-            GraphStatement::Lookup => format!("SELECT node_id,state,public_rowid FROM {} WHERE public_rowid=?1", table.nodes_name),
+            GraphStatement::Identity => format!(
+                "SELECT state,public_rowid FROM {} WHERE node_id=?1",
+                table.nodes_name
+            ),
+            GraphStatement::IdentityBatch4 => format!(
+                "SELECT node_id,state,public_rowid FROM {} WHERE node_id IN ({})",
+                table.nodes_name,
+                in_clause(4)
+            ),
+            GraphStatement::IdentityBatch8 => format!(
+                "SELECT node_id,state,public_rowid FROM {} WHERE node_id IN ({})",
+                table.nodes_name,
+                in_clause(8)
+            ),
+            GraphStatement::IdentityBatch16 => format!(
+                "SELECT node_id,state,public_rowid FROM {} WHERE node_id IN ({})",
+                table.nodes_name,
+                in_clause(16)
+            ),
+            GraphStatement::IdentityBatch32 => format!(
+                "SELECT node_id,state,public_rowid FROM {} WHERE node_id IN ({})",
+                table.nodes_name,
+                in_clause(32)
+            ),
+            GraphStatement::Vector => format!(
+                "SELECT state,public_rowid,{} FROM {} WHERE node_id=?1",
+                single_blob_projection("vector", table.vector_bytes, true),
+                table.nodes_name
+            ),
+            GraphStatement::VectorBatch4 => format!(
+                "SELECT node_id,state,public_rowid,{} FROM {} WHERE node_id IN ({})",
+                single_blob_projection("vector", table.vector_bytes, true),
+                table.nodes_name,
+                in_clause(4)
+            ),
+            GraphStatement::VectorBatch8 => format!(
+                "SELECT node_id,state,public_rowid,{} FROM {} WHERE node_id IN ({})",
+                single_blob_projection("vector", table.vector_bytes, true),
+                table.nodes_name,
+                in_clause(8)
+            ),
+            GraphStatement::VectorBatch16 => format!(
+                "SELECT node_id,state,public_rowid,{} FROM {} WHERE node_id IN ({})",
+                single_blob_projection("vector", table.vector_bytes, true),
+                table.nodes_name,
+                in_clause(16)
+            ),
+            GraphStatement::VectorBatch32 => format!(
+                "SELECT node_id,state,public_rowid,{} FROM {} WHERE node_id IN ({})",
+                single_blob_projection("vector", table.vector_bytes, true),
+                table.nodes_name,
+                in_clause(32)
+            ),
+            GraphStatement::Neighbors => format!(
+                "SELECT state,public_rowid,{} FROM {} WHERE node_id=?1",
+                single_blob_projection("neighbors", table.adjacency_bytes, false),
+                table.nodes_name
+            ),
+            GraphStatement::SetNeighbors => format!(
+                "UPDATE {} SET neighbors=?1 WHERE node_id=?2",
+                table.nodes_name
+            ),
+            GraphStatement::Lookup => format!(
+                "SELECT node_id,state,public_rowid FROM {} WHERE public_rowid=?1",
+                table.nodes_name
+            ),
             GraphStatement::Metadata => format!(
                 "SELECT format_version,{instance},{descriptor},revision,next_node_id,live_count,deleted_count,{entrypoints},(SELECT count(*) FROM (SELECT singleton FROM {table} LIMIT 2)) FROM {table} WHERE singleton=1",
-                instance=blob_projection("instance_id",16,true), descriptor=blob_projection("descriptor",MAX_DESCRIPTOR_BYTES,false),
-                entrypoints=blob_projection("entrypoints",table.adjacency_bytes,false), table=table.meta_name),
-            GraphStatement::Frozen => format!("INSERT INTO {} (node_id,public_rowid,state,vector,neighbors) VALUES (0,NULL,2,?1,?2)", table.nodes_name),
-            GraphStatement::InsertNode => format!("INSERT INTO {} (node_id,public_rowid,state,vector,neighbors) VALUES (?1,?2,0,?3,?4)", table.nodes_name),
-            GraphStatement::AllocateMetadata => format!("UPDATE {} SET next_node_id=?1,live_count=?2,entrypoints=?3 WHERE singleton=1",table.meta_name),
-            GraphStatement::DeleteNode => format!("UPDATE {} SET state=1,public_rowid=NULL WHERE node_id=?1 AND state=0",table.nodes_name),
-            GraphStatement::DeleteMetadata => format!("UPDATE {} SET live_count=?1,deleted_count=?2 WHERE singleton=1",table.meta_name),
+                instance = blob_projection("instance_id", 16, true),
+                descriptor = blob_projection("descriptor", MAX_DESCRIPTOR_BYTES, false),
+                entrypoints = blob_projection("entrypoints", table.adjacency_bytes, false),
+                table = table.meta_name
+            ),
+            GraphStatement::Frozen => format!(
+                "INSERT INTO {} (node_id,public_rowid,state,vector,neighbors) VALUES (0,NULL,2,?1,?2)",
+                table.nodes_name
+            ),
+            GraphStatement::InsertNode => format!(
+                "INSERT INTO {} (node_id,public_rowid,state,vector,neighbors) VALUES (?1,?2,0,?3,?4)",
+                table.nodes_name
+            ),
+            GraphStatement::AllocateMetadata => format!(
+                "UPDATE {} SET next_node_id=?1,live_count=?2,entrypoints=?3 WHERE singleton=1",
+                table.meta_name
+            ),
+            GraphStatement::DeleteNode => format!(
+                "UPDATE {} SET state=1,public_rowid=NULL WHERE node_id=?1 AND state=0",
+                table.nodes_name
+            ),
+            GraphStatement::DeleteMetadata => format!(
+                "UPDATE {} SET live_count=?1,deleted_count=?2 WHERE singleton=1",
+                table.meta_name
+            ),
         }
+    }
+
+    fn bump_stamp(&mut self) {
+        self.stamp = self.stamp.and_then(|s| s.checked_add(1));
+    }
+
+    fn observe_external_mutations(&mut self) {
+        let actual = self.table.connection.total_changes64();
+        if actual != self.expected_total_changes {
+            self.invalidate_all();
+        }
+    }
+
+    fn invalidate_all(&mut self) {
+        self.identities.clear();
+        self.expected_total_changes = self.table.connection.total_changes64();
+        self.bump_stamp();
+        self.decode_buffer = Vec::new();
     }
 
     fn with_statement<T>(
@@ -1427,16 +2046,21 @@ impl<'a> SqliteGraphStore<'a> {
         kind: GraphStatement,
         action: impl FnOnce(&mut Statement<'static>) -> Result<T>,
     ) -> Result<T> {
+        self.observe_external_mutations();
+        let before_changes = self.expected_total_changes;
         let table = self.table;
+        let write = kind.is_write();
+        if write {
+            self.invalidate_all();
+        }
         let slot = &mut self.statements[kind as usize];
-        let result = if kind.is_write() {
-            self.identities
-                .with_invalidated(|_| Self::run_statement(table, slot, kind, action))
+        let result = Self::run_statement(table, slot, kind, action);
+        let after_changes = table.connection.total_changes64();
+        let unexpected_read_dml = !write && after_changes != before_changes;
+        if write || result.is_err() || unexpected_read_dml {
+            self.invalidate_all();
         } else {
-            Self::run_statement(table, slot, kind, action)
-        };
-        if result.is_err() {
-            self.identities.clear();
+            self.expected_total_changes = after_changes;
         }
         result
     }
@@ -1473,10 +2097,13 @@ impl<'a> SqliteGraphStore<'a> {
     }
 
     /// Bracket shadow writes outside the fixed-plan executor, notably the
-    /// streamed consolidation DML. Trigger effects and failed writes invalidate
-    /// just as successful direct node updates do.
+    /// streamed consolidation DML. Direct maintenance updates/deletes change
+    /// bulk rows and always clear all cached state pre- and post-execution.
     fn with_shadow_write<T>(&mut self, action: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.identities.with_invalidated(|_| action())
+        self.invalidate_all();
+        let result = action();
+        self.invalidate_all();
+        result
     }
 
     fn finish(mut self) -> Result<()> {
@@ -1495,6 +2122,7 @@ impl<'a> SqliteGraphStore<'a> {
 
     fn identity(&mut self, id: u64) -> Result<Identity> {
         let sqlite_id = checked_id(id)?;
+        self.observe_external_mutations();
         if let Some(identity) = self.identities.get(id) {
             return Ok(identity);
         }
@@ -1638,7 +2266,7 @@ impl DiskAnnTable {
         };
         let k = k.min(live_count).min(cardinality);
         let available = self.result_budget(k, project_vector, true, &filter)?;
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new_unbudgeted(self);
         let (results, vectors) = if k == 0 {
             (Vec::new(), project_vector.then(Vec::new))
         } else if k >= live_count
@@ -1646,7 +2274,9 @@ impl DiskAnnTable {
         {
             self.exact_topk(&query, k, &filter, project_vector, store.visits)?
         } else {
-            let config = self.graph_config(available)?;
+            let mut config = self.graph_config(available)?;
+            config.search_l = override_l.unwrap_or(config.search_l).max(k);
+            store.enable_caches(&mut config, 0);
             let graph_filter = match &filter {
                 SearchFilter::None => None,
                 SearchFilter::In(rowids) => Some(*rowids),
@@ -1912,7 +2542,7 @@ impl DiskAnnTable {
             return self.write_consolidation_revision(revision);
         }
         let retired_count = rebuild_preflight(&metadata)?;
-        let config = self.mutation_config()?;
+        let mut config = self.mutation_config()?;
         self.require_count(
             &format!("SELECT count(*) FROM {} WHERE state=0", self.nodes_name),
             metadata.live_count,
@@ -1943,7 +2573,7 @@ impl DiskAnnTable {
         // Validate finite encoded payloads one at a time before retiring any old
         // mappings. In particular cosine vectors are NOT normalized again.
         self.for_each_staged_vector(|_, _| Ok(()))?;
-        let mut store = SqliteGraphStore::new(self);
+        let mut store = SqliteGraphStore::new(self, &mut config, 0)?;
         if store.state(0)? != NodeState::Frozen {
             return Err(corrupt("DiskANN rebuild has no permanent frozen root"));
         }
@@ -2182,7 +2812,11 @@ mod tests {
             + (nodes * 8 + meta * 4) * 8
             + STATEMENT_CACHE_WORKSPACE;
         let cached = transient_workspace_bytes(vector, adjacency, nodes, meta, txn).unwrap();
-        assert_eq!(cached, uncached + size_of::<IdentityCache>());
+        assert_eq!(cached, uncached + IdentityCache::INLINE_BYTES);
+        assert_eq!(
+            GraphStatement::DeleteMetadata as usize + 1,
+            GRAPH_STATEMENT_COUNT
+        );
         // This is the integration test's pre-DDL boundary, including the two
         // additional minimum vectors admitted by DiskAnnTable::open.
         assert!(uncached + vector * 2 < 24576);
@@ -2196,7 +2830,15 @@ mod tests {
     fn identity_cache_invalidation_classifies_every_statement_kind() {
         for kind in [
             GraphStatement::Identity,
+            GraphStatement::IdentityBatch4,
+            GraphStatement::IdentityBatch8,
+            GraphStatement::IdentityBatch16,
+            GraphStatement::IdentityBatch32,
             GraphStatement::Vector,
+            GraphStatement::VectorBatch4,
+            GraphStatement::VectorBatch8,
+            GraphStatement::VectorBatch16,
+            GraphStatement::VectorBatch32,
             GraphStatement::Neighbors,
             GraphStatement::Lookup,
             GraphStatement::Metadata,

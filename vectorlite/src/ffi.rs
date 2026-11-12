@@ -97,10 +97,11 @@ pub unsafe fn set_api(table: *const sqlite3_api_routines) -> Result<(), &'static
         errmsg,
         extended_errcode,
         randomness,
-        changes
+        changes,
+        stmt_status
     );
     if version >= 3038000 {
-        require!(vtab_in, vtab_in_first, vtab_in_next);
+        require!(total_changes64, vtab_in, vtab_in_first, vtab_in_next);
     }
     match API.compare_exchange(
         std::ptr::null_mut(),
@@ -387,6 +388,8 @@ statement_api!(errmsg(db: *mut sqlite3) -> *const c_char);
 statement_api!(extended_errcode(db: *mut sqlite3) -> c_int);
 statement_api!(randomness(length: c_int, output: *mut c_void) -> ());
 statement_api!(changes(db: *mut sqlite3) -> c_int);
+statement_api!(stmt_status(statement: *mut sqlite3_stmt, op: c_int, reset_flg: c_int) -> c_int);
+statement_api!(total_changes64(db: *mut sqlite3) -> sqlite3_int64);
 
 // --- schema / module / functions ---
 
@@ -691,6 +694,8 @@ mod tests {
             extended_errcode,
             randomness,
             changes,
+            stmt_status,
+            total_changes64,
             vtab_in,
             vtab_in_first,
             vtab_in_next,
@@ -705,6 +710,8 @@ mod tests {
             "320-missing-bind-pointer" => table.bind_pointer = None,
             "320-missing-context-db" => table.context_db_handle = None,
             "320-missing-result-code" => table.result_error_code = None,
+            "320-missing-stmt-status" => table.stmt_status = None,
+            "338-missing-total-changes64" => table.total_changes64 = None,
             "338-missing-in" => table.vtab_in_next = None,
             _ => {}
         }
@@ -868,6 +875,8 @@ mod tests {
                 "320-missing-bind-pointer" => Some("bind_pointer"),
                 "320-missing-context-db" => Some("context_db_handle"),
                 "320-missing-result-code" => Some("result_error_code"),
+                "320-missing-stmt-status" => Some("stmt_status"),
+                "338-missing-total-changes64" => Some("total_changes64"),
                 "338-missing-in" => Some("vtab_in_next"),
                 _ => None,
             };
@@ -893,6 +902,8 @@ mod tests {
             "320-missing-bind-pointer",
             "320-missing-context-db",
             "320-missing-result-code",
+            "320-missing-stmt-status",
+            "338-missing-total-changes64",
             "338-missing-in",
         ] {
             let output = Command::new(std::env::current_exe().unwrap())

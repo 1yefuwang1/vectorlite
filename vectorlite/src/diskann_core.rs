@@ -30,6 +30,8 @@ use crate::ops;
 use crate::vector_space::DistanceType;
 
 type StoreResult<T> = Result<T, IndexError>;
+pub(crate) type VectorBatchAction<'a> =
+    dyn FnMut(usize, u64, Option<u64>, &[f32]) -> StoreResult<()> + 'a;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NodeState {
@@ -47,6 +49,38 @@ pub(crate) trait GraphStore {
     fn rowid(&mut self, id: u64) -> StoreResult<Option<u64>>;
     fn state(&mut self, id: u64) -> StoreResult<NodeState>;
     fn vector(&mut self, id: u64) -> StoreResult<Vec<f32>>;
+    fn mutation_stamp(&mut self) -> Option<u64> {
+        None
+    }
+    fn remaining_vector_visits(&self) -> usize {
+        usize::MAX
+    }
+    /// Synchronously lends a validated stored vector slice to `action`.
+    /// Implementations charge one owner vector visit and complete any SQL
+    /// cleanup before returning `Ok`.
+    fn with_vector(
+        &mut self,
+        id: u64,
+        action: &mut dyn FnMut(&[f32]) -> StoreResult<()>,
+    ) -> StoreResult<()> {
+        let vector = self.vector(id)?;
+        action(&vector)
+    }
+    /// Fetches up to `ids.len()` distinct validated vectors, charging one owner
+    /// vector visit per ID and invoking `action(index, id, rowid, slice)` once
+    /// per requested slot. Default calls `rowid` + `with_vector` sequentially.
+    fn with_vectors_batch(
+        &mut self,
+        ids: &[u64],
+        need_rowid: bool,
+        action: &mut VectorBatchAction<'_>,
+    ) -> StoreResult<()> {
+        for (index, &id) in ids.iter().enumerate() {
+            let rowid = if need_rowid { self.rowid(id)? } else { None };
+            self.with_vector(id, &mut |vector| action(index, id, rowid, vector))?;
+        }
+        Ok(())
+    }
     fn neighbors(&mut self, id: u64) -> StoreResult<Vec<u64>>;
     fn set_neighbors(&mut self, id: u64, neighbors: &[u64]) -> StoreResult<()>;
     fn mark_delete(&mut self, rowid: u64) -> StoreResult<()>;
@@ -93,6 +127,35 @@ fn allocation_error() -> IndexError {
     )
 }
 impl GraphConfig {
+    /// Worst-case byte reservation needed by core operations (including up to
+    /// `max_batch` width in `insert_batch` and simultaneous prune/query vector
+    /// leases). Any excess bytes beyond this bound may be safely carved by the
+    /// SQLite owner for optional callback-local caches without causing `TOOBIG`.
+    pub(crate) fn worst_case_core_bytes(
+        &self,
+        physical_degree: usize,
+        max_batch: usize,
+    ) -> Option<usize> {
+        let input_bytes = max_batch
+            .checked_mul(self.dimension)?
+            .checked_mul(4)?
+            .checked_add(max_batch.checked_mul(8)?)?
+            .checked_add(4096)?;
+        let base = if max_batch > 0 {
+            self.batch_scratch_bytes(physical_degree, max_batch, input_bytes)
+                .ok()?
+        } else {
+            self.scratch_bytes(physical_degree).ok()?
+        };
+        let list = max_batch.checked_add(physical_degree)?.checked_add(1)?;
+        let snapshots = list.max(750).checked_add(33)?;
+        let snapshot_bytes = self
+            .dimension
+            .checked_mul(4)?
+            .checked_add(vector_metadata_bytes())?
+            .checked_mul(snapshots)?;
+        base.checked_add(snapshot_bytes)
+    }
     fn core_config(&self) -> StoreResult<diskann::graph::Config> {
         let bytes = self
             .dimension
@@ -154,10 +217,15 @@ impl GraphConfig {
         let topology = physical_degree
             .checked_mul(physical_degree)
             .and_then(|n| n.checked_mul(128));
+        let recent_adjacency = physical_degree
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(std::mem::size_of::<RecentNeighbors>() + 128));
         let bytes = visits
             .and_then(|a| initial.and_then(|b| a.checked_add(b)))
             .and_then(|a| topology.and_then(|b| a.checked_add(b)))
+            .and_then(|a| recent_adjacency.and_then(|b| a.checked_add(b)))
             .and_then(|a| a.checked_add(750 * 128 + 8192))
+            .and_then(|a| a.checked_add(std::mem::size_of::<DistanceCache>()))
             .ok_or_else(|| limit("DiskANN scratch estimate overflow"))?;
         let minimum_vector = self
             .dimension
@@ -322,6 +390,12 @@ impl OperationContext {
         }
         state.visits += 1;
         Ok(())
+    }
+    fn remaining_visits(&self) -> usize {
+        self.config
+            .limits
+            .max_visits
+            .saturating_sub(self.lock().visits)
     }
     fn reserve_vector(&self) -> StoreResult<VectorLease> {
         self.check()?;
@@ -702,6 +776,18 @@ impl provider::Delete for Provider {
         )
     }
 }
+fn pure_distance(distance: DistanceType, a: &[f32], b: &[f32]) -> StoreResult<f32> {
+    let value = match distance {
+        DistanceType::L2 => ops::l2_sq_f32(a, b),
+        DistanceType::Cosine | DistanceType::InnerProduct => ops::ip_dist_f32(a, b),
+    };
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(IndexError::new("non-finite DiskANN distance"))
+    }
+}
+
 #[derive(Clone)]
 struct Computer(OperationContext);
 impl DistanceFunction<&[f32], &[f32], f32> for Computer {
@@ -709,25 +795,61 @@ impl DistanceFunction<&[f32], &[f32], f32> for Computer {
         if self.0.check().is_err() {
             return f32::MAX;
         }
-        let distance = match self.0.config.distance {
-            DistanceType::L2 => ops::l2_sq_f32(a, b),
-            DistanceType::Cosine | DistanceType::InnerProduct => ops::ip_dist_f32(a, b),
-        };
-        if !distance.is_finite() {
-            self.0.fail(IndexError::new("non-finite DiskANN distance"));
-            // The trait cannot fail. Keep numerics defined and abort via latch.
-            f32::MAX
-        } else {
-            distance
+        match pure_distance(self.0.config.distance, a, b) {
+            Ok(distance) => distance,
+            Err(error) => {
+                self.0.fail(error);
+                // The trait cannot fail. Keep numerics defined and abort via latch.
+                f32::MAX
+            }
         }
     }
 }
+const SEARCH_CACHE_ENTRIES: usize = 31;
+#[derive(Clone, Copy, Default)]
+struct DistanceEntry {
+    id: u64,
+    distance: f32,
+}
+#[derive(Clone, Default)]
+struct DistanceCache {
+    entries: [DistanceEntry; SEARCH_CACHE_ENTRIES],
+    len: usize,
+    stamp: Option<u64>,
+}
+impl DistanceCache {
+    fn synchronize(&mut self, stamp: Option<u64>) {
+        if stamp.is_none() || self.stamp != stamp {
+            self.len = 0;
+        }
+        self.stamp = stamp;
+    }
+    fn get(&self, id: u64) -> Option<f32> {
+        self.entries[..self.len]
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.distance)
+    }
+    fn insert(&mut self, id: u64, distance: f32, cap: usize) {
+        if self.stamp.is_none() || cap == 0 {
+            self.len = 0;
+            return;
+        }
+        if self.len >= cap.min(SEARCH_CACHE_ENTRIES) {
+            self.len = 0;
+        }
+        self.entries[self.len] = DistanceEntry { id, distance };
+        self.len += 1;
+    }
+}
+
+const EXPAND_BATCH_MAX: usize = 32;
 struct Accessor<'a> {
     context: OperationContext,
     query: OwnedVector,
     starts: Vec<u64>,
     filter: Option<&'a HashSet<u64>>,
-    cache: HashMap<u64, OwnedVector>,
+    cache: DistanceCache,
 }
 impl<'a> Accessor<'a> {
     fn new(
@@ -747,42 +869,203 @@ impl<'a> Accessor<'a> {
             query,
             starts,
             filter,
-            cache: HashMap::new(),
+            cache: DistanceCache::default(),
         })
     }
-    fn distance(&mut self, id: u64) -> ANNResult<f32> {
-        if !self.cache.contains_key(&id) {
-            let cap = self
-                .context
-                .config
-                .limits
-                .max_cached_vectors
-                .min(32)
-                .saturating_sub(1);
-            if cap == 0 || self.cache.len() >= cap {
-                // Release hash buckets together with their metadata leases.
-                self.cache = HashMap::new();
-            }
-            let value = self.context.fetch_vector(id).map_err(ann)?;
-            self.cache
-                .try_reserve(1)
-                .map_err(|_| ann(self.context.fail(allocation_error())))?;
-            self.cache.insert(id, value);
+    fn cache_cap(&self) -> usize {
+        self.context
+            .config
+            .limits
+            .max_cached_vectors
+            .min(32)
+            .saturating_sub(1)
+    }
+    fn classify(&self, id: u64, rowid: Option<u64>) -> glue::Decision<u64> {
+        if rowid.is_some_and(|rowid| self.filter.is_none_or(|filter| filter.contains(&rowid))) {
+            glue::Decision::accept(id)
+        } else {
+            glue::Decision::reject(id)
         }
-        let distance = Computer(self.context.clone())
-            .evaluate_similarity(&self.query.data, &self.cache[&id].data);
+    }
+    fn distance(&mut self, id: u64) -> ANNResult<f32> {
+        let stamp = with_store(&self.context, |store| Ok(store.mutation_stamp())).map_err(ann)?;
+        self.cache.synchronize(stamp);
+        if let Some(distance) = self.cache.get(id) {
+            self.context.check().map_err(ann)?;
+            return Ok(distance);
+        }
+        let cap = self.cache_cap();
+        self.context.visit().map_err(ann)?;
+        let _lease = self.context.reserve_vector().map_err(ann)?;
+        let mut outcome = None;
+        with_store(&self.context, |store| {
+            store.with_vector(id, &mut |vector| {
+                // Stage pure math outcome until SQL statement cleanup finishes.
+                outcome = Some(self.context.config.validate_vector(vector).and_then(|()| {
+                    pure_distance(self.context.config.distance, &self.query.data, vector)
+                }));
+                Ok(())
+            })
+        })
+        .map_err(ann)?;
         self.context.check().map_err(ann)?;
+        let distance = outcome
+            .ok_or_else(|| IndexError::new("DiskANN vector callback did not run"))
+            .and_then(|value| value)
+            .map_err(|error| ann(self.context.fail(error)))?;
+        self.cache.insert(id, distance, cap);
         Ok(distance)
     }
     fn decision(&self, id: u64) -> ANNResult<glue::Decision<u64>> {
         let rowid = with_store(&self.context, |store| store.rowid(id)).map_err(ann)?;
-        Ok(
-            if rowid.is_some_and(|rowid| self.filter.is_none_or(|filter| filter.contains(&rowid))) {
-                glue::Decision::accept(id)
-            } else {
-                glue::Decision::reject(id)
-            },
-        )
+        Ok(self.classify(id, rowid))
+    }
+    fn expand_neighbors<P, F>(
+        &mut self,
+        neighbors: &[u64],
+        need_rowid: bool,
+        mut predicate: P,
+        mut callback: F,
+    ) -> ANNResult<()>
+    where
+        P: FnMut(u64) -> bool,
+        F: FnMut(u64, Option<u64>, f32),
+    {
+        let mut cursor = 0;
+        while cursor < neighbors.len() {
+            // Bound batch width so core visit charges (2 per miss: 1 expand + 1 fetch)
+            // and owner vector-visit charges never overshoot a tight max_visits
+            // boundary before reporting SQLITE_TOOBIG.
+            let (max_width, stamp) = with_store(&self.context, |store| {
+                let core_pairs = self.context.remaining_visits() / 2;
+                let owner = store.remaining_vector_visits();
+                Ok((
+                    core_pairs.min(owner).min(EXPAND_BATCH_MAX),
+                    store.mutation_stamp(),
+                ))
+            })
+            .map_err(ann)?;
+            self.cache.synchronize(stamp);
+            let cap = self.cache_cap();
+
+            if max_width <= 1 {
+                let neighbor = neighbors[cursor];
+                cursor += 1;
+                if predicate(neighbor) {
+                    self.context.visit().map_err(ann)?;
+                    let rowid = if need_rowid {
+                        with_store(&self.context, |store| store.rowid(neighbor)).map_err(ann)?
+                    } else {
+                        None
+                    };
+                    let distance = self.distance(neighbor)?;
+                    callback(neighbor, rowid, distance);
+                }
+                continue;
+            }
+
+            let mut candidate_ids = [0u64; EXPAND_BATCH_MAX];
+            let mut cached_hit = [None; EXPAND_BATCH_MAX];
+            let mut miss_ids = [0u64; EXPAND_BATCH_MAX];
+            let mut cand_count = 0usize;
+            let mut miss_count = 0usize;
+            // Simulate exact sequential DistanceCache state (including clear-on-full
+            // boundaries) across this batch so cache hits, fetch visit charges, and
+            // post-batch cache contents match sequential scalar evaluation 1-for-1.
+            let mut sim_cache = self.cache.clone();
+
+            while cursor < neighbors.len() && cand_count < max_width {
+                let neighbor = neighbors[cursor];
+                cursor += 1;
+                if predicate(neighbor) {
+                    candidate_ids[cand_count] = neighbor;
+                    if let Some(dist) = sim_cache.get(neighbor) {
+                        // Negative NaN sentinel marks an intra-batch hit on an
+                        // earlier miss in this same batch (distance not yet computed,
+                        // but still a sequential cache hit charging 0 fetch visits).
+                        if dist.is_nan() {
+                            cached_hit[cand_count] = Some(f32::NAN);
+                        } else {
+                            cached_hit[cand_count] = Some(dist);
+                        }
+                    } else {
+                        miss_ids[miss_count] = neighbor;
+                        miss_count += 1;
+                        sim_cache.insert(neighbor, f32::NAN, cap);
+                    }
+                    cand_count += 1;
+                }
+            }
+            if cand_count == 0 {
+                break;
+            }
+
+            // Every candidate charges 1 expansion visit; each sequential cache
+            // miss additionally charges 1 fetch visit.
+            let total_visits = cand_count + miss_count;
+            for _ in 0..total_visits {
+                self.context.visit().map_err(ann)?;
+            }
+
+            let mut staged: [Option<(Option<u64>, StoreResult<f32>)>; EXPAND_BATCH_MAX] =
+                std::array::from_fn(|_| None);
+            if miss_count > 0 {
+                let _lease = self.context.reserve_vector().map_err(ann)?;
+                with_store(&self.context, |store| {
+                    store.with_vectors_batch(
+                        &miss_ids[..miss_count],
+                        need_rowid,
+                        &mut |index, _id, rowid, vector| {
+                            let res = self.context.config.validate_vector(vector).and_then(|()| {
+                                pure_distance(
+                                    self.context.config.distance,
+                                    &self.query.data,
+                                    vector,
+                                )
+                            });
+                            staged[index] = Some((rowid, res));
+                            Ok(())
+                        },
+                    )
+                })
+                .map_err(ann)?;
+            }
+            self.context.check().map_err(ann)?;
+
+            let mut miss_cursor = 0usize;
+            for c in 0..cand_count {
+                let neighbor = candidate_ids[c];
+                if let Some(hit_dist) = cached_hit[c] {
+                    let distance = if hit_dist.is_nan() {
+                        self.cache.get(neighbor).ok_or_else(|| {
+                            ann(self.context.fail(IndexError::new(
+                                "DiskANN simulated intra-batch distance hit missing",
+                            )))
+                        })?
+                    } else {
+                        hit_dist
+                    };
+                    let rowid = if need_rowid {
+                        with_store(&self.context, |store| store.rowid(neighbor)).map_err(ann)?
+                    } else {
+                        None
+                    };
+                    callback(neighbor, rowid, distance);
+                } else {
+                    let m = miss_cursor;
+                    miss_cursor += 1;
+                    let (rowid, res) = staged[m].take().ok_or_else(|| {
+                        ann(self
+                            .context
+                            .fail(IndexError::new("DiskANN batch vector callback missed slot")))
+                    })?;
+                    let distance = res.map_err(|error| ann(self.context.fail(error)))?;
+                    self.cache.insert(miss_ids[m], distance, cap);
+                    callback(neighbor, rowid, distance);
+                }
+            }
+        }
+        Ok(())
     }
     fn expand<I, P, F>(&mut self, ids: I, mut predicate: P, mut callback: F) -> ANNResult<()>
     where
@@ -791,12 +1074,13 @@ impl<'a> Accessor<'a> {
         F: FnMut(u64, f32),
     {
         for id in ids {
-            for neighbor in self.context.neighbors(id).map_err(ann)? {
-                if predicate.eval_mut(&neighbor) {
-                    self.context.visit().map_err(ann)?;
-                    callback(neighbor, self.distance(neighbor)?);
-                }
-            }
+            let neighbors = self.context.neighbors(id).map_err(ann)?;
+            self.expand_neighbors(
+                &neighbors,
+                false,
+                |neighbor| predicate.eval_mut(&neighbor),
+                |neighbor, _, distance| callback(neighbor, distance),
+            )?;
         }
         Ok(())
     }
@@ -869,13 +1153,23 @@ impl FilteredAccessor for Accessor<'_> {
     {
         ready((|| {
             for id in ids {
-                for neighbor in self.context.neighbors(id).map_err(ann)? {
-                    // All nodes see the visited predicate; rejected nodes navigate too.
-                    if predicate.eval_mut(&neighbor) {
-                        self.context.visit().map_err(ann)?;
-                        callback(self.decision(neighbor)?, self.distance(neighbor)?);
-                    }
-                }
+                let neighbors = self.context.neighbors(id).map_err(ann)?;
+                let filter = self.filter;
+                self.expand_neighbors(
+                    &neighbors,
+                    true,
+                    |neighbor| predicate.eval_mut(&neighbor),
+                    |neighbor, rowid, distance| {
+                        let decision = if rowid
+                            .is_some_and(|rowid| filter.is_none_or(|set| set.contains(&rowid)))
+                        {
+                            glue::Decision::accept(neighbor)
+                        } else {
+                            glue::Decision::reject(neighbor)
+                        };
+                        callback(decision, distance);
+                    },
+                )?;
             }
             Ok(())
         })())
@@ -908,9 +1202,15 @@ impl FilteredAccessor for Accessor<'_> {
         })())
     }
 }
+struct RecentNeighbors {
+    id: u64,
+    stamp: Option<u64>,
+    raw: Vec<u64>,
+}
 struct PruneAccessor {
     context: OperationContext,
     vectors: HashMap<u64, OwnedVector>,
+    recent: Option<RecentNeighbors>,
 }
 struct VectorView<'a>(&'a HashMap<u64, OwnedVector>);
 impl workingset::View<u64> for VectorView<'_> {
@@ -933,12 +1233,18 @@ impl NeighborAccessor for PruneAccessor {
         neighbors: &mut AdjacencyList<u64>,
     ) -> impl Future<Output = ANNResult<()>> + Send {
         ready(
-            self.context
-                .neighbors(id)
-                .map(|values| {
-                    *neighbors = AdjacencyList::from_iter_untrusted(values);
-                })
-                .map_err(ann),
+            (|| {
+                self.recent = None;
+                let raw = self.context.neighbors(id)?;
+                // Preserve raw storage order for a subsequent `append_vector`
+                // while still sorting the generic `AdjacencyList` output.
+                neighbors.overwrite_trusted(&raw);
+                neighbors.sort();
+                let stamp = with_store(&self.context, |store| Ok(store.mutation_stamp()))?;
+                self.recent = Some(RecentNeighbors { id, stamp, raw });
+                Ok(())
+            })()
+            .map_err(ann),
         )
     }
 }
@@ -948,6 +1254,7 @@ impl NeighborAccessorMut for PruneAccessor {
         id: u64,
         neighbors: &[u64],
     ) -> impl Future<Output = ANNResult<()>> + Send {
+        self.recent = None;
         let result = if neighbors.len() > self.context.physical_degree {
             Err(self
                 .context
@@ -964,7 +1271,13 @@ impl NeighborAccessorMut for PruneAccessor {
     ) -> impl Future<Output = ANNResult<()>> + Send {
         ready(
             (|| {
-                let mut current = self.context.neighbors(id)?;
+                let stamp = with_store(&self.context, |store| Ok(store.mutation_stamp()))?;
+                let mut current = match self.recent.take() {
+                    Some(recent) if stamp.is_some() && recent.id == id && recent.stamp == stamp => {
+                        recent.raw
+                    }
+                    _ => self.context.neighbors(id)?,
+                };
                 for neighbor in neighbors {
                     if !current.contains(neighbor) {
                         if current.len() == self.context.physical_degree {
@@ -984,6 +1297,100 @@ impl NeighborAccessorMut for PruneAccessor {
         )
     }
 }
+const PRUNE_BATCH_MAX: usize = 32;
+impl PruneAccessor {
+    fn fill_batch<I>(&mut self, mut ids: I) -> StoreResult<()>
+    where
+        I: ExactSizeIterator<Item = u64> + Clone,
+    {
+        // Do not retain empty buckets after dropping payload/metadata leases.
+        self.vectors = HashMap::new();
+        loop {
+            let max_width = with_store(&self.context, |store| {
+                Ok(self
+                    .context
+                    .remaining_visits()
+                    .min(store.remaining_vector_visits())
+                    .clamp(1, PRUNE_BATCH_MAX))
+            })?;
+            let mut batch_ids = [0u64; PRUNE_BATCH_MAX];
+            let mut count = 0;
+            while count < max_width {
+                let Some(id) = ids.next() else {
+                    break;
+                };
+                if !self.vectors.contains_key(&id) && !batch_ids[..count].contains(&id) {
+                    batch_ids[count] = id;
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                break;
+            }
+            if count == 1 {
+                let id = batch_ids[0];
+                let value = self.context.fetch_vector(id)?;
+                self.vectors
+                    .try_reserve(1)
+                    .map_err(|_| self.context.fail(allocation_error()))?;
+                self.vectors.insert(id, value);
+                continue;
+            }
+            let mut slots: [Option<OwnedVector>; PRUNE_BATCH_MAX] = std::array::from_fn(|_| None);
+            for slot in slots.iter_mut().take(count) {
+                self.context.visit()?;
+                let lease = self.context.reserve_vector()?;
+                let mut data = Vec::new();
+                data.try_reserve_exact(self.context.config.dimension)
+                    .map_err(|_| self.context.fail(allocation_error()))?;
+                *slot = Some(OwnedVector {
+                    data,
+                    _lease: lease,
+                });
+            }
+            self.vectors
+                .try_reserve(count)
+                .map_err(|_| self.context.fail(allocation_error()))?;
+            let mut staged_error: Option<IndexError> = None;
+            with_store(&self.context, |store| {
+                store.with_vectors_batch(
+                    &batch_ids[..count],
+                    false,
+                    &mut |index, _id, _rowid, vector| {
+                        if let Err(error) = self.context.config.validate_vector(vector) {
+                            if staged_error.is_none() {
+                                staged_error = Some(error);
+                            }
+                            return Ok(());
+                        }
+                        if let Some(slot) = &mut slots[index] {
+                            slot.data.clear();
+                            slot.data.extend_from_slice(vector);
+                        }
+                        Ok(())
+                    },
+                )
+            })?;
+            self.context.check()?;
+            if let Some(error) = staged_error {
+                return Err(self.context.fail(error));
+            }
+            for index in 0..count {
+                let vector = slots[index].take().ok_or_else(|| {
+                    self.context
+                        .fail(IndexError::new("DiskANN prune batch vector slot missing"))
+                })?;
+                if vector.data.len() != self.context.config.dimension {
+                    return Err(self
+                        .context
+                        .fail(IndexError::new("DiskANN prune batch callback missed slot")));
+                }
+                self.vectors.insert(batch_ids[index], vector);
+            }
+        }
+        Ok(())
+    }
+}
 impl glue::PruneAccessor for PruneAccessor {
     type Neighbors<'a> = provider::Neighbors<'a, Self>;
     type ElementRef<'a> = &'a [f32];
@@ -999,19 +1406,9 @@ impl glue::PruneAccessor for PruneAccessor {
     where
         I: ExactSizeIterator<Item = u64> + Clone + Send + Sync,
     {
-        // Do not retain empty buckets after dropping payload/metadata leases.
-        self.vectors = HashMap::new();
-        for id in ids {
-            if !self.vectors.contains_key(&id) {
-                let value = match self.context.fetch_vector(id) {
-                    Ok(value) => value,
-                    Err(error) => return ready(Err(ann(error))),
-                };
-                if self.vectors.try_reserve(1).is_err() {
-                    return ready(Err(ann(self.context.fail(allocation_error()))));
-                }
-                self.vectors.insert(id, value);
-            }
+        self.recent = None;
+        if let Err(error) = self.fill_batch(ids) {
+            return ready(Err(ann(error)));
         }
         ready(Ok((
             VectorView(&self.vectors),
@@ -1061,6 +1458,7 @@ impl glue::PruneStrategy<Provider> for Strategy {
         Ok(PruneAccessor {
             context: context.clone(),
             vectors: HashMap::new(),
+            recent: None,
         })
     }
 }

@@ -270,22 +270,28 @@ streaming exact top-k fallback; a request covering the whole candidate populatio
 can also take the exact path. These paths may perform more I/O but do not require
 a full in-memory vector matrix.
 
-Each callback also has a fixed cache of at most 256 **validated node identities**
-(state and public rowid), organized as 64 four-entry sets. It never caches vectors,
-adjacency lists, missing records, or metadata counters. Successful row reads can
-reuse a checked identity only within the same no-write interval; every shadow
-write clears the entire cache before and after execution, including failures,
-metadata writes, consolidation writes, and their trigger effects. The cache is
-discarded before the callback returns, so it cannot retain stale state across
-rollback, later writes, reconnects, or cursor snapshots. Vector/adjacency payload
-checks and logical traversal work limits are unchanged.
+Each callback uses bounded, `cache_bytes`-admitted working structures that live
+only for that callback and never survive across SQLite statements, rollbacks, or
+reconnects:
+- An inline 256-entry **validated identity** cache (`64 × 4` sets) is reserved
+  upfront in transient SQL workspace; when surplus `cache_bytes` remains after
+  worst-case core/batch scratch admission, it upgrades to a 16,384-entry table
+  and prepared multi-row `IN (...)` read plans (metered by
+  `SQLITE_STMTSTATUS_MEMUSED` with scalar fallback). It never caches vectors,
+  adjacency lists, missing records, or metadata counters.
+- Every attempted SQL write clears the identity cache and bumps the callback
+  mutation stamp before and after execution, and `sqlite3_total_changes64`
+  additionally invalidates cached identities if a reentrant host callback
+  performs DML during a read.
+- Vector reads use synchronous borrowed SQLite BLOB SIMD distance evaluation,
+  multi-row `IN (...)` point lookups, and query-local distance reuse (`<= 31`
+  entries per beam search) without caching vector payloads or adjacency lists in
+  `SqliteGraphStore`.
 
-The full fixed identity-cache footprint (including layout padding) is charged to
-`cache_bytes` alongside the existing SQL buffers. Consequently, an unusually tight
-workspace budget that previously fitted may now return `SQLITE_TOOBIG` during
-preflight; increase that explicit budget rather than lowering graph work or
-silently dropping validation. This is bounded working memory, not an in-memory
-copy of the graph or a change to the persisted index format.
+Vector/adjacency payload checks, dangling-edge checks, and `max_visits`
+traversal limits are preserved on every operation. This is bounded callback
+working memory, not a persistent Rust graph cache or a change to the persisted
+Format 3 index layout.
 
 `cache_bytes` is an **adapter workspace** budget, including admitted graph
 scratch, owned vector snapshots, filter/result/projection accounting, and bounded

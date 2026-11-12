@@ -79,11 +79,14 @@ def oracle(vectors: np.ndarray, queries: np.ndarray, metric: str) -> list[list[i
     return expected
 
 
-def make_inputs(output: Path, count: int, queries: int) -> dict:
+def make_inputs(output: Path, count: int, queries: int, dimension: int = 128) -> dict:
+    if type(dimension) is not int or not 1 <= dimension <= 3000:
+        raise ValueError("dimension must be in [1,3000]")
     rng = np.random.RandomState(42)
-    vectors = rng.random((count, 128)).astype("<f4")
-    query_vectors = rng.random((queries, 128)).astype("<f4")
-    paths = [output / f"vectors-{count}.bin", output / f"queries-{count}.bin"]
+    vectors = rng.random((count, dimension)).astype("<f4")
+    query_vectors = rng.random((queries, dimension)).astype("<f4")
+    suffix = f"{count}" if dimension == 128 else f"{count}-{dimension}d"
+    paths = [output / f"vectors-{suffix}.bin", output / f"queries-{suffix}.bin"]
     for path, data in zip(paths, [vectors, query_vectors]):
         with path.open("xb") as destination:
             destination.write(data.tobytes())
@@ -201,12 +204,20 @@ def validate_result(result: dict, case: dict, truth: list[list[int]], database: 
     if not isinstance(windows, list) or not all(isinstance(row, dict) for row in windows) or [row.get("window") for row in windows] != [10, 50, 100]:
         raise ValueError("invalid query windows")
     for row in windows:
-        labels, times = row.get("labels"), row.get("milliseconds")
+        labels, times, bits = row.get("labels"), row.get("milliseconds"), row.get("distance_bits")
         if not isinstance(labels, list) or len(labels) != len(truth) or not isinstance(times, list) or len(times) != len(truth):
             raise ValueError("invalid query cardinality")
         for values in labels:
             if not isinstance(values, list) or len(values) != 10 or any(type(value) is not int or not 0 <= value < case["count"] for value in values) or len(set(values)) != 10:
                 raise ValueError("invalid query labels")
+        if not isinstance(bits, list) or len(bits) != len(truth):
+            raise ValueError("invalid distance_bits cardinality")
+        for values in bits:
+            if not isinstance(values, list) or len(values) != 10 or any(
+                type(value) is not int or not 0 <= value <= 0xFFFFFFFF or not math.isfinite(struct.unpack("<f", struct.pack("<I", value))[0])
+                for value in values
+            ):
+                raise ValueError("invalid query distance_bits")
         if not all(finite_number(value) for value in times):
             raise ValueError("invalid query latency")
         row["recall_at_10"] = statistics.mean(len(set(found) & set(expected)) / 10
@@ -219,6 +230,8 @@ def verify_same(reference: dict, current: dict) -> None:
     for before, after in zip(reference["native"]["query_windows"], current["native"]["query_windows"]):
         if before["labels"] != after["labels"] or before["recall_at_10"] != after["recall_at_10"]:
             raise ValueError("ordered query output/recall mismatch against first baseline")
+        if before["distance_bits"] != after["distance_bits"]:
+            raise ValueError("ordered query distance_bits mismatch against first baseline")
 
 
 def run_order(pairs: int, warmups: int):
@@ -307,6 +320,7 @@ def parser() -> argparse.ArgumentParser:
     for name in ("executable", "baseline", "optimized", "output-dir"):
         result.add_argument("--" + name, type=Path, required=True)
     result.add_argument("--case", action="append", choices=list(CASES), help="repeatable; default: all four cases")
+    result.add_argument("--dimension", type=int, default=128, help="vector dimension in [1,3000]; default: 128")
     result.add_argument("--pairs", type=int, help="override measured pair count for every selected case")
     result.add_argument("--count", type=int, help="override vector count for every selected case")
     result.add_argument("--queries", type=int, default=100)
@@ -318,6 +332,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     arguments = parser()
     args = arguments.parse_args(argv)
+    if not 1 <= args.dimension <= 3000:
+        arguments.error("dimension must be in [1,3000]")
     if args.count is not None and not 10 <= args.count <= 100000:
         arguments.error("count must be in [10,100000]")
     if (args.pairs is not None and not 1 <= args.pairs <= 100) or not 0 <= args.warmups <= 10 or not 1 <= args.queries <= 1000 or not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -337,7 +353,7 @@ def main(argv=None) -> int:
                "sqlite_python_verifier": sqlite3.sqlite_version,
                "runner": fingerprint(Path(__file__).resolve()),
                "executable": fingerprint(executable), "libraries": {key: fingerprint(path) for key, path in libraries.items()},
-               "settings": {"dimension": 128, "seed": 42, "queries": args.queries, "k": 10,
+               "settings": {"dimension": args.dimension, "seed": 42, "queries": args.queries, "k": 10,
                             "query_windows": [10, 50, 100], "diskann": OPTIONS, "tracing": False,
                             "warmups_per_variant_case": args.warmups, "baseline_selfchecks_per_case": 2,
                             "query_warmup_passes": 1, "query_timed_passes": 1, "timeout_seconds": args.timeout},
@@ -352,16 +368,17 @@ def main(argv=None) -> int:
     inputs_by_count = {}
     try:
         for name in dict.fromkeys(args.case or CASES):
-            case = {**CASES[name], "dimension": 128, "queries": args.queries}
+            case = {**CASES[name], "dimension": args.dimension, "queries": args.queries}
             if args.count is not None:
                 case["count"] = args.count
             if args.pairs is not None:
                 case["pairs"] = args.pairs
             if case["count"] not in inputs_by_count:
-                inputs_by_count[case["count"]] = make_inputs(output, case["count"], args.queries)
+                inputs_by_count[case["count"]] = make_inputs(output, case["count"], args.queries, args.dimension)
             inputs = inputs_by_count[case["count"]]
             truth = oracle(inputs["vectors"], inputs["queries"], case["metric"])
-            oracle_path = output / (name + "-oracle.json")
+            oracle_suffix = f"{name}" if args.dimension == 128 else f"{name}-{args.dimension}d"
+            oracle_path = output / (oracle_suffix + "-oracle.json")
             save_json(oracle_path, {"metric": case["metric"], "precision": "float64", "k": 10, "labels": truth})
             report["cases"][name] = {**case, "inputs": inputs["files"], "oracle": fingerprint(oracle_path)}
             reference = None

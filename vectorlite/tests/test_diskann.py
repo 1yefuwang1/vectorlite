@@ -1279,3 +1279,171 @@ def test_diskann_private_atomic_function_cannot_be_called_from_sql(conn):
     with pytest.raises(sqlite3.DatabaseError):
         conn.execute("SELECT * FROM forbidden_atomic").fetchall()
     assert _snapshot(conn) == before
+
+
+@pytest.mark.parametrize("qualifier", ["", "TEMP "])
+def test_diskann_shadow_trigger_mutating_vector_payload_is_not_masked_by_callback_cache(extension_path, qualifier):
+    connection = _open(extension_path)
+    try:
+        _create(connection)
+        _seed(connection)
+        connection.execute("DELETE FROM v WHERE rowid=7")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        # During multi-node consolidation, node 0's vector is read on the first
+        # rebuilt node; an AFTER UPDATE OF neighbors trigger then poisons node 0
+        # so the next rebuilt node MUST re-read SQLite rather than hit a stale
+        # callback vector cache.
+        connection.execute(
+            f"CREATE {qualifier}TRIGGER poison_vector_on_edge_write "
+            "AFTER UPDATE OF neighbors ON v_diskann_nodes "
+            "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
+        )
+        connection.execute("BEGIN")
+        before = _snapshot(connection)
+        with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
+            connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert _snapshot(connection) == before
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
+def test_diskann_batch_read_detects_missing_dangling_neighbor_fail_closed(extension_path):
+    connection = _open(extension_path)
+    try:
+        _create(connection)
+        for rowid in range(1, 25):
+            _insert(connection, rowid, [float(rowid), 0.5])
+        # Inject a dangling neighbor ID among multiple valid neighbors on root 0
+        # so multi-row `IN (...)` validation exercises partial-row detection.
+        connection.execute("DELETE FROM v_diskann_nodes WHERE node_id=5")
+        with pytest.raises(sqlite3.DatabaseError) as error:
+            _knn(connection, k=3, query=[5.0, 0.5])
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("mode", ["cross-table", "attached-aux", "dynamic-ddl", "incremental-blob"])
+def test_diskann_reentrant_trace_callbacks_and_cross_table_triggers_invalidate_caches(extension_path, mode):
+    connection = _open(extension_path)
+    try:
+        _create(connection)
+        for rowid in range(1, 9):
+            _insert(connection, rowid, [float(rowid), 0.0])
+        connection.execute("DELETE FROM v WHERE rowid=7")
+        if mode != "incremental-blob":
+            connection.execute("PRAGMA ignore_check_constraints=ON")
+
+        if mode == "cross-table":
+            connection.execute("CREATE TABLE app(event TEXT)")
+            connection.execute(
+                "CREATE TEMP TRIGGER app_poison AFTER INSERT ON app "
+                "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
+            )
+        elif mode == "attached-aux":
+            connection.execute("ATTACH ':memory:' AS aux")
+            connection.execute("CREATE TABLE aux.app(event TEXT)")
+            connection.execute(
+                "CREATE TEMP TRIGGER aux_poison AFTER INSERT ON aux.app "
+                "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
+            )
+
+        fired = False
+        unchanged_total_changes = False
+
+        def trace_hook(sql):
+            nonlocal fired, unchanged_total_changes
+            if fired:
+                return
+            if mode == "dynamic-ddl" and "SELECT state,public_rowid,CASE WHEN typeof(vector)" in sql:
+                fired = True
+                connection.execute(
+                    "CREATE TRIGGER dynamic_poison AFTER UPDATE OF neighbors ON v_diskann_nodes "
+                    "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
+                )
+            elif mode in ("cross-table", "attached-aux") and "SET neighbors=?1" in sql:
+                fired = True
+                target = "aux.app" if mode == "attached-aux" else "app"
+                connection.execute(f"INSERT INTO {target} VALUES('edge')")
+            elif mode == "incremental-blob" and "SET neighbors=?1" in sql:
+                fired = True
+                changes_before = connection.total_changes
+                with connection.blobopen("v_diskann_nodes", "vector", 0) as blob:
+                    blob.write(bytes.fromhex("0000c07f00000000"))
+                unchanged_total_changes = connection.total_changes == changes_before
+
+        connection.execute("BEGIN")
+        before = _snapshot(connection)
+        connection.set_trace_callback(trace_hook)
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
+                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        finally:
+            connection.set_trace_callback(None)
+        assert fired
+        if mode == "incremental-blob":
+            assert unchanged_total_changes
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert _snapshot(connection) == before
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
+def test_diskann_read_trace_incremental_blob_poison_is_not_masked_by_store_cache(extension_path):
+    connection = _open(extension_path)
+    try:
+        _create(connection)
+        for rowid in range(1, 9):
+            _insert(connection, rowid, [float(rowid), 0.0])
+        fired = False
+        unchanged_total_changes = False
+
+        def trace_hook(sql):
+            nonlocal fired, unchanged_total_changes
+            if not fired and "SELECT state,public_rowid,CASE WHEN typeof(neighbors)" in sql:
+                fired = True
+                changes_before = connection.total_changes
+                with connection.blobopen("v_diskann_nodes", "vector", 0) as blob:
+                    blob.write(bytes.fromhex("0000c07f00000000"))
+                unchanged_total_changes = connection.total_changes == changes_before
+
+        connection.execute("BEGIN")
+        before = _snapshot(connection)
+        connection.set_trace_callback(trace_hook)
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
+                _insert(connection, 9, [9.0, 0.0])
+        finally:
+            connection.set_trace_callback(None)
+        assert fired
+        assert unchanged_total_changes
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert _snapshot(connection) == before
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
+def test_diskann_large_k_effective_beam_preserves_scratch_headroom(extension_path):
+    connection = _open(extension_path)
+    try:
+        _create(
+            connection,
+            options="diskann(degree=4,build_list_size=8,search_list_size=8,cache_bytes=4200000,max_visits=8192)",
+        )
+        connection.execute("BEGIN")
+        for i in range(1, 2401):
+            _insert(connection, i, [i / 2400.0, (i % 31) / 31.0])
+        connection.execute("COMMIT")
+        # Both omitted override and explicit override below `k` expand to
+        # effective beam `l = 2000` in core search and must not fail `TOOBIG`
+        # due to optional cache carving.
+        omitted = _knn(connection, query=(0.5, 0.5), k=2000)
+        assert len(omitted) == 2000
+        below_k = _knn(connection, query=(0.5, 0.5), k=2000, options={"search_list_size": 4})
+        assert below_k == omitted
+    finally:
+        connection.close()

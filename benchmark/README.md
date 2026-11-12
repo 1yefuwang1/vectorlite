@@ -127,18 +127,18 @@ degree 32, build list 100, alpha 1.2, 64 MiB adapter workspace and 65,536 visits
 query windows are 10/50/100 with k=10. Inputs are shared immutable seeded float32
 files. Two baseline-only self-checks precede any candidate build in each case,
 followed by a warm-up per variant and alternating A/B, B/A measured pairs.
-`--case`, `--count`, `--pairs`, `--queries` and `--warmups` can restrict a diagnostic
+`--case`, `--count`, `--dimension` (1–3000), `--pairs`, `--queries` and `--warmups` can restrict a diagnostic
 run; small override runs are not substitutes for full-size timing evidence.
 
 The native timer includes BEGIN, INSERT preparation/binding/execution/finalization
 and COMMIT. Input/oracle generation, queries, snapshot backup and streaming graph
 verification happen outside build timing. Timed runs install no SQL tracing.
 Each run must match the first baseline's **exact ordered graph BLOBs and stable
-metadata** (excluding only the random instance ID), ordered query labels and
-recall against the same float64 L2/cosine oracle. File-backed originals are also
+metadata** (excluding only the random instance ID), ordered query labels, raw
+float32 `distance_bits`, and recall against the same float64 L2/cosine oracle. File-backed originals are also
 compared with their post-timing backups. The report retains individual timings,
 paired speedups, medians, input/artifact hashes and both native-host and Python
-snapshot-reader SQLite versions. A graph or recall mismatch fails the run.
+snapshot-reader SQLite versions. A graph, distance-bit, or recall mismatch fails the run.
 
 The [native host](<diskann_batch_benchmark.c>) retains its existing default L2
 `:memory:` CLI. Optional `VECTORLITE_BENCH_METRIC`, `VECTORLITE_BENCH_DATABASE`,

@@ -92,6 +92,8 @@ size_t vectorlite_sqlite_abi_layout(size_t index) {
       offsetof(sqlite3_api_routines, result_error_code),
       offsetof(sqlite3_api_routines, reset),
       offsetof(sqlite3_api_routines, clear_bindings),
+      offsetof(sqlite3_api_routines, stmt_status),
+      offsetof(sqlite3_api_routines, total_changes64),
   };
   return index < sizeof(layout) / sizeof(layout[0]) ? layout[index]
                                                     : (size_t)-1;

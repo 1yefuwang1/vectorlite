@@ -14,7 +14,9 @@ struct FakeStore {
     nodes: HashMap<u64, Node>,
     mapping: HashMap<u64, u64>,
     next: u64,
+    stamp: u64,
     fail: Option<&'static str>,
+    fail_cleanup_after_vector: Option<u64>,
     calls: Vec<&'static str>,
     fail_at: Option<(&'static str, usize)>,
     owner_thread: Option<ThreadId>,
@@ -65,6 +67,7 @@ impl GraphStore for FakeStore {
             },
         );
         self.mapping.insert(rowid, id);
+        self.stamp += 1;
         Ok(id)
     }
     fn internal_id(&mut self, rowid: u64) -> StoreResult<u64> {
@@ -95,6 +98,24 @@ impl GraphStore for FakeStore {
             .map(|n| n.vector.clone())
             .ok_or_else(|| IndexError::new("missing vector"))
     }
+    fn mutation_stamp(&mut self) -> Option<u64> {
+        Some(self.stamp)
+    }
+    fn with_vector(
+        &mut self,
+        id: u64,
+        action: &mut dyn FnMut(&[f32]) -> StoreResult<()>,
+    ) -> StoreResult<()> {
+        let vector = self.vector(id)?;
+        action(&vector)?;
+        if self.fail_cleanup_after_vector == Some(id) {
+            return Err(IndexError::with_code(
+                779,
+                "injected SQL cleanup failure after vector callback",
+            ));
+        }
+        Ok(())
+    }
     fn neighbors(&mut self, id: u64) -> StoreResult<Vec<u64>> {
         self.call("neighbors")?;
         self.nodes
@@ -104,6 +125,7 @@ impl GraphStore for FakeStore {
     }
     fn set_neighbors(&mut self, id: u64, neighbors: &[u64]) -> StoreResult<()> {
         self.call("set_neighbors")?;
+        self.stamp += 1;
         self.nodes
             .get_mut(&id)
             .ok_or_else(|| IndexError::new("missing node"))?
@@ -112,6 +134,7 @@ impl GraphStore for FakeStore {
     }
     fn mark_delete(&mut self, rowid: u64) -> StoreResult<()> {
         self.call("mark_delete")?;
+        self.stamp += 1;
         let id = self
             .mapping
             .remove(&rowid)
@@ -884,4 +907,174 @@ fn upstream_pure_phase_errors_are_not_success_or_guard_fallback() {
         drop(scope);
         assert!(ACTIVE.with(|active| active.get().is_none()));
     }
+}
+
+#[test]
+fn sql_cleanup_error_beats_staged_distance_overflow_without_publishing() {
+    let mut store = FakeStore::default();
+    let _first = store.allocate(1, &[0.0, 0.0]).unwrap();
+    let id = store.allocate(2, &[0.0, 0.0]).unwrap();
+    store.set_neighbors(0, &[id]).unwrap();
+    store.fail_cleanup_after_vector = Some(id);
+    // Query `[1.5e19, 0.0]` vs root `[0.0, 0.0]` is `2.25e38` (finite f32),
+    // while `(1.5e19 - (-1.5e19))^2 = 9e38` overflows f32 (> 3.4e38)!
+    store.nodes.get_mut(&id).unwrap().vector = vec![-1.5e19, 0.0];
+    let query = [1.5e19_f32, 0.0];
+    let error = search(&mut store, &config(), &query, 1, None, None).unwrap_err();
+    assert_eq!(error.code, 779, "{error}");
+    assert!(error.message.contains("cleanup failure"), "{error}");
+
+    // Also verify the multi-row batch path (>1 neighbors) preserves cleanup error priority.
+    let other = store.allocate(3, &[1.0, 0.0]).unwrap();
+    store.set_neighbors(0, &[other, id]).unwrap();
+    let batch_error = search(&mut store, &config(), &query, 1, None, None).unwrap_err();
+    assert_eq!(batch_error.code, 779, "{batch_error}");
+
+    // Without the cleanup fault, the staged non-finite distance error surfaces.
+    store.fail_cleanup_after_vector = None;
+    let math_err = search(&mut store, &config(), &query, 1, None, None).unwrap_err();
+    assert!(math_err.message.contains("non-finite"), "{math_err}");
+}
+
+#[test]
+fn recent_neighbors_avoids_duplicate_append_read_and_preserves_unsorted_prefix() {
+    let mut store = FakeStore::default();
+    for rowid in 1..=5 {
+        store.allocate(rowid, &[rowid as f32, 0.0]).unwrap();
+    }
+    // Deliberately unsorted persisted prefix `[4, 2]`.
+    store.set_neighbors(1, &[4, 2]).unwrap();
+    store.calls.clear();
+
+    operation(&mut store, &config(), |_, context| {
+        let mut accessor = glue::PruneStrategy::prune_accessor(&Strategy, &Provider, context, 0)
+            .map_err(index_error)?;
+        let mut adj = AdjacencyList::new();
+        drive(accessor.get_neighbors(1, &mut adj))?.map_err(index_error)?;
+        // Generic `AdjacencyList` output is sorted `[2, 4]`.
+        assert_eq!(&*adj, &[2, 4]);
+        // `append_vector` consumes the raw snapshot without another `neighbors` read
+        // and preserves the original `[4, 2]` prefix.
+        drive(accessor.append_vector(1, &[3, 4]))?.map_err(index_error)?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        store.calls.iter().filter(|&&c| c == "neighbors").count(),
+        1,
+        "append_vector should reuse RecentNeighbors without a second neighbors() read"
+    );
+    assert_eq!(store.nodes[&1].neighbors, vec![4, 2, 3]);
+
+    // If an intervening write bumps `mutation_stamp`, `append_vector` must re-read.
+    store.calls.clear();
+    operation(&mut store, &config(), |_, context| {
+        let mut accessor = glue::PruneStrategy::prune_accessor(&Strategy, &Provider, context, 0)
+            .map_err(index_error)?;
+        let mut adj = AdjacencyList::new();
+        drive(accessor.get_neighbors(1, &mut adj))?.map_err(index_error)?;
+        with_store(context, |s| s.set_neighbors(1, &[5, 2]))?;
+        drive(accessor.append_vector(1, &[3]))?.map_err(index_error)?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        store.calls.iter().filter(|&&c| c == "neighbors").count(),
+        2,
+        "intervening write must invalidate RecentNeighbors and force re-read"
+    );
+    assert_eq!(store.nodes[&1].neighbors, vec![5, 2, 3]);
+}
+
+#[test]
+fn batched_expand_preserves_sequential_distance_cache_clear_on_full_and_visit_limits() {
+    let mut store = FakeStore::default();
+    for rowid in 1..=40 {
+        store.allocate(rowid, &[rowid as f32, 0.0]).unwrap();
+    }
+    let mut cfg = config();
+    cfg.limits.max_visits = 100;
+
+    // Case 1: Full 31-entry cache containing `x = 10`. With current visits = 95,
+    // expanding `[a = 35 (new), x = 10 (cached), b = 36 (new)]` sequentially:
+    // - `a` misses: +2 visits (97) and clears the full 31-entry cache, leaving only `[a]`.
+    // - `x` MUST now miss (not use a stale pre-batch hit!): +2 visits (99), cache `[a, x]`.
+    // - `b` charges +1 expansion visit (100), then fails `SQLITE_TOOBIG` on fetch visit!
+    let error = operation(&mut store, &cfg, |_, context| {
+        let mut accessor = Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+        for id in 1..=31 {
+            accessor.distance(id).map_err(index_error)?;
+        }
+        assert_eq!(accessor.cache.len, 31);
+        assert!(accessor.cache.get(10).is_some());
+        context.lock().visits = 95;
+
+        let mut seen = Vec::new();
+        accessor
+            .expand_neighbors(
+                &[35, 10, 36],
+                false,
+                |_| true,
+                |id, _, dist| seen.push((id, dist)),
+            )
+            .map_err(index_error)?;
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, crate::ffi::SQLITE_TOOBIG as i32, "{error}");
+
+    // Case 2: With ample visits, verify post-batch cache state and intra-batch
+    // duplicate hits match sequential scalar `distance()` 1-for-1.
+    let mut cfg_ok = config();
+    cfg_ok.limits.max_visits = 1000;
+    operation(&mut store, &cfg_ok, |_, context| {
+        let mut batch_acc = Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+        let mut seq_acc = Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+        for id in 1..=30 {
+            batch_acc.distance(id).map_err(index_error)?;
+            seq_acc.distance(id).map_err(index_error)?;
+        }
+        // Cache has 30 entries (1 below cap 31). Feed `[35, 35, 36, 10]`:
+        // - first 35 misses -> len becomes 31
+        // - second 35 hits intra-batch -> len stays 31 (0 extra fetch visits!)
+        // - 36 misses -> clears full cache -> len becomes 1 (`[36]`)
+        // - 10 misses (was evicted by 36's clear!) -> len becomes 2 (`[36, 10]`)
+        context.lock().visits = 0;
+        let mut batch_out = Vec::new();
+        batch_acc
+            .expand_neighbors(
+                &[35, 35, 36, 10],
+                true,
+                |_| true,
+                |id, rowid, dist| batch_out.push((id, rowid, dist.to_bits())),
+            )
+            .map_err(index_error)?;
+        let batch_visits = context.lock().visits;
+
+        context.lock().visits = 0;
+        let mut seq_out = Vec::new();
+        for &id in &[35u64, 35, 36, 10] {
+            context.visit()?;
+            let rowid = with_store(context, |s| s.rowid(id))?;
+            let dist = seq_acc.distance(id).map_err(index_error)?;
+            seq_out.push((id, rowid, dist.to_bits()));
+        }
+        let seq_visits = context.lock().visits;
+
+        assert_eq!(batch_out, seq_out);
+        assert_eq!(batch_visits, seq_visits);
+        assert_eq!(batch_acc.cache.len, seq_acc.cache.len);
+        for idx in 0..batch_acc.cache.len {
+            assert_eq!(
+                batch_acc.cache.entries[idx].id,
+                seq_acc.cache.entries[idx].id
+            );
+            assert_eq!(
+                batch_acc.cache.entries[idx].distance.to_bits(),
+                seq_acc.cache.entries[idx].distance.to_bits()
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
 }

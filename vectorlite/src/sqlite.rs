@@ -126,6 +126,15 @@ impl<'db> Connection<'db> {
         unsafe { ffi::changes(self.db.as_ptr()) }
     }
 
+    /// Cumulative row modifications on this connection since open (SQLite >=3.38).
+    /// Increments on every INSERT/UPDATE/DELETE across statements, triggers,
+    /// and reentrant host trace/progress callbacks.
+    pub(crate) fn total_changes64(&self) -> i64 {
+        // SAFETY: DiskANN requires SQLite >=3.38, which set_api validated for
+        // `total_changes64`. The borrowed connection is live on this callback thread.
+        unsafe { ffi::total_changes64(self.db.as_ptr()) }
+    }
+
     fn error(&self, status: c_int, operation: &str) -> IndexError {
         // SAFETY: both accessors use the live borrowed connection. Copy the
         // connection-owned error string before any further SQLite operation.
@@ -380,6 +389,49 @@ impl Statement<'_> {
         Ok(unsafe { ffi::column_int64(self.raw(), column) })
     }
 
+    /// Lends the current row's BLOB to a synchronous, non-escaping callback.
+    ///
+    /// The exclusive statement borrow prevents stepping, conversion, reset or
+    /// finalization through this handle while the view is live. Callers perform
+    /// only validation, copying or pure computation here: no yielding or
+    /// reentrant storage calls.
+    pub(crate) fn with_column_blob<T>(
+        &mut self,
+        column: usize,
+        action: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        let column = self.typed_column(column, ffi::SQLITE_BLOB as c_int)?;
+        // SAFETY: the exclusively borrowed statement is on a checked BLOB row.
+        // Obtain the pointer before the matching byte count; neither call
+        // converts another representation or advances the statement.
+        let (pointer, length) = unsafe {
+            let pointer = ffi::column_blob(self.raw(), column).cast::<u8>();
+            (pointer, ffi::column_bytes(self.raw(), column))
+        };
+        let length = usize::try_from(length).map_err(|_| {
+            IndexError::with_code(
+                ffi::SQLITE_CORRUPT as c_int,
+                "negative SQLite column byte length",
+            )
+        })?;
+        if pointer.is_null() {
+            // SAFETY: the connection outlives this row. Distinguish a valid
+            // empty BLOB from SQLite OOM before lending an empty slice.
+            let status = unsafe { ffi::extended_errcode(self.connection.db.as_ptr()) };
+            if length != 0 || status & 0xff == ffi::SQLITE_NOMEM as c_int {
+                return Err(self
+                    .connection
+                    .error(ffi::SQLITE_NOMEM as c_int, "read column bytes"));
+            }
+            return action(&[]);
+        }
+        // SAFETY: SQLite lends this checked byte range until the next
+        // invalidating call on this statement. Its exclusive borrow and the
+        // higher-ranked slice lifetime prevent the view escaping `action`.
+        let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+        action(bytes)
+    }
+
     pub(crate) fn column_blob_owned(&self, column: usize) -> Result<Vec<u8>> {
         let column = self.typed_column(column, ffi::SQLITE_BLOB as c_int)?;
         // SAFETY: this is a live BLOB column. Requesting its byte count after its
@@ -441,6 +493,15 @@ impl Statement<'_> {
             output.extend_from_slice(unsafe { std::slice::from_raw_parts(pointer, length) });
         }
         Ok(output)
+    }
+
+    /// Approximate heap bytes currently owned by this prepared statement.
+    pub(crate) fn memory_used(&self) -> usize {
+        // SAFETY: `stmt_status` is in the validated SQLite 3.20+ prefix and
+        // reads `SQLITE_STMTSTATUS_MEMUSED` without modifying statement state.
+        let bytes =
+            unsafe { ffi::stmt_status(self.raw(), ffi::SQLITE_STMTSTATUS_MEMUSED as c_int, 0) };
+        usize::try_from(bytes).unwrap_or(usize::MAX)
     }
 
     /// Finalizes explicitly so a deferred SQLite error can be reported.

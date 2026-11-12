@@ -264,14 +264,15 @@ int main(int argc, char **argv) {
     int window = windows[w];
     sqlite3_stmt *query = NULL;
     require(db, sqlite3_prepare_v2(db,
-        "SELECT rowid FROM v WHERE knn_search(embedding,knn_param(?1,10,?2))",
+        "SELECT rowid,distance FROM v WHERE knn_search(embedding,knn_param(?1,10,?2))",
         -1, &query, NULL), SQLITE_OK, "prepare query");
     char tuning[64];
     snprintf(tuning, sizeof(tuning), "{\"search_list_size\":%d}", window);
     if (w) printf(",");
     printf("{\"window\":%d,\"milliseconds\":[", window);
     int64_t *labels = (int64_t *)malloc((size_t)query_count * 10 * sizeof(int64_t));
-    if (!labels) return 1;
+    uint32_t *distance_bits = (uint32_t *)malloc((size_t)query_count * 10 * sizeof(uint32_t));
+    if (!labels || !distance_bits) return 1;
     /* One untimed warm-up pass, then a single timed pass. */
     for (int pass = 0; pass < 2; ++pass) {
       for (int q = 0; q < query_count; ++q) {
@@ -283,7 +284,13 @@ int main(int argc, char **argv) {
         int returned = 0, rc;
         while ((rc = sqlite3_step(query)) == SQLITE_ROW) {
           if (returned >= 10) return 1;
-          if (pass) labels[(size_t)q * 10 + returned] = sqlite3_column_int64(query, 0);
+          if (pass) {
+            size_t ordinal = (size_t)q * 10 + returned;
+            labels[ordinal] = sqlite3_column_int64(query, 0);
+            float distance = (float)sqlite3_column_double(query, 1);
+            if (!isfinite(distance)) return 1;
+            memcpy(&distance_bits[ordinal], &distance, sizeof(distance));
+          }
           ++returned;
         }
         double milliseconds = (seconds() - query_start) * 1000.0;
@@ -299,7 +306,14 @@ int main(int argc, char **argv) {
       for (int k = 0; k < 10; ++k) printf("%s%lld", k ? "," : "", (long long)labels[(size_t)q * 10 + k]);
       printf("]");
     }
+    printf("],\"distance_bits\":[");
+    for (int q = 0; q < query_count; ++q) {
+      printf("%s[", q ? "," : "");
+      for (int k = 0; k < 10; ++k) printf("%s%u", k ? "," : "", (unsigned)distance_bits[(size_t)q * 10 + k]);
+      printf("]");
+    }
     printf("]}");
+    free(distance_bits);
     free(labels);
     require(db, sqlite3_finalize(query), SQLITE_OK, "finalize query");
   }

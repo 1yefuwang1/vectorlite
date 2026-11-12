@@ -58,7 +58,8 @@ def result():
     return {"mode": "batch8", "count": 10, "dimension": 2, "metric": "l2", "sqlite": "3.53.4",
             "storage": "memory", "database": ":memory:", "snapshot": "snapshot.sqlite",
             "tracing": False, "max_visits": 65536, "build_seconds": 1,
-            "query_windows": [{"window": window, "milliseconds": [0.1], "labels": [list(range(10))]}
+            "query_windows": [{"window": window, "milliseconds": [0.1], "labels": [list(range(10))],
+                               "distance_bits": [[0] * 10]}
                               for window in (10, 50, 100)]}
 
 
@@ -153,6 +154,12 @@ def test_result_validation_and_recall():
     lambda value: value["query_windows"][0].update(labels=[[0] * 10]),
     lambda value: value["query_windows"][0].update(labels=[[True] + list(range(1, 10))]),
     lambda value: value["query_windows"][0].update(labels=[list(range(1, 11))]),
+    lambda value: value["query_windows"][0].pop("distance_bits"),
+    lambda value: value["query_windows"][0].update(distance_bits=None),
+    lambda value: value["query_windows"][0].update(distance_bits=[]),
+    lambda value: value["query_windows"][0].update(distance_bits=[[0] * 9]),
+    lambda value: value["query_windows"][0].update(distance_bits=[[True] + [0] * 9]),
+    lambda value: value["query_windows"][0].update(distance_bits=[[-1] + [0] * 9]),
 ])
 def test_result_validation_rejects_invalid_queries_and_provenance(change):
     value = result()
@@ -163,6 +170,8 @@ def test_result_validation_rejects_invalid_queries_and_provenance(change):
 
 def test_strict_graph_and_ordered_query_comparison():
     native = result()
+    for row in native["query_windows"]:
+        row["distance_bits"] = [[0] * 10]
     validate(native)
     reference = {"graph": {"sha256": "first"}, "native": native}
     bench.verify_same(reference, copy.deepcopy(reference))
@@ -174,6 +183,14 @@ def test_strict_graph_and_ordered_query_comparison():
     changed["native"]["query_windows"][0]["labels"][0].reverse()
     with pytest.raises(ValueError, match="ordered query"):
         bench.verify_same(reference, changed)
+    changed = copy.deepcopy(reference)
+    changed["native"]["query_windows"][0]["distance_bits"][0][0] = 1
+    with pytest.raises(ValueError, match="distance_bits"):
+        bench.verify_same(reference, changed)
+    bad_nan = copy.deepcopy(native)
+    bad_nan["query_windows"][0]["distance_bits"] = [[0x7FC00000] + [0] * 9]
+    with pytest.raises(ValueError, match="distance_bits"):
+        validate(bad_nan)
 
 
 def test_ordering_baseline_selfcheck_then_warmups_then_alternating_pairs():
