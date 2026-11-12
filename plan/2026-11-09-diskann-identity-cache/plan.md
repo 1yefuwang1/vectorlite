@@ -8,7 +8,7 @@ The fresh uncached baseline has now been captured and passed all 28 CTests and 3
 
 Current task ledger: T1 approved; corrected T2 approved; T3 integration APPROVED with no blockers. **All tasks are complete.** The single independent github-copilot/gpt-6.1-sol reviewer approved all three gates. Plan version v2 and implementation scope are unchanged. At implementation completion no commit or push had been made; the subsequent local commit and repository archival are authorized below.
 
-Completion evidence: all 44 full-size alternating native A/B builds passed exact stable-graph, ordered-query-output and recall checks. Baseline/optimized median-time ratios are 1.3005x L2 batch8, 1.2810x ordinary L2, 1.2947x cosine batch8 and 1.1473x fresh-file L2: approximately 1.15–1.30x, not 2x. The final project-venv root release passed all 28 CTests and 384 Python tests; strict Clippy, rustfmt and diff checks exited 0. The separately built SQLite 3.38.5 host passed all 26 native checks. Preserved, deployed, source, runner and host fingerprints remained unchanged. The cache-dependent 24576-byte pre-DDL rejection and unchanged 32768-byte regression passed. See the [measured report](<../../../build/benchmarks/identity-cache-20261108/matched-release/results.md>), [raw results](<../../../build/benchmarks/identity-cache-20261108/matched-release/results.json>), [final validation](<../../../build/benchmarks/identity-cache-20261108/final-validation-20261109/result.json>), [integrity proof](<../../../build/benchmarks/identity-cache-20261108/final-validation-20261109/handoff.json>) and [compatibility evidence](<../../../build/benchmarks/identity-cache-20261108/sqlite338-compat/result.json>). Claims remain limited to small-sample, warm-OS local macOS arm64 runs, not physical beyond-RAM/cold-disk or Linux/Windows execution; the 10k baseline's 89.2% recall is unchanged and tight budgets may reject because the fixed cache is fully charged.
+Completion evidence: all 44 full-size alternating native A/B builds passed exact stable-graph, ordered-query-output and recall checks. Baseline/optimized median-time ratios are 1.3005x L2 batch8, 1.2810x ordinary L2, 1.2947x cosine batch8 and 1.1473x fresh-file L2: approximately 1.15–1.30x, not 2x. The final project-venv root release passed all 28 CTests and 384 Python tests; strict Clippy, rustfmt and diff checks exited 0. The separately built SQLite 3.38.5 host passed all 26 native checks. Preserved, deployed, source, runner and host fingerprints remained unchanged. The cache-dependent 24576-byte pre-DDL rejection and unchanged 32768-byte regression passed. See the [measured report](<../../build/benchmarks/identity-cache-20261108/matched-release/results.md>), [raw results](<../../build/benchmarks/identity-cache-20261108/matched-release/results.json>), [final validation](<../../build/benchmarks/identity-cache-20261108/final-validation-20261109/result.json>), [integrity proof](<../../build/benchmarks/identity-cache-20261108/final-validation-20261109/handoff.json>) and [compatibility evidence](<../../build/benchmarks/identity-cache-20261108/sqlite338-compat/result.json>). Claims remain limited to small-sample, warm-OS local macOS arm64 runs, not physical beyond-RAM/cold-disk or Linux/Windows execution; the 10k baseline's 89.2% recall is unchanged and tight budgets may reject because the fixed cache is fully charged.
 
 ## User requests and authority
 
@@ -110,9 +110,9 @@ Status: approved
 Outcome: immutable freshly built uncached baseline plus one matched native benchmark/verification path usable for both libraries.
 
 Areas:
-- [release build script](<../../../build_release.sh>) and existing CMake/native dependency configuration (use, do not gratuitously change).
-- [native batch benchmark](<../../../benchmark/diskann_batch_benchmark.c>).
-- [Matched A/B runner](<../../../benchmark/diskann_identity_benchmark.py>) and focused benchmark-helper tests.
+- [release build script](<../../build_release.sh>) and existing CMake/native dependency configuration (use, do not gratuitously change).
+- [native batch benchmark](<../../benchmark/diskann_batch_benchmark.c>).
+- [Matched A/B runner](<../../benchmark/diskann_identity_benchmark.py>) and focused benchmark-helper tests.
 - New ignored artifacts under `build/benchmarks/identity-cache-*`.
 
 Verification: fresh baseline build/test evidence; native host build; harness tests; two baseline self-comparisons with stable graph/query results; artifact fingerprints and input hashes. First reviewer checks provenance, timer boundaries, no trace overhead and no hidden graph-setting changes.
@@ -128,10 +128,10 @@ Status: approved
 Outcome: safe bounded identity cache integrated into all store paths with conservative invalidation, resource accounting and targeted regression coverage.
 
 Areas:
-- [DiskANN store](<../../../vectorlite/src/diskann_store.rs>).
-- [Identity cache](<../../../vectorlite/src/diskann_store/identity_cache.rs>), the private safe-Rust cache module.
-- [DiskANN Python regressions](<../../../vectorlite/tests/test_diskann.py>) and [native batch tests](<../../../vectorlite/tests/diskann_batch_native.c>) only where needed.
-- [backend documentation](<../../../doc/diskann.md>) for cache lifetime/workspace semantics.
+- [DiskANN store](<../../vectorlite/src/diskann_store.rs>).
+- [Identity cache](<../../vectorlite/src/diskann_store/identity_cache.rs>), the private safe-Rust cache module.
+- [DiskANN Python regressions](<../../vectorlite/tests/test_diskann.py>) and [native batch tests](<../../vectorlite/tests/diskann_batch_native.c>) only where needed.
+- [backend documentation](<../../doc/diskann.md>) for cache lifetime/workspace semantics.
 
 Verification: pure cache unit tests (empty/frozen0, all states, full-key collisions, MRU/eviction, clearing, bounded capacity and success/error bracketing); exhaustive mutation-kind classification; targeted SQLite tests for all internal writes and consolidation bypasses, trigger-induced identity changes/corruption, deleted bridges/sparse rowids, failed writes, callback/connection/rollback separation and resource preflight. Existing pointer/host-runtime/error-draining regressions stay enabled. Run rustfmt, strict Clippy and the root release script against the candidate.
 
@@ -145,7 +145,7 @@ Status: approved
 
 Outcome: reproducible measured speedup and evidence that index/query quality did not regress.
 
-Areas: benchmark runner/results and [benchmark documentation](<../../../benchmark/README.md>), plus targeted fixes within T2 scope if needed.
+Areas: benchmark runner/results and [benchmark documentation](<../../benchmark/README.md>), plus targeted fixes within T2 scope if needed.
 
 Verification: matched release A/B runs and graph/query/oracle checks described above; final rustfmt/strict Clippy; full root release build script (CTest and both Python suites); native API/SQLite-3.38 compatibility where the existing harness supports it; final working-tree diff/scope review. The one independent reviewer reviews the integrated diff and evidence.
 

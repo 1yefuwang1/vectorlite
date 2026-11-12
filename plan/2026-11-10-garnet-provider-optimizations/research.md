@@ -33,7 +33,7 @@ The investigation pinned these upstream source snapshots:
 
 Both the Garnet package reference and the native provider source call the provider package `9.0.0`. That alone does **not** establish that the two main-branch snapshots are a deployed ABI-paired release. Some newer native quantizer variants are absent from the inspected managed enums. Borrow interfaces/designs, not an unverified binary pairing.
 
-Vectorlite's generic indexing dependency is pinned separately to DiskANN `0.60.0`, revision `97a828a500848018d8be28c3ea6d5a585b07362f`; see [component provenance](<../../../third_party/diskann-0.60.0/PROVENANCE.json>). Relevant working-set/overlay functionality already exists in that pinned dependency, but API and ownership compatibility still need checking before implementation.
+Vectorlite's generic indexing dependency is pinned separately to DiskANN `0.60.0`, revision `97a828a500848018d8be28c3ea6d5a585b07362f`; see [component provenance](<../../third_party/diskann-0.60.0/PROVENANCE.json>). Relevant working-set/overlay functionality already exists in that pinned dependency, but API and ownership compatibility still need checking before implementation.
 
 Garnet Vector Sets are a preview feature. Published benchmark numbers, default quantization and settings are not a matched comparison with vectorlite. In particular, the published/default Q8/M16/EF200 configuration is not our float32/R32/build-list-100 setup.
 
@@ -135,7 +135,7 @@ Sources: [Garnet prune working set](<https://github.com/microsoft/DiskANN/blob/e
 
 ### Concrete local gap
 
-Our [PruneAccessor fill](<../../../vectorlite/src/diskann_core.rs#L995-L1019>) replaces its entire vector HashMap on every fill. The [prune-accessor constructor](<../../../vectorlite/src/diskann_core.rs#L1055-L1064>) ignores the upstream capacity hint. Working-set reuse and owned-batch overlay support already exist in our [vendored DiskANN 0.60 map](<../../../third_party/diskann-0.60.0/vendor/src/graph/workingset/map.rs#L43-L93>).
+Our [PruneAccessor fill](<../../vectorlite/src/diskann_core.rs#L995-L1019>) replaces its entire vector HashMap on every fill. The [prune-accessor constructor](<../../vectorlite/src/diskann_core.rs#L1055-L1064>) ignores the upstream capacity hint. Working-set reuse and owned-batch overlay support already exist in our [vendored DiskANN 0.60 map](<../../third_party/diskann-0.60.0/vendor/src/graph/workingset/map.rs#L43-L93>).
 
 **Coherence caveat:** Garnet retains vector copies across neighbor RMWs, but our SQL fault triggers can modify vectors during any DML. Our nominally immutable vector rows are immutable only under the supported regular API. Safe initial reuse must be restricted to a proved write-free interval, with invalidation/revalidation around writes, unless a separately verified coherence mechanism exists. Backedge prunes are usually separated by writes, so blindly clearing after each write can eliminate much of the advertised cross-prune reuse. This is a conditional opportunity, not a promised speedup.
 
@@ -186,12 +186,12 @@ All expected performance effects below are hypotheses. Source inspection alone d
 
 Local reference points:
 
-- [Search expansion and per-ID distance reads](<../../../vectorlite/src/diskann_core.rs#L753-L801>).
-- [Prune fill destroys its map](<../../../vectorlite/src/diskann_core.rs#L995-L1019>).
-- [Current empty batch seed](<../../../vectorlite/src/diskann_core.rs#L1083-L1126>).
-- [Current append adjacency re-read](<../../../vectorlite/src/diskann_core.rs#L960-L985>).
-- [SQLite-backed store and row decoding](<../../../vectorlite/src/diskann_store.rs>).
-- [Generic working-set and batch-overlay support already vendored](<../../../third_party/diskann-0.60.0/vendor/src/graph/workingset/map.rs>).
+- [Search expansion and per-ID distance reads](<../../vectorlite/src/diskann_core.rs#L753-L801>).
+- [Prune fill destroys its map](<../../vectorlite/src/diskann_core.rs#L995-L1019>).
+- [Current empty batch seed](<../../vectorlite/src/diskann_core.rs#L1083-L1126>).
+- [Current append adjacency re-read](<../../vectorlite/src/diskann_core.rs#L960-L985>).
+- [SQLite-backed store and row decoding](<../../vectorlite/src/diskann_store.rs>).
+- [Generic working-set and batch-overlay support already vendored](<../../third_party/diskann-0.60.0/vendor/src/graph/workingset/map.rs>).
 
 Garnet's engine additionally treats record roles differently for read promotion: neighbors, quantized vectors, maps and metadata can be promoted; full vectors and attributes are not promoted by that path. Do not copy this policy blindly: Garnet's quantized/rerank workload differs from our unquantized float32 build. An owned prune working set is also different from an engine read cache: [role-specific policy](<https://github.com/microsoft/garnet/blob/5cc8f3f50aa57ed694dfda928e4467593e073656/libs/server/Resp/Vector/VectorManager.Callbacks.cs#L327-L357>).
 
@@ -217,9 +217,9 @@ Start with access shape and working-set lifecycle while keeping the persisted SQ
 4. Evaluate owned-batch seeding only with checked stored/input coherence.
 5. If copying or graph-record update traffic is substantial, prototype split graph/vector rows and fixed adjacency storage as a separate migration-capable design.
 
-Use the existing [matched native A/B runner](<../../../benchmark/diskann_identity_benchmark.py>) and [completed identity-cache plan](<../2026-11-09-diskann-identity-cache/plan.md>) as methodology references, not a promise of another 2x gain. Keep degree 32, build list 100, alpha 1.2, float32 L2/cosine, query windows, input hashes and work budgets fixed. Compare exact graph/ordered-query output and recall; rerun transaction/savepoint, corruption, trigger mutation, pointer/thread/runtime cleanup and memory-admission tests. Do not silently truncate a fill, weaken validation or raise budgets to manufacture a result.
+Use the existing [matched native A/B runner](<../../benchmark/diskann_identity_benchmark.py>) and [completed identity-cache plan](<../2026-11-09-diskann-identity-cache/plan.md>) as methodology references, not a promise of another 2x gain. Keep degree 32, build list 100, alpha 1.2, float32 L2/cosine, query windows, input hashes and work budgets fixed. Compare exact graph/ordered-query output and recall; rerun transaction/savepoint, corruption, trigger mutation, pointer/thread/runtime cleanup and memory-admission tests. Do not silently truncate a fill, weaken validation or raise budgets to manufacture a result.
 
-The prior checked-identity cache's measured 1.15–1.30x gain is retained in the [local measured report](<../../../build/benchmarks/identity-cache-20261108/matched-release/results.md>). That link refers to ignored local artifacts, not data committed with this research note. It does not establish the performance value of any idea above.
+The prior checked-identity cache's measured 1.15–1.30x gain is retained in the [local measured report](<../../build/benchmarks/identity-cache-20261108/matched-release/results.md>). That link refers to ignored local artifacts, not data committed with this research note. It does not establish the performance value of any idea above.
 
 ## Conclusion
 

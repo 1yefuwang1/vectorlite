@@ -74,7 +74,8 @@ cmake --build build/release --target ops_benchmark -j8
 - `bindings/python/`, `bindings/nodejs/` — Packaging and integration tests for the compiled extension.
 - `benchmark/`, `examples/` — Python performance harness and usage examples.
 - `vcpkg/` and the root CMake configuration — Native dependency management and Cargo build/installation integration.
-- [docs/plans/](<docs/plans/README.md>) — Plan bundles under `<date>-<plan-slug>/`, each with `plan.md` and related design, research and results documents. Treat historical source paths, validation counts and benchmark results as records, not current build instructions.
+- [plan/](<plan/README.md>) — DiskANN plan bundles under `<date>-<plan-slug>/`, each with `plan.md` and related research/results documents.
+- [docs/plans/](<docs/plans/README.md>) — Other historical design and implementation plans. Treat recorded source paths, validation counts and benchmark results as historical evidence, not current build instructions.
 
 ## Key Dependencies
 

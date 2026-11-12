@@ -90,9 +90,9 @@ are not asserted to have identical durability guarantees.
 
 | Artifact | SHA-256 |
 |---|---|
-| [Upstream driver](<../../../build/upstream-diskann-20261112/final-r3/artifacts/upstream>) | `453ef1f60f3494db9ae31cec2f9e0ca3b5f90bb5457e20934e2e55bbac88ddc2` |
-| [SQLite native host](<../../../build/upstream-diskann-20261112/final-r3/artifacts/sqlite-host>) | `83bb6ff8e424fa3ff158ce45008a4f6b9e9b1c785d122ed17cd07ceee23dad12` |
-| [Vectorlite extension](<../../../build/upstream-diskann-20261112/final-r3/artifacts/vectorlite.dylib>) | `4499cc9d453009b1abc54c99c6f7aa6603ab6e672ff563de7a0520396f7f7e7e` |
+| [Upstream driver](<../../build/upstream-diskann-20261112/final-r3/artifacts/upstream>) | `453ef1f60f3494db9ae31cec2f9e0ca3b5f90bb5457e20934e2e55bbac88ddc2` |
+| [SQLite native host](<../../build/upstream-diskann-20261112/final-r3/artifacts/sqlite-host>) | `83bb6ff8e424fa3ff158ce45008a4f6b9e9b1c785d122ed17cd07ceee23dad12` |
+| [Vectorlite extension](<../../build/upstream-diskann-20261112/final-r3/artifacts/vectorlite.dylib>) | `4499cc9d453009b1abc54c99c6f7aa6603ab6e672ff563de7a0520396f7f7e7e` |
 
 The SQLite extension is byte-identical to the approved r5 optimization candidate
 used in the earlier [SQLite optimization measurements](<../2026-11-11-sqlite-native-diskann-optimizations/results.md>).
@@ -193,24 +193,24 @@ SSD-resident query latency, io_uring/IOCP behavior, cold-disk or beyond-RAM perf
 ## Reproducibility and evidence
 
 See the [plan](<plan.md>), [source-selection research](<research.md>), and
-[driver/build/run guide](<../../../benchmark/upstream_diskann/README.md>).
-The [standalone lockfile](<../../../benchmark/upstream_diskann/Cargo.lock>) is separate
+[driver/build/run guide](<../../benchmark/upstream_diskann/README.md>).
+The [standalone lockfile](<../../benchmark/upstream_diskann/Cargo.lock>) is separate
 from vectorlite's production dependency graph.
 
-- [Successful final build provenance](<../../../build/upstream-diskann-20261112/harness-r3/build-result.json>):
+- [Successful final build provenance](<../../build/upstream-diskann-20261112/harness-r3/build-result.json>):
   exact compiler identity, manifest/lock/source fingerprints, full archive-to-tree
   checks of all 1,410 regular upstream files before and after building, successful
   command return code and executable fingerprint.
-- [Final campaign raw results](<../../../build/upstream-diskann-20261112/final-r3/results.json>):
+- [Final campaign raw results](<../../build/upstream-diskann-20261112/final-r3/results.json>):
   per-process commands, logs, settings, fingerprints, build times and quality checks.
-- [Artifact-checked analysis summary](<../../../build/upstream-diskann-20261112/final-r3/analysis-summary.json>)
-  and [generated tables](<../../../build/upstream-diskann-20261112/final-r3/analysis-table.md>),
-  reproduced by the [summary utility](<../../../benchmark/summarize_upstream_diskann.py>).
-- [Final release regression log](<../../../.cache/upstream-comparison-final-release.log>)
-  and [strict standalone Clippy log](<../../../.cache/upstream-diskann-clippy-r3.log>).
-- [Retained interrupted campaign](<../../../build/upstream-diskann-20261112/final-r2/results.json>):
+- [Artifact-checked analysis summary](<../../build/upstream-diskann-20261112/final-r3/analysis-summary.json>)
+  and [generated tables](<../../build/upstream-diskann-20261112/final-r3/analysis-table.md>),
+  reproduced by the [summary utility](<../../benchmark/summarize_upstream_diskann.py>).
+- [Final release regression log](<../../.cache/upstream-comparison-final-release.log>)
+  and [strict standalone Clippy log](<../../.cache/upstream-diskann-clippy-r3.log>).
+- [Retained interrupted campaign](<../../build/upstream-diskann-20261112/final-r2/results.json>):
   two complete 128D workloads followed by the stopped 768D warm-up; not final timing data.
-- [768D correctness replay](<../../../build/upstream-diskann-20261112/reachability-replay-r3/results.json>):
+- [768D correctness replay](<../../build/upstream-diskann-20261112/reachability-replay-r3/results.json>):
   two full-size native-only runs validating the corrected completeness criterion;
   excluded from final timing statistics.
 

@@ -66,4 +66,4 @@ Test whether keeping Format 3 (`_diskann_nodes` co-locating `node_id, public_row
    - Node.js 22 (`node:sqlite` and `better-sqlite3`) test suites against the exact built `.dylib`.
    - Dedicated unit & SQL trigger tests covering trigger-present cache invalidation, partial `IN (...)` missing-node corruption, `max_visits` exact parity, and tight `cache_bytes` boundaries.
 3. One integrated review by an independent `github-copilot/gpt-6.1-sol` reviewer; fix all findings.
-4. Full matched untraced benchmark matrix (`5` workloads × `5` alternating AB/BA pairs + `2` selfchecks + warmups = `70` builds) + `6` supplemental WAL update/delete/consolidation runs, and honest repository report in `docs/plans/2026-11-11-sqlite-native-diskann-optimizations/`. No commit or push unless requested.
+4. Full matched untraced benchmark matrix (`5` workloads × `5` alternating AB/BA pairs + `2` selfchecks + warmups = `70` builds) + `6` supplemental WAL update/delete/consolidation runs, and honest repository report in `plan/2026-11-11-sqlite-native-diskann-optimizations/`. No commit or push unless requested.

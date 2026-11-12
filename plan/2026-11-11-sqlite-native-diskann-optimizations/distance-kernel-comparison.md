@@ -61,10 +61,10 @@ spread (for example 1536D aligned L2: paired D/H 0.569–1.555), reinforcing tha
 wins should not be overinterpreted. The complete matrix with observed ranges is
 included below, so the selected table does not hide other layouts or outcomes.
 
-Local evidence: [first campaign](<../../../build/kernel-comparison/native-r1.json>),
-[second campaign](<../../../build/kernel-comparison/native-r2.json>),
-[validated combined summary](<../../../build/kernel-comparison/native-summary.json>),
-and [generated full table](<../../../build/kernel-comparison/native-combined-table.md>).
+Local evidence: [first campaign](<../../build/kernel-comparison/native-r1.json>),
+[second campaign](<../../build/kernel-comparison/native-r2.json>),
+[validated combined summary](<../../build/kernel-comparison/native-summary.json>),
+and [generated full table](<../../build/kernel-comparison/native-combined-table.md>).
 
 ## Default-target control
 
@@ -85,8 +85,8 @@ campaigns. The key conclusion reproduced without `target-cpu=native`:
 | 768 | L2 squared | 4096 | 55.143 | 56.315 | 1.0248 |
 | 768 | Normalized cosine | 4096 | 51.846 | 52.265 | 1.0005 |
 
-Raw control: [default-r1.json](<../../../build/kernel-comparison/default-r1.json>),
-[full control table](<../../../build/kernel-comparison/default-table.md>).
+Raw control: [default-r1.json](<../../build/kernel-comparison/default-r1.json>),
+[full control table](<../../build/kernel-comparison/default-table.md>).
 Default executable SHA-256:
 `d3dfe19fe5798a94c50ff7b370a4aa571cbc2332a800ca0e54d46894c7b4135c`.
 The control adds 128 pairs / 256 samples: **1,024 measured pairs / 2,048 samples**
@@ -101,7 +101,7 @@ algorithms call vectorlite's Highway-backed distance adapter. The earlier
 compared two implementations that both used Highway; those results cannot prove
 Highway is faster than DiskANN's own distance kernels.
 
-The reproducible [Rust benchmark](<../../../benchmark/distance_kernels.rs>) compares:
+The reproducible [Rust benchmark](<../../benchmark/distance_kernels.rs>) compares:
 
 - **Highway:** the exact production `vl_ops_l2_sq_f32` and
   `vl_ops_ip_dist_f32` C ABI functions, built from the unmodified production native
@@ -134,7 +134,7 @@ enables both**, so its default build is not an emulated/scalar baseline. This
 must be checked rather than inferred from the CPU alone on other toolchains.
 
 Local compiler/hardware/source provenance is recorded in
-[provenance.json](<../../../build/kernel-comparison/provenance.json>).
+[provenance.json](<../../build/kernel-comparison/provenance.json>).
 
 ## Measurement method
 
@@ -229,18 +229,18 @@ benchmark logic. The rebuilt final executable's **entire 298,864-byte Mach-O
 (SHA-256 `fd2b3e8f35a0fd393eb8f14a82988b1da93b93e75f70f7d183d686e36bc0ef2b`).
 The executable file hash differs because linkage/metadata changed; it is not silently
 substituted for the frozen measured artifact. The exact
-[measured source snapshot](<../../../build/kernel-comparison/distance_kernels.measured.rs>)
-and [code identity evidence](<../../../build/kernel-comparison/final-code-identity.json>)
+[measured source snapshot](<../../build/kernel-comparison/distance_kernels.measured.rs>)
+and [code identity evidence](<../../build/kernel-comparison/final-code-identity.json>)
 are retained locally.
 
 ## Verification and delivery
 
 - Root `sh build_release.sh`: **28/28 CTests and 399/399 Python tests passed**
-  ([release log](<../../../build/kernel-comparison/release-validation.log>)).
+  ([release log](<../../build/kernel-comparison/release-validation.log>)).
 - Benchmark target strict Clippy (`-D warnings`, documented unsafe blocks and safety
   documentation lints): **passed**, after separating the link declarations.
   Existing native C++ unused-alias/parameter warnings remain; this is not a
-  warning-free C++ claim ([Clippy log](<../../../build/kernel-comparison/clippy.log>)).
+  warning-free C++ claim ([Clippy log](<../../build/kernel-comparison/clippy.log>)).
 - `cargo fmt --all --check`, `git diff --check`: passed.
 - Artifact-independent summary validation: **5/5 unit tests passed**.
 - Both full primary matrices and the control matched their intended Cartesian case
@@ -253,7 +253,7 @@ repository publication is a separate delivery step.
 
 ## Reproduction
 
-Configure native dependencies as documented in the [benchmark guide](<../../../benchmark/README.md>).
+Configure native dependencies as documented in the [benchmark guide](<../../benchmark/README.md>).
 Output JSON paths must be new:
 
 ```bash
@@ -279,7 +279,7 @@ python benchmark/summarize_distance_kernels.py \
   build/benchmarks/distance-kernels/default-r1.json
 ```
 
-The [summary utility](<../../../benchmark/summarize_distance_kernels.py>) validates report
+The [summary utility](<../../benchmark/summarize_distance_kernels.py>) validates report
 completion, case/input/API consistency, sample ordering, and derived statistics.
 The Rust producer enforces numerical tolerance per input; the Python utility does
 not independently recompute the vector oracle from aggregate error fields. Before

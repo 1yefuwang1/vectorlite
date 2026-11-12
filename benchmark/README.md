@@ -93,7 +93,7 @@ python benchmark/summarize_distance_kernels.py \
 python -m unittest discover -s benchmark -p test_distance_kernel_results.py
 ```
 
-[The recorded Apple M4 comparison](<../docs/plans/2026-11-11-sqlite-native-diskann-optimizations/distance-kernel-comparison.md>)
+[The recorded Apple M4 comparison](<../plan/2026-11-11-sqlite-native-diskann-optimizations/distance-kernel-comparison.md>)
 found **no general Highway advantage**: DiskANN's native provider was faster at
 smaller dimensions and mostly near parity at larger dimensions. Do not extrapolate
 the earlier SQLite-adapter speedups into an unmeasured kernel-speed claim.
@@ -111,7 +111,7 @@ The comparison is **not a storage-only overhead ratio**: native kernels, runtime
 lifetime, transactional guarantees, SSD PQ processing, roots and static pruning
 can differ. On macOS, the upstream saved-SSD reader loads the disk file into RAM;
 those searches validate quality, not SSD-resident query latency. See the
-[plan and source-selection notes](<../docs/plans/2026-11-12-upstream-diskann-build-comparison/plan.md>)
+[plan and source-selection notes](<../plan/2026-11-12-upstream-diskann-build-comparison/plan.md>)
 for timing boundaries and reproducibility constraints.
 
 ## Small shared-data HNSW / DiskANN comparison

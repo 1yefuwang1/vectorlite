@@ -18,25 +18,25 @@ Across **70 primary untraced native builds** (5 workloads × [2 baseline selfche
   - Window-100 read-only KNN `p50` latency improved across all five workloads (**1.30×–1.45×** faster).
 - **Bit-exact equivalence & Format-3 compatibility:** Every single run matched the baseline's **exact physical Format-3 graph SHA-256** (ordered records, edges, vectors, and metadata excluding random `instance_id`), **ordered top-10 labels**, **IEEE-754 float32 `distance_bits`**, and **float64-oracle `recall@10`**. Existing Format-3 databases remain 100% compatible with no migration required.
 
-Local evidence: [Final validated summary](<../../../build/benchmarks/sqlite-opt-20261111/final-summary-r5.json>) · [128D raw runs](<../../../build/benchmarks/sqlite-opt-20261111/final-r5-128/results.json>) · [768D raw runs](<../../../build/benchmarks/sqlite-opt-20261111/final-r5-768/results.json>) · [Supplemental WAL runs](<../../../build/benchmarks/sqlite-opt-20261111/supplemental-r5-wal/summary.json>).
+Local evidence: [Final validated summary](<../../build/benchmarks/sqlite-opt-20261111/final-summary-r5.json>) · [128D raw runs](<../../build/benchmarks/sqlite-opt-20261111/final-r5-128/results.json>) · [768D raw runs](<../../build/benchmarks/sqlite-opt-20261111/final-r5-768/results.json>) · [Supplemental WAL runs](<../../build/benchmarks/sqlite-opt-20261111/supplemental-r5-wal/summary.json>).
 
 ---
 
 ## What Changed (and What Was Deliberately Excluded)
 
-1. **Preserved Single-Table Format 3 Co-Location ([diskann_store.rs](<../../../vectorlite/src/diskann_store.rs>)):**
+1. **Preserved Single-Table Format 3 Co-Location ([diskann_store.rs](<../../vectorlite/src/diskann_store.rs>)):**
    - Kept `(node_id, public_rowid, state, vector, neighbors)` in one `_diskann_nodes` rowid B-tree so every `Identity`, `Vector`, and `Neighbors` read touches a single B-tree with zero `LEFT JOIN`s and preserves leaf-page spatial locality under SQLite's default 2 MiB page cache.
-2. **True Multi-Row `IN (?1..?K)` SQL Point Reads ([diskann_core.rs](<../../../vectorlite/src/diskann_core.rs>), [diskann_store.rs](<../../../vectorlite/src/diskann_store.rs>)):**
+2. **True Multi-Row `IN (?1..?K)` SQL Point Reads ([diskann_core.rs](<../../vectorlite/src/diskann_core.rs>), [diskann_store.rs](<../../vectorlite/src/diskann_store.rs>)):**
    - Added `GraphStore::with_vectors_batch` and batched neighbor identity checks (`validate_neighbor_identities`) using prepared `WHERE node_id IN (?1, ..., ?K)` plans for bucketed arities `4, 8, 16, 32`.
    - SQLite executes `IN (...)` on `INTEGER PRIMARY KEY` via an ephemeral sorted key list and sequential `SeekRowid` probes, amortizing VDBE startup/reset overhead by 4×–32× and traversing B-tree leaf pages in ascending `node_id` order while delivering `(neighbor, distance)` to DiskANN callbacks in exact original neighbor order.
    - Applied across unfiltered beam search (`Accessor::expand`), filtered beam search (`expand_beam_filtered`), and pruning (`PruneAccessor::fill_batch`).
-3. **Single-`CASE` Guarded BLOB Projection & Synchronous Borrowed SIMD ([sqlite.rs](<../../../vectorlite/src/sqlite.rs>), [diskann_store.rs](<../../../vectorlite/src/diskann_store.rs>)):**
+3. **Single-`CASE` Guarded BLOB Projection & Synchronous Borrowed SIMD ([sqlite.rs](<../../vectorlite/src/sqlite.rs>), [diskann_store.rs](<../../vectorlite/src/diskann_store.rs>)):**
    - Replaced the two-`CASE` BLOB projection (`28` VDBE opcodes) on hot node reads with `single_blob_projection` (`CASE WHEN typeof(c)='blob' AND length(c)=N THEN c ELSE NULL END`, `22` opcodes), still preventing SQLite's `Column` opcode from materializing oversized corrupt BLOBs.
    - Added `Statement::with_column_blob` with exclusive `&mut Statement` borrow and checked `bytemuck::try_cast_slice` so aligned little-endian SQLite page payloads feed directly into Highway `l2_sq_f32` / `ip_dist_f32` without intermediate heap copies, staging pure math outcomes until SQL cleanup finishes so raw SQLite/cleanup errors always win.
-4. **Sequential-Exact Inline `DistanceCache` Simulation & `RecentNeighbors` ([diskann_core.rs](<../../../vectorlite/src/diskann_core.rs>)):**
+4. **Sequential-Exact Inline `DistanceCache` Simulation & `RecentNeighbors` ([diskann_core.rs](<../../vectorlite/src/diskann_core.rs>)):**
    - Replaced per-search `HashMap<u64, OwnedVector>` with an inline 31-entry `DistanceCache`, using `sim_cache` simulation during batched expansion so hit/miss visit charging, clear-on-full boundaries, and post-batch cache state match sequential scalar `distance()` 1-for-1.
    - Added `RecentNeighbors` so `PruneAccessor::get_neighbors` preserves raw storage order for an immediately consecutive `append_vector` (cleared on `fill`, `set_neighbors`, or any `mutation_stamp` change), eliminating duplicate adjacency reads during backedge appends.
-5. **Budget-Metered `IdentityCache` Upgrade & Plan Admission ([identity_cache.rs](<../../../vectorlite/src/diskann_store/identity_cache.rs>), [diskann_store.rs](<../../../vectorlite/src/diskann_store.rs>)):**
+5. **Budget-Metered `IdentityCache` Upgrade & Plan Admission ([identity_cache.rs](<../../vectorlite/src/diskann_store/identity_cache.rs>), [diskann_store.rs](<../../vectorlite/src/diskann_store.rs>)):**
    - Kept the inline 256-entry `IdentityCache` unchanged for tight `cache_bytes` budgets (`24,576` / `32,768` byte admission boundaries preserved), upgrading to a 16,384-entry (`4096 × 4`) table and metering optional `IN (...)` plans via `SQLITE_STMTSTATUS_MEMUSED` (with scalar fallback) only out of surplus `cache_bytes` *after* reserving full `worst_case_core_bytes` (including effective query beam `max(search_l, k)`).
 6. **Why Store-Level Vector/Adjacency Caching Was Excluded (Review Finding `B1`):**
    - During integrated review, adversarial testing proved that SQLite permits reentrant host trace/progress callbacks to mutate shadow BLOBs mid-operation—even during a `SELECT` read statement—via `sqlite3_blob_open` / `sqlite3_blob_write` without incrementing `sqlite3_total_changes64`.

@@ -2,7 +2,7 @@
 
 This standalone driver uses the **unmodified upstream Rust DiskANN 0.60.0** memory
 provider and full SSD-format build pipeline. It is not part of vectorlite's Cargo
-workspace or production extension. The [comparison plan](<../../docs/plans/2026-11-12-upstream-diskann-build-comparison/plan.md>)
+workspace or production extension. The [comparison plan](<../../plan/2026-11-12-upstream-diskann-build-comparison/plan.md>)
 records scope and interpretation limits.
 
 ## Build
