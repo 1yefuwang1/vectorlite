@@ -1,11 +1,14 @@
 # SQLite-Native DiskANN Optimization & Ablation Plan
 
+Supporting documents: [implementation and benchmark results](<results.md>),
+[follow-up distance-kernel comparison](<distance-kernel-comparison.md>).
+
 Date: 2026-11-11
 Status: Active execution (approved staged implementation → integrated GPT-6.1 Sol review → matched benchmark).
 
 ## Motivation and Baseline
 
-The earlier [Format-4 Garnet bundle](2026-11-10-garnet-provider-optimization-results.md) regressed build times by 17–35% across all five workloads because splitting `(state, public_rowid)` into `_diskann_nodes` and `(vector)` into `_diskann_vectors` turned every `Identity`, `Vector`, and `Neighbors` read (~15.1M calls per 3k build) into a two-B-tree `LEFT JOIN`:
+The earlier [Format-4 Garnet bundle](<../2026-11-10-garnet-provider-optimizations/results.md>) regressed build times by 17–35% across all five workloads because splitting `(state, public_rowid)` into `_diskann_nodes` and `(vector)` into `_diskann_vectors` turned every `Identity`, `Vector`, and `Neighbors` read (~15.1M calls per 3k build) into a two-B-tree `LEFT JOIN`:
 - SQLite VDBE steps jumped **+43.79%** (`228.9M → 329.1M`).
 - Under SQLite's default 2 MiB page cache (`PRAGMA cache_size = -2000`), 10k×128D file builds suffered **+84.6% more pager `CACHE_MISS`es** (`22.33M → 41.21M` `pread` misses), overwhelming the 3× reduction in `CACHE_WRITE`s (`154.9k → 54.7k`).
 - Meanwhile, the 256-entry `IdentityCache` and prune pool were wiped on every `SetNeighbors` write (`83,591` times per 3k build), leaving ~62+ MiB of the default 64 MiB `cache_bytes` workspace completely idle while SQLite's 2 MiB page cache thrashed.
@@ -63,4 +66,4 @@ Test whether keeping Format 3 (`_diskann_nodes` co-locating `node_id, public_row
    - Node.js 22 (`node:sqlite` and `better-sqlite3`) test suites against the exact built `.dylib`.
    - Dedicated unit & SQL trigger tests covering trigger-present cache invalidation, partial `IN (...)` missing-node corruption, `max_visits` exact parity, and tight `cache_bytes` boundaries.
 3. One integrated review by an independent `github-copilot/gpt-6.1-sol` reviewer; fix all findings.
-4. Full matched untraced benchmark matrix (`5` workloads × `5` alternating AB/BA pairs + `2` selfchecks + warmups = `70` builds) + `6` supplemental WAL update/delete/consolidation runs, and honest repository report in `docs/`. No commit or push unless requested.
+4. Full matched untraced benchmark matrix (`5` workloads × `5` alternating AB/BA pairs + `2` selfchecks + warmups = `70` builds) + `6` supplemental WAL update/delete/consolidation runs, and honest repository report in `docs/plans/2026-11-11-sqlite-native-diskann-optimizations/`. No commit or push unless requested.

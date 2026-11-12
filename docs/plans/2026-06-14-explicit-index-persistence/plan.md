@@ -1,5 +1,7 @@
 # Explicit Index Persistence Implementation Plan
 
+Supporting document: [design](<design.md>).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the schema-baked index file path with explicit, user-driven persistence via `INSERT INTO <table>(operation, path) VALUES('save'|'load', '<path>')`.

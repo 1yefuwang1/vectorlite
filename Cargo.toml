@@ -15,6 +15,11 @@ crate-type = ["cdylib"]
 name = "build_support"
 path = "vectorlite/tests/build_support.rs"
 
+[[bench]]
+name = "distance_kernels"
+path = "benchmark/distance_kernels.rs"
+harness = false
+
 [dependencies]
 bytemuck = { version = "1", default-features = false, features = ["derive"] }
 # Keep the pre-1.0 graph/provider contracts behind our private SQLite adapter.

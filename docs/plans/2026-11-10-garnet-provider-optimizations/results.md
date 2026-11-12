@@ -6,25 +6,25 @@
 
 All **70 final native builds** passed strict canonical graph/vector/counter equality, ordered labels, float32 distance-bit and recall checks, plus within-format raw repeatability. This preserves quality; it does not turn a performance regression into a successful optimization. **Do not merge this format-4 bundle for the purpose of speeding up builds.**
 
-[Final validated summary](<../build/benchmarks/garnet-20261110/final-summary-r3.json>) · [128D raw evidence](<../build/benchmarks/garnet-20261110/matched-r3-128/results.json>) · [768D raw evidence](<../build/benchmarks/garnet-20261110/matched-r3-768/results.json>)
+[Final validated summary](<../../../build/benchmarks/garnet-20261110/final-summary-r3.json>) · [128D raw evidence](<../../../build/benchmarks/garnet-20261110/matched-r3-128/results.json>) · [768D raw evidence](<../../../build/benchmarks/garnet-20261110/matched-r3-768/results.json>)
 
 ## Implementation and review
 
-The [approved plan](<2026-11-10-garnet-provider-optimizations.md>) applies separate graph/vector records, fixed-capacity ordered adjacency, safe borrowed-row distances, bounded coherent pruning/buffer reuse, lazy owned-batch seeds, and removal of the duplicate append adjacency read.
+The [approved plan](<plan.md>) applies separate graph/vector records, fixed-capacity ordered adjacency, safe borrowed-row distances, bounded coherent pruning/buffer reuse, lazy owned-batch seeds, and removal of the duplicate append adjacency read.
 
 Storage is deliberately **format 4**, with no automatic migration from format 3. Public SQL and native batch interfaces remain unchanged. Graph settings, numeric kernels/normalization, retained-topology deletion, host connection/thread, whole-INSERT rollback and vendored error/task cleanup are preserved.
 
-Coding was completed before integrated review by one continuing independent GPT-6.1 Sol reviewer, rather than task-by-task review gates. Its initial blockers—current-fill visibility of internally retained vectors, and reclamation of an old empty requested header—were reproduced before correction and covered by regressions. The same reviewer [approved the corrected integration](<../build/benchmarks/garnet-20261110/integrated-review-r2.md>) before the first performance comparison.
+Coding was completed before integrated review by one continuing independent GPT-6.1 Sol reviewer, rather than task-by-task review gates. Its initial blockers—current-fill visibility of internally retained vectors, and reclamation of an old empty requested header—were reproduced before correction and covered by regressions. The same reviewer [approved the corrected integration](<../../../build/benchmarks/garnet-20261110/integrated-review-r2.md>) before the first performance comparison.
 
-After an initial negative timing campaign, a bounded allocation-growth correction was implemented and [reviewed by the same reviewer](<../build/benchmarks/garnet-20261110/integrated-review-r3.md>) before fresh final measurements. No correctness or performance finding was hidden by switching to the older pre-identity-cache baseline, reducing graph work, raising budgets or dropping validation.
+After an initial negative timing campaign, a bounded allocation-growth correction was implemented and [reviewed by the same reviewer](<../../../build/benchmarks/garnet-20261110/integrated-review-r3.md>) before fresh final measurements. No correctness or performance finding was hidden by switching to the older pre-identity-cache baseline, reducing graph work, raising budgets or dropping validation.
 
 ### Final correctness evidence
 
-- [Full manifest](<../build/benchmarks/garnet-20261110/coding-validation/integrated-9_sqmeuy/result.json>): **151 main Rust tests, 28 CTests, 509 Python tests**, strict workspace/all-target Clippy and unsafe-documentation lints, fmt, 17 additional streamed helper tests and diff checks; all commands exit 0 with stable source hashes. Existing native C++ dependency warnings remain; this is not a warning-free C++ claim.
-- [Regression-before evidence](<../build/benchmarks/garnet-20261110/coding-validation/review-regressions-7315wmo4/results.json>) and [after evidence](<../build/benchmarks/garnet-20261110/coding-validation/review-regressions-pass-dr3xdk7w/results.json>): all four integrated regressions fail before fixes and pass afterward. The >750-record case compares every ordered identity/vector/edge against a no-retention reference and demonstrates the prior graph divergence.
-- [Pool-growth before](<../build/benchmarks/garnet-20261110/coding-validation/pool-growth-before-nw4udzu0/results.json>) and [after](<../build/benchmarks/garnet-20261110/coding-validation/pool-growth-pass-fgp5731_/results.json>): growth-shape regression and pressure fallback pass, with all 42 core tests passing.
-- [Final Node evidence](<../build/benchmarks/garnet-20261110/coding-validation/node-pool-final-h5k3l3pl/results.json>): both CI Node 22 drivers and platform/notices checks pass against identical final library bytes.
-- [Final SQLite 3.38.5 evidence](<../build/benchmarks/garnet-20261110/coding-validation/sqlite338-pool-final-20261110-2340/result.json>): 38 native checks pass; identity/vector/neighbor plans use two integer-primary-key seeks each with no population scan.
+- [Full manifest](<../../../build/benchmarks/garnet-20261110/coding-validation/integrated-9_sqmeuy/result.json>): **151 main Rust tests, 28 CTests, 509 Python tests**, strict workspace/all-target Clippy and unsafe-documentation lints, fmt, 17 additional streamed helper tests and diff checks; all commands exit 0 with stable source hashes. Existing native C++ dependency warnings remain; this is not a warning-free C++ claim.
+- [Regression-before evidence](<../../../build/benchmarks/garnet-20261110/coding-validation/review-regressions-7315wmo4/results.json>) and [after evidence](<../../../build/benchmarks/garnet-20261110/coding-validation/review-regressions-pass-dr3xdk7w/results.json>): all four integrated regressions fail before fixes and pass afterward. The >750-record case compares every ordered identity/vector/edge against a no-retention reference and demonstrates the prior graph divergence.
+- [Pool-growth before](<../../../build/benchmarks/garnet-20261110/coding-validation/pool-growth-before-nw4udzu0/results.json>) and [after](<../../../build/benchmarks/garnet-20261110/coding-validation/pool-growth-pass-fgp5731_/results.json>): growth-shape regression and pressure fallback pass, with all 42 core tests passing.
+- [Final Node evidence](<../../../build/benchmarks/garnet-20261110/coding-validation/node-pool-final-h5k3l3pl/results.json>): both CI Node 22 drivers and platform/notices checks pass against identical final library bytes.
+- [Final SQLite 3.38.5 evidence](<../../../build/benchmarks/garnet-20261110/coding-validation/sqlite338-pool-final-20261110-2340/result.json>): 38 native checks pass; identity/vector/neighbor plans use two integer-primary-key seeks each with no population scan.
 
 ## Frozen artifacts and host
 
@@ -35,13 +35,13 @@ After an initial negative timing campaign, a bounded allocation-growth correctio
 | Final reviewed candidate r3 | `3ec0dc6a3aa7517bff8f8b9a9ec1c69586b1e6716213440e5ef029f442074bff` |
 | Shared native host | `83bb6ff8e424fa3ff158ce45008a4f6b9e9b1c785d122ed17cd07ceee23dad12` |
 
-See [baseline provenance](<../build/benchmarks/garnet-20261110/baseline/context.json>), [initial candidate provenance](<../build/benchmarks/garnet-20261110/candidate-r2/context.json>) and [final candidate/host provenance](<../build/benchmarks/garnet-20261110/candidate-r3/context.json>). The baseline is the current code at `4a657792f5e343cd22b659cf183744de5edc3718`, **not** the slower pre-identity-cache implementation.
+See [baseline provenance](<../../../build/benchmarks/garnet-20261110/baseline/context.json>), [initial candidate provenance](<../../../build/benchmarks/garnet-20261110/candidate-r2/context.json>) and [final candidate/host provenance](<../../../build/benchmarks/garnet-20261110/candidate-r3/context.json>). The baseline is the current code at `4a657792f5e343cd22b659cf183744de5edc3718`, **not** the slower pre-identity-cache implementation.
 
-Execution: local macOS 27 arm64, **Apple M4, 10 logical CPUs, 16 GiB RAM** ([hardware provenance](<../build/benchmarks/garnet-20261110/hardware-r3.json>)). Native timing host SQLite is **3.51.2**; Python verifier/supplemental host SQLite is **3.50.4**. Project venv: Python **3.14.2**, NumPy **2.4.4**. Official-target execution beyond this host remains CI-dependent.
+Execution: local macOS 27 arm64, **Apple M4, 10 logical CPUs, 16 GiB RAM** ([hardware provenance](<../../../build/benchmarks/garnet-20261110/hardware-r3.json>)). Native timing host SQLite is **3.51.2**; Python verifier/supplemental host SQLite is **3.50.4**. Project venv: Python **3.14.2**, NumPy **2.4.4**. Official-target execution beyond this host remains CI-dependent.
 
 ## Matched measurement protocol
 
-The existing [matched runner](<../benchmark/diskann_identity_benchmark.py>) uses one [native host](<../benchmark/diskann_batch_benchmark.c>) loading each frozen library. Inputs, settings, process timeout and query work are identical within each workload. Measurements are **untraced** and use project-venv Python.
+The existing [matched runner](<../../../benchmark/diskann_identity_benchmark.py>) uses one [native host](<../../../benchmark/diskann_batch_benchmark.c>) loading each frozen library. Inputs, settings, process timeout and query work are identical within each workload. Measurements are **untraced** and use project-venv Python.
 
 Settings: degree 32, build list 100, search list 64, alpha float32 1.2, adapter cache 64 MiB, max visits 65,536, seed 42, k=10 and query windows 10/50/100. Native chunk size remains 8; ordinary insertion is a separate workload. The process timeout is 600 seconds for both variants. No ANN or resource setting was changed to manufacture an improvement.
 
@@ -101,7 +101,7 @@ Original file databases matched their backups logically. Median original file si
 
 ## Initial r2 negative campaign, retained
 
-The first campaign was intentionally stopped under the >5% regression rule. [Raw partial results](<../build/benchmarks/garnet-20261110/matched-128/results.json>) remain unchanged; the [cancellation record](<../build/benchmarks/garnet-20261110/matched-128/cancellation.json>) explains the interrupted `running` status and preserves 40 validated completed builds and one queued, unstarted run. No correctness gate failed. The primary 10k case and 768D case had not started then.
+The first campaign was intentionally stopped under the >5% regression rule. [Raw partial results](<../../../build/benchmarks/garnet-20261110/matched-128/results.json>) remain unchanged; the [cancellation record](<../../../build/benchmarks/garnet-20261110/matched-128/cancellation.json>) explains the interrupted `running` status and preserves 40 validated completed builds and one queued, unstarted run. No correctness gate failed. The primary 10k case and 768D case had not started then.
 
 | Workload, 3k×128D in memory | Measured pairs | Baseline median s | r2 median s | More time |
 |---|---:|---:|---:|---:|
@@ -113,7 +113,7 @@ A functional probe then found 750 capacity-growth events for 750 retained pool s
 
 ## Separate instrumented SQL diagnostics (frozen r2)
 
-[Diagnostic analysis](<../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/analysis.md>) and [counter data](<../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/comparison.instrumented.json>) use a separate traced host on the same baseline/r2 libraries and 3k×128D L2 batch8 inputs. They are **not untraced performance measurements** and are not mixed into build ratios.
+[Diagnostic analysis](<../../../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/analysis.md>) and [counter data](<../../../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/comparison.instrumented.json>) use a separate traced host on the same baseline/r2 libraries and 3k×128D L2 batch8 inputs. They are **not untraced performance measurements** and are not mixed into build ratios.
 
 | Inner SQL category | Baseline executions | r2 executions | Baseline VM steps/execution | r2 VM steps/execution |
 |---|---:|---:|---:|---:|
@@ -127,7 +127,7 @@ This demonstrates substantial added SQL bytecode work independent of pool growth
 
 ## Supplemental WAL update/delete/consolidation measurements
 
-[Raw evidence](<../build/benchmarks/garnet-20261110/supplemental-r3-wal/results.json>) · [Validated summary](<../build/benchmarks/garnet-20261110/supplemental-r3-wal/summary.json>)
+[Raw evidence](<../../../build/benchmarks/garnet-20261110/supplemental-r3-wal/results.json>) · [Validated summary](<../../../build/benchmarks/garnet-20261110/supplemental-r3-wal/summary.json>)
 
 These six runs occurred **after the full primary matrix ended**, in three alternating baseline/candidate pairs using the existing reviewed streamed subprocess workers. This is a separate workload: **1,000×128D signed seeded float32 L2**, ordinary INSERTs in transactions of up to 128, **16 UPDATEs, 16 DELETEs, then one consolidation**. Degree/build list/alpha/adapter budget/max visits stay 32/100/1.2/64 MiB/65,536, but the host is Python SQLite **3.50.4**, pager cache **8 MiB**, mmap 0, journal **WAL**, search list 64, and 16 queries. Do not mix these timings with the native matrix.
 

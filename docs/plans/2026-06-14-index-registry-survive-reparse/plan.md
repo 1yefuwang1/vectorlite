@@ -1,5 +1,7 @@
 # Connection-Scoped Index Registry Implementation Plan
 
+Supporting document: [design](<design.md>).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make a vectorlite table's in-memory HNSW index survive SQLite schema reparses (VACUUM, ALTER, foreign DDL) within a connection, instead of being silently wiped.
@@ -13,7 +15,7 @@
 ## Background the engineer needs
 
 - Core files: `vectorlite/virtual_table.h`, `vectorlite/virtual_table.cpp`, `vectorlite/vectorlite.cpp` (module registration). New files: `vectorlite/index_registry.h`, `vectorlite/index_registry.cpp`, `vectorlite/index_registry_test.cpp`.
-- The design spec is `docs/superpowers/specs/2026-06-14-index-registry-survive-reparse-design.md`. Read it if any step is unclear.
+- The design spec is [design.md](<design.md>). Read it if any step is unclear.
 - Build + test from repo root: `sh build.sh` (configures `build/dev`, builds, runs `ctest`, runs pytest). To iterate: `cmake --build build/dev -j8`.
 - **Python tests require the repo venv:** `cd /Volumes/external/vectorlite && . .venv/bin/activate` before running `pytest` (apsw/numpy/pytest live there; system python lacks them). The build's POST_BUILD step copies the freshly built `vectorlite` dylib into `bindings/python/vectorlite_py/`, so pytest always uses the latest build.
 - C++ unit tests: `ctest --test-dir build/dev/vectorlite --output-on-failure`. The `unit_test` target is built from `file(GLOB *.cpp)` in `vectorlite/CMakeLists.txt`, so new `*.cpp`/`*_test.cpp` files are picked up automatically. The **shared library** target lists its sources explicitly and must be edited to add `index_registry.cpp`.

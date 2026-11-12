@@ -1,5 +1,7 @@
 # Comprehensive Python Integration Regression Suite Implementation Plan
 
+Supporting document: [design](<design.md>).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a comprehensive, behavior-characterizing Python integration test suite that locks down vectorlite's observable SQL behavior so future changes cannot silently regress it.

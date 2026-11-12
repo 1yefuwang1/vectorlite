@@ -1,5 +1,7 @@
 # Garnet-inspired DiskANN optimizations — revised execution order
 
+Supporting documents: [research](<research.md>), [results and post-mortem](<results.md>).
+
 Plan version: v4. User-approved through plan review on 2026-11-10. The technical design was approved by one independent GPT-6.1 Sol reviewer in v3. This revision implements the user's requested process: **implement all coding tasks and tests → one integrated GPT-6.1 review → benchmark**. There are no task-by-task review gates.
 
 ## Original requests and decisions
@@ -14,7 +16,7 @@ Plan version: v4. User-approved through plan review on 2026-11-10. The technical
 
 ## Objective and baseline
 
-Apply the optimizations from the [Garnet investigation](<superpowers/research/2026-11-09-garnet-diskann-storage.md>) without changing recall, graph decisions or SQLite transactional guarantees.
+Apply the optimizations from the [Garnet investigation](<research.md>) without changing recall, graph decisions or SQLite transactional guarantees.
 
 The repository was clean at `4a657792f5e343cd22b659cf183744de5edc3718` at approval. Preserve/fingerprint a release library from this baseline before changing extension code, but do not run performance comparisons until integrated review. It includes the existing identity cache. Historical medians were 8.42 seconds for 3,000×128D in-memory batch insertion and 53.71 seconds for 10,000×128D file-backed insertion; these are not fresh measurements.
 
@@ -32,7 +34,7 @@ The repository was clean at `4a657792f5e343cd22b659cf183744de5edc3718` at approv
 
 ### C1. Format-4 storage and lifecycle
 
-Primary areas: [SQLite store](<../vectorlite/src/diskann_store.rs>), [virtual table](<../vectorlite/src/virtual_table.rs>), [SQL tests](<../vectorlite/tests/test_diskann.py>), [native tests](<../vectorlite/tests/diskann_batch_native.c>), and Node tests.
+Primary areas: [SQLite store](<../../../vectorlite/src/diskann_store.rs>), [virtual table](<../../../vectorlite/src/virtual_table.rs>), [SQL tests](<../../../vectorlite/tests/test_diskann.py>), [native tests](<../../../vectorlite/tests/diskann_batch_native.c>), and Node tests.
 
 Split storage into five shadows:
 
@@ -50,7 +52,7 @@ Allocate payload first, graph row second and metadata last, checking every affec
 
 Consolidation audits both paired-ID directions and counters **even without tombstones**. The revision-only branch invalidates its metadata write and performs final pairing/count/root checks. The rebuild branch stages checked canonical bytes without renormalization, retires mappings, clears topology using fixed zero records, rebuilds fresh pairs, compares rebuilt payloads with staging, verifies topology, deletes retired payloads before retired graph rows, clears staging and publishes counters/revision. Final pairing/count/root checks run after the last mutation. Never silently clean orphan payloads.
 
-Update create/validate/drop/rename/reparse, shadow recognition, collision handling, five-table snapshots, backup/readonly/WAL/crash cases, corruption injection and empty-adjacency trigger predicates. Update both Node drivers and the [storage benchmark](<../benchmark/diskann_benchmark.py>) fixture/streamed oracle.
+Update create/validate/drop/rename/reparse, shadow recognition, collision handling, five-table snapshots, backup/readonly/WAL/crash cases, corruption injection and empty-adjacency trigger predicates. Update both Node drivers and the [storage benchmark](<../../../benchmark/diskann_benchmark.py>) fixture/streamed oracle.
 
 ### C2. Shared coherence and resource accounting
 
@@ -60,7 +62,7 @@ Charge both qualified names, cached statements, fixed records, stamps, leases, r
 
 ### C3. Borrowed-row distance and ordered provider access
 
-Areas: [core adapter](<../vectorlite/src/diskann_core.rs>), [SQLite wrapper](<../vectorlite/src/sqlite.rs>), store and tests.
+Areas: [core adapter](<../../../vectorlite/src/diskann_core.rs>), [SQLite wrapper](<../../../vectorlite/src/sqlite.rs>), store and tests.
 
 Add a narrow synchronous BLOB lease callback. Validate identity/type/length/finite payload before use. Checked aligned little-endian data feeds the existing SIMD kernel directly; unaligned/non-little-endian data uses a charged reusable aligned decode buffer. No pointer/slice escapes its lease; no callback reenters SQL/store access or yields.
 
@@ -101,7 +103,7 @@ Consume a matching snapshot for append, preserving the old prefix and existing d
 
 ### C6. Tests, benchmark support and documentation
 
-Extend the existing [A/B runner](<../benchmark/diskann_identity_benchmark.py>), [native benchmark](<../benchmark/diskann_batch_benchmark.c>) and [helper tests](<../vectorlite/tests/test_identity_benchmark.py>) during coding, but do not run timing comparisons yet:
+Extend the existing [A/B runner](<../../../benchmark/diskann_identity_benchmark.py>), [native benchmark](<../../../benchmark/diskann_batch_benchmark.c>) and [helper tests](<../../../vectorlite/tests/test_identity_benchmark.py>) during coding, but do not run timing comparisons yet:
 
 - Configurable dimensions and ordered float32 distance-bit output.
 - Explicit baseline/candidate versions and independent physical schema/descriptor/codec validation.
@@ -113,9 +115,9 @@ Required regressions include paired-record failures throughout lifecycle/selecti
 
 Explicitly test finite values causing distance overflow followed by injected SQL cleanup failure: cleanup wins without cache/callback publication. Successful cleanup exposes the math error; earlier raw-validation errors retain priority.
 
-Use the project venv and configure CMake's Python executable explicitly. Run the root [release build script](<../build_release.sh>) covering CTest and both Python suites, rustfmt check, strict Clippy, ABI checks, native tests on SQLite 3.38.5, helper tests and both Node drivers against the same freshly built artifact. Preserve HNSW/package checks and official-platform CI; report unexecuted platforms honestly.
+Use the project venv and configure CMake's Python executable explicitly. Run the root [release build script](<../../../build_release.sh>) covering CTest and both Python suites, rustfmt check, strict Clippy, ABI checks, native tests on SQLite 3.38.5, helper tests and both Node drivers against the same freshly built artifact. Preserve HNSW/package checks and official-platform CI; report unexecuted platforms honestly.
 
-Update [current DiskANN documentation](<../doc/diskann.md>) for format 4, compatibility and memory/cache behavior. Leave historical research/plans historical.
+Update [current DiskANN documentation](<../../../doc/diskann.md>) for format 4, compatibility and memory/cache behavior. Leave historical research/plans historical.
 
 ## Phase 2 — One integrated review
 
@@ -145,32 +147,32 @@ If the target is missed, report that plainly. Do not change ANN settings, increa
 | Item | Status | Evidence |
 |---|---|---|
 | Save approved plan | completed | This repository file |
-| Preserve unchanged baseline | completed | [Provenance](<../build/benchmarks/garnet-20261110/baseline/context.json>); SHA-256 `e855093b8a45b78c066ac00e3516d4fe75deef3d12a8c5b8289bb19f652f76a2`; captured before extension source changes |
+| Preserve unchanged baseline | completed | [Provenance](<../../../build/benchmarks/garnet-20261110/baseline/context.json>); SHA-256 `e855093b8a45b78c066ac00e3516d4fe75deef3d12a8c5b8289bb19f652f76a2`; captured before extension source changes |
 | C1 — Format-4 storage/lifecycle | completed | Full release/native/SQL validation passed |
 | C2 — Coherence/resource accounting | completed | Explicit charge/stamp/retention-pressure regressions passed |
 | C3 — Borrowed-row/ordered access | completed | Staged-math/cleanup precedence and scalar charge traces passed |
 | C4 — Prune/owned-batch reuse | completed | Both integrated corrections implemented; retained-only IDs hidden and old empty request capacity reclaimed |
 | C5 — Append snapshot | completed | Unsorted-prefix, fast-path read-count and fallback tests passed |
 | C6 — Tests/harness/docs | completed | Regression-first failures/fixes; final 151 Rust/28 CTests/509 Python, strict checks and same-artifact Node/minSQLite passed |
-| Integrated GPT-6.1 review | completed | [r3: APPROVED](<../build/benchmarks/garnet-20261110/integrated-review-r3.md>), 151 Rust/28 CTests/509 Python plus exact-artifact Node/minSQLite reruns |
-| Matched benchmarks/report | completed | [Final report](<2026-11-10-garnet-provider-optimization-results.md>); 70 strict-gate native builds + 6 isolated WAL mutation runs, quality unchanged; primary speed target MISSED |
+| Integrated GPT-6.1 review | completed | [r3: APPROVED](<../../../build/benchmarks/garnet-20261110/integrated-review-r3.md>), 151 Rust/28 CTests/509 Python plus exact-artifact Node/minSQLite reruns |
+| Matched benchmarks/report | completed | [Final report](<results.md>); 70 strict-gate native builds + 6 isolated WAL mutation runs, quality unchanged; primary speed target MISSED |
 
 ### Final handoff outcome
 
 All coding and verification completed before the continuing single reviewer's integration approvals; no task-by-task review gates were imposed. The initial negative campaign was retained, an optional pool growth correction was verified/reviewed, and the final frozen r3 library completed all five workloads with five matched pairs each. The 1.5× primary target was missed: 49.011265 s baseline → 66.059756 s candidate (0.7425× median paired ratio, +34.78% median time). Every final build case regressed by 17–35%; do not merge this bundle as a build-speed improvement. Recall/ordered graph/vector/distance equivalence passed throughout.
 
-- [Final coding manifest](<../build/benchmarks/garnet-20261110/coding-validation/integrated-9_sqmeuy/result.json>), [r3 review](<../build/benchmarks/garnet-20261110/integrated-review-r3.md>), [r3 Node](<../build/benchmarks/garnet-20261110/coding-validation/node-pool-final-h5k3l3pl/results.json>) and [r3 SQLite 3.38.5](<../build/benchmarks/garnet-20261110/coding-validation/sqlite338-pool-final-20261110-2340/result.json>).
-- [Final native summary](<../build/benchmarks/garnet-20261110/final-summary-r3.json>): 70 validated builds, 50 measured/10 baseline selfchecks/10 warmups; no ANN or budget changes.
-- [Supplemental WAL evidence](<../build/benchmarks/garnet-20261110/supplemental-r3-wal/summary.json>): 3 alternating pairs, matching canonical before/after mutation graphs and ordered query results; separate host/pager/dataset/journal protocol.
-- [Frozen r2 SQL diagnostics](<../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/analysis.md>): inner statement counts −1.26%, VM steps +43.79%, with substantial paired-key identity-read overhead; instrumented evidence is not mixed with untraced timing.
+- [Final coding manifest](<../../../build/benchmarks/garnet-20261110/coding-validation/integrated-9_sqmeuy/result.json>), [r3 review](<../../../build/benchmarks/garnet-20261110/integrated-review-r3.md>), [r3 Node](<../../../build/benchmarks/garnet-20261110/coding-validation/node-pool-final-h5k3l3pl/results.json>) and [r3 SQLite 3.38.5](<../../../build/benchmarks/garnet-20261110/coding-validation/sqlite338-pool-final-20261110-2340/result.json>).
+- [Final native summary](<../../../build/benchmarks/garnet-20261110/final-summary-r3.json>): 70 validated builds, 50 measured/10 baseline selfchecks/10 warmups; no ANN or budget changes.
+- [Supplemental WAL evidence](<../../../build/benchmarks/garnet-20261110/supplemental-r3-wal/summary.json>): 3 alternating pairs, matching canonical before/after mutation graphs and ordered query results; separate host/pager/dataset/journal protocol.
+- [Frozen r2 SQL diagnostics](<../../../build/benchmarks/garnet-20261110/diagnostic-sql-profile-20261110-2330/analysis.md>): inner statement counts −1.26%, VM steps +43.79%, with substantial paired-key identity-read overhead; instrumented evidence is not mixed with untraced timing.
 
 Code/plan/report remain uncommitted and unpushed. Format 4 deliberately breaks stored-format compatibility and does not migrate old user indexes. The original task allowed an honestly reported missed target; no benchmark quality requirement was relaxed.
 
 ### Historical coding verification evidence (before initial integrated review)
 
-- [Full verification manifest](<../build/benchmarks/garnet-20261110/coding-validation/integrated-l4m1n7_h/result.json>): all commands exit 0; source fingerprints identical before/after; root release build, 28 CTests, 509 Python tests, fmt, strict workspace/all-target Clippy and 17 additional benchmark-helper tests. CTest includes 145 main Rust tests, five build-support tests and SQLite ABI checks. Native C++ dependency warnings remain; this is not a warning-free C++ claim.
-- [Final Node evidence](<../build/benchmarks/garnet-20261110/coding-validation/node-final-o16kn5n2/results.json>): Node 22.23.4, both built-in and better-sqlite3 drivers plus platform/notices tests passed. Release, Python and Node payload SHA-256 all match `8560a75b50a60e8926f4cb8dc4cc0646b1f805d79c524b532e03f4d05640fc63`.
-- [Minimum SQLite verification](<../build/benchmarks/garnet-20261110/coding-validation/sqlite338-final-20261110-2236/result.json>): freshly compiled current native host passed 38 checks on SQLite 3.38.5 and the same final library. Identity/vector/neighbor query plans each use two integer-primary-key seeks and no population scan; all frozen source/artifact hashes remained unchanged.
-- [Frozen candidate and shared benchmark host](<../build/benchmarks/garnet-20261110/candidate-r1/context.json>): candidate library SHA-256 above; host SHA-256 `83bb6ff8e424fa3ff158ce45008a4f6b9e9b1c785d122ed17cd07ceee23dad12`. No performance comparison had been run at that historical snapshot; it was subsequently rejected in integrated review and superseded by r2/r3.
+- [Full verification manifest](<../../../build/benchmarks/garnet-20261110/coding-validation/integrated-l4m1n7_h/result.json>): all commands exit 0; source fingerprints identical before/after; root release build, 28 CTests, 509 Python tests, fmt, strict workspace/all-target Clippy and 17 additional benchmark-helper tests. CTest includes 145 main Rust tests, five build-support tests and SQLite ABI checks. Native C++ dependency warnings remain; this is not a warning-free C++ claim.
+- [Final Node evidence](<../../../build/benchmarks/garnet-20261110/coding-validation/node-final-o16kn5n2/results.json>): Node 22.23.4, both built-in and better-sqlite3 drivers plus platform/notices tests passed. Release, Python and Node payload SHA-256 all match `8560a75b50a60e8926f4cb8dc4cc0646b1f805d79c524b532e03f4d05640fc63`.
+- [Minimum SQLite verification](<../../../build/benchmarks/garnet-20261110/coding-validation/sqlite338-final-20261110-2236/result.json>): freshly compiled current native host passed 38 checks on SQLite 3.38.5 and the same final library. Identity/vector/neighbor query plans each use two integer-primary-key seeks and no population scan; all frozen source/artifact hashes remained unchanged.
+- [Frozen candidate and shared benchmark host](<../../../build/benchmarks/garnet-20261110/candidate-r1/context.json>): candidate library SHA-256 above; host SHA-256 `83bb6ff8e424fa3ff158ce45008a4f6b9e9b1c785d122ed17cd07ceee23dad12`. No performance comparison had been run at that historical snapshot; it was subsequently rejected in integrated review and superseded by r2/r3.
 - Explicit full unfiltered exact scans now compare their already-scanned live population with metadata (no additional scan). Filtered missing-public-mapping lookups remain legitimate absence; referenced internal pairs and explicit maintenance still fail closed.
 - Maintenance's mandatory initial/final root validation reads consume the existing owner visit allowance, without resets or a raised budget. Redundant intermediate root payload reads were removed; unusually tight maintenance limits may reject rather than skip required validation.

@@ -38,6 +38,82 @@ are **historical measurements from before the Rust-primary migration**, not
 new Rust performance results. Keep their recorded artifact paths and numbers
 as provenance; rerun this suite to measure the current implementation.
 
+## Highway versus DiskANN distance kernels
+
+The opt-in [matched kernel benchmark](<distance_kernels.rs>) compares the **actual
+production Highway C ABI** with DiskANN 0.60.0's production
+`f32::distance_comparer(metric, Some(dimension))` provider, including its available
+dimension specializations. It does not change the extension's distance routing.
+Configure the native dependencies first (`cmake --preset release`), then run:
+
+```bash
+mkdir -p build/benchmarks/distance-kernels
+# Local CPU-tuned comparison; the output path MUST NOT already exist.
+RUSTFLAGS='-C target-cpu=native' cargo bench --locked --bench distance_kernels -- \
+  --output build/benchmarks/distance-kernels/native.json
+# Separate default-target control; do not combine its timings above.
+RUSTFLAGS='' cargo bench --locked --bench distance_kernels -- \
+  --output build/benchmarks/distance-kernels/portable.json
+```
+
+On ARM64, DiskANN 0.60.0 selects its NEON backend only when both `neon` and
+`dotprod` are enabled **at compile time**, even through the provider API. A generic
+ARM64 build can therefore select its emulated/scalar backend. The local-native
+configuration avoids presenting that fallback as the strongest SIMD competitor;
+it is not a recommendation to ship CPU-specific wheels. Highway retains its
+production dynamic dispatch. JSON records the selected Highway target and the
+Rust compile-time feature flags; record compiler versions/flags and hardware
+alongside results. `CARGO_HOME` and `CARGO_TARGET_DIR` can isolate local build caches.
+
+Defaults: dimensions 32/128/129/384/768/1536/3000, squared L2 and normalized cosine
+(`1 - dot`), 64-byte-aligned or 4-byte-offset inputs, and shuffled corpora of 16
+or 4,096 vectors against one query. Both implementations receive exactly the same
+seeded float32 data. Cosine normalization uses Highway once **outside timing**.
+The benchmark warms both paths, calibrates a common operation count, and measures
+seven alternating AB/BA pairs with a target minimum of 75 ms per sample. Override
+with `--dimensions 128,768 --pairs 8 --milliseconds 100`.
+
+Each input is checked against a float64 reference outside timing, including self,
+opposite, near-identical, and zero-vector probes. JSON preserves raw pair times,
+checksums, bit mismatch counts, reference errors, and a stable input fingerprint.
+Cross-kernel bit equality is **not** assumed. Input generation, normalization,
+allocation, and numerical checks are excluded from timing; real call/dispatch,
+slice indexing, black-box barriers, and checksum overhead remain included. The
+corpora are warm-memory microbenchmarks, not SQLite/I/O or end-to-end ANN tests.
+Ratios above 1 (`DiskANN time / Highway time`) favor Highway. Partial results are
+saved after each case; only `status=complete` is a completed campaign.
+
+Validate and summarize **distinct, same-build** completed campaigns, and run the
+artifact-independent summary tests:
+
+```bash
+python benchmark/summarize_distance_kernels.py \
+  build/benchmarks/distance-kernels/native-r1.json \
+  build/benchmarks/distance-kernels/native-r2.json
+python -m unittest discover -s benchmark -p test_distance_kernel_results.py
+```
+
+[The recorded Apple M4 comparison](<../docs/plans/2026-11-11-sqlite-native-diskann-optimizations/distance-kernel-comparison.md>)
+found **no general Highway advantage**: DiskANN's native provider was faster at
+smaller dimensions and mostly near parity at larger dimensions. Do not extrapolate
+the earlier SQLite-adapter speedups into an unmeasured kernel-speed claim.
+
+## Upstream RAM and SSD index-build comparison
+
+The [standalone upstream comparison](<upstream_diskann/README.md>) measures the
+unmodified pinned Rust DiskANN standard full-precision RAM provider and its genuine
+SSD-format build pipeline against vectorlite's SQLite provider. It uses shared
+seeded data, sequential fresh processes, explicit graph settings, persisted-output
+checks and float64-oracle recall validation. Its independent manifest/lock do not
+change vectorlite's production dependencies.
+
+The comparison is **not a storage-only overhead ratio**: native kernels, runtime
+lifetime, transactional guarantees, SSD PQ processing, roots and static pruning
+can differ. On macOS, the upstream saved-SSD reader loads the disk file into RAM;
+those searches validate quality, not SSD-resident query latency. See the
+[plan and source-selection notes](<../docs/plans/2026-11-12-upstream-diskann-build-comparison/plan.md>)
+for timing boundaries and reproducibility constraints.
+
 ## Small shared-data HNSW / DiskANN comparison
 
 The existing pytest suite defaults to **3,000 vectors**, dimensions 128/512/1536/3000,
