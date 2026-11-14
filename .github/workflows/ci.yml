@@ -50,7 +50,7 @@ jobs:
           - os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             vcpkg_triplet: x64-windows-static-md-release
-          - os: macos-14
+          - os: macos-15
             rust_target: aarch64-apple-darwin
             vcpkg_triplet: arm64-osx
             macos_target: '11.0'
@@ -210,7 +210,7 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             wheel_arch: AMD64
             node_package: vectorlite-win32-x64
-          - os: macos-14
+          - os: macos-15
             rust_target: aarch64-apple-darwin
             wheel_arch: arm64
             node_package: vectorlite-darwin-arm64

@@ -26,7 +26,7 @@ def test_ci_native_and_wheel_matrices_cover_only_supported_targets():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     runners = re.findall(r"^\s+- os:\s+(\S+)\s*$", workflow, re.MULTILINE)
     targets = re.findall(r"^\s+rust_target:\s+(\S+)\s*$", workflow, re.MULTILINE)
-    assert Counter(runners) == {"ubuntu-latest": 2, "windows-latest": 2, "macos-14": 2}
+    assert Counter(runners) == {"ubuntu-latest": 2, "windows-latest": 2, "macos-15": 2}
     assert Counter(targets) == {
         "x86_64-unknown-linux-gnu": 2,
         "x86_64-pc-windows-msvc": 2,

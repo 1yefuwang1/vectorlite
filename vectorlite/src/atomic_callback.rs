@@ -135,7 +135,7 @@ where
             return Err(latch_violation(Violation::Busy));
         }
         let nonce = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n <= i64::MAX as u64).then(|| n + 1)
             })
             .map_err(|_| IndexError::new("atomic action nonce space exhausted"))?;
@@ -144,9 +144,8 @@ where
             action: Some(action),
             result: None,
         });
-        // SAFETY: Box::into_raw returns a non-null aligned allocation. Scope
-        // exclusively owns it until Drop reconstructs exactly one Box.
-        let slot = unsafe { NonNull::new_unchecked(Box::into_raw(allocation)) };
+        // Scope exclusively owns this allocation until Drop reconstructs one Box.
+        let slot = Box::into_non_null(allocation);
         let pointer = slot.cast();
         ACTIVE.with(|active| {
             active.set(Some(Frame {
@@ -238,7 +237,7 @@ impl<F, T> Drop for Scope<F, T> {
         // Also clear on an unexpected destructor unwind. The closed frame can
         // never dereference its pointer during capture/result destruction.
         let _clear = ClearLease(self.token);
-        // SAFETY: Scope exclusively owns this allocation from Box::into_raw;
+        // SAFETY: Scope exclusively owns this allocation from Box::into_non_null;
         // the closed frame prevents any further callback references. This is
         // the one and only reconstruction/deallocation of the original Box.
         let mut slot = unsafe { Box::from_raw(self.slot.as_ptr()) };

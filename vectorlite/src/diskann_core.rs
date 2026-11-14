@@ -550,7 +550,7 @@ impl<'slot> StoreScope<'slot> {
         reserved_bytes: usize,
     ) -> StoreResult<Self> {
         let token = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| IndexError::new("DiskANN operation token exhausted"))?;
         let context = OperationContext {
             token,
