@@ -5,14 +5,20 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
+mod atomic_callback;
+mod batch_input;
 mod core;
+mod diskann_core;
+mod diskann_store;
 mod ffi;
 mod half;
 mod hnsw;
+mod index_error;
 mod index_options;
 mod ops;
 mod registry;
 mod scalar;
+mod sqlite;
 mod vector;
 mod vector_space;
 mod virtual_table;
@@ -96,6 +102,12 @@ pub unsafe extern "C" fn sqlite3_extension_init(
         ("knn_search", 2, utf8, scalar::knn_search),
         ("knn_param", -1, utf8, scalar::knn_param),
         ("vectorlite_info", 0, utf8, scalar::vectorlite_info),
+        (
+            atomic_callback::FUNCTION_NAME,
+            2,
+            utf8 | ffi::SQLITE_DIRECTONLY as c_int,
+            atomic_callback::invoke,
+        ),
     ];
     for &(name, n_arg, flags, func) in functions {
         // SAFETY: inherited from the extension entry point contract.

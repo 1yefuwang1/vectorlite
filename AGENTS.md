@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vectorlite is a SQLite extension for fast vector search using HNSW. Rust is the main and only extension implementation: the Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. C++17 is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim. Distributed Python wheels and npm packages retain the public `vectorlite.so`, `vectorlite.dylib` and `vectorlite.dll` names.
+Vectorlite is a SQLite extension for fast vector search using HNSW and an optional SQLite-backed Rust DiskANN backend. Rust is the main and only extension implementation: the Cargo crate owns the SQLite virtual table, scalar functions, parsers, registry and index policy. C++17 is retained only for hnswlib, Google Highway SIMD operations, and their thin C ABI shim. Distributed Python wheels and npm packages retain the public `vectorlite.so`, `vectorlite.dylib` and `vectorlite.dll` names.
 
 CMake and scikit-build-core remain the source-build and packaging frontends; the `vectorlite` library target invokes Cargo, not a C++ virtual-table implementation.
 
@@ -74,11 +74,13 @@ cmake --build build/release --target ops_benchmark -j8
 - `bindings/python/`, `bindings/nodejs/` — Packaging and integration tests for the compiled extension.
 - `benchmark/`, `examples/` — Python performance harness and usage examples.
 - `vcpkg/` and the root CMake configuration — Native dependency management and Cargo build/installation integration.
-- `docs/superpowers/` — Dated design specs/plans. Treat source paths, validation counts and benchmark results there as historical, not current build instructions.
+- [plan/](<plan/README.md>) — DiskANN plan bundles under `<date>-<plan-slug>/`, each with `plan.md` and related research/results documents.
+- [docs/plans/](<docs/plans/README.md>) — Other historical design and implementation plans. Treat recorded source paths, validation counts and benchmark results as historical evidence, not current build instructions.
 
 ## Key Dependencies
 
-- Rust: bytemuck (checked byte views), serde_json, tempfile, and the vendored vectorlite-sqlite-sys crate.
+- Rust: bytemuck (checked byte views), serde/serde_json, tempfile, pinned DiskANN 0.60.0 algorithm/provider crates with recorded batch failure-handling patch, an operation-private current-thread Tokio batch executor, and the vendored vectorlite-sqlite-sys crate.
+- DiskANN storage: host-connection SQLite shadow tables with lazy record access; scoped callback-thread adapters and an ordinary multirow statement journal carrier own mutation atomicity. Do not substitute an in-memory index, independent connection, or bare multi-statement callback writes.
 - Build: Cargo and the cc crate for the native shim/ops compilation.
 - Native runtime: hnswlib and Highway; SQLite calls go through the host's loadable-extension API table, not a linked SQLite library.
 - Native testing: Google Test and Google Benchmark; SQLite headers are used for ABI checks/regeneration.
@@ -91,7 +93,9 @@ cmake --build build/release --target ops_benchmark -j8
 - Preserve `deny(unsafe_op_in_unsafe_fn)` and the documented-unsafe Clippy checks. Every unsafe operation needs a specific lifetime/layout/ownership justification.
 - Validate vector dimensions and buffer lengths before native calls; use the distinct half-storage types rather than interchangeable integer slices.
 - Do not let Rust panics or C++ exceptions cross C ABI boundaries. Keep panic-abort library profiles and native exception translation.
-- SQLite serializes callbacks per connection. Registry entries use shared ownership so index/space lifetimes survive reparses; do not add unjustified Send/Sync implementations.
+- SQLite serializes callbacks per connection. HNSW registry entries use shared ownership so index/space lifetimes survive reparses; DiskANN state is authoritative in SQLite, not the registry. Do not add unjustified Send/Sync implementations. Scoped tokens must validate thread/connection/generation/reentrancy before pointer access, and bound statements must finalize before their pointer leases end.
+- Preserve DiskANN's journal-carrier boundary, pre/post validation, original SQL errors, and rollback-capable journal requirements. Budget graph/query/prune workspaces; validate persisted payloads before SQLite or Rust materializes them. Direct shadow edits are not a supported API.
+- Native batch INSERT accepts only the tagged versioned descriptor documented in [vectorlite_batch.h](<vectorlite/include/vectorlite_batch.h>), never SQL integer addresses. Borrow caller buffers only in the current callback, copy bounded owned chunks, keep all task polling/SQLite access on the original callback thread, and destroy the private runtime/tasks/guards before closing the scoped token or accepting success. Do not remove strict vendored batch error propagation, weaken whole-INSERT rollback, or reuse a runtime with escaped tasks.
 - Run rustfmt and Clippy when changing Rust code.
 
 ### Retained C++ / Highway

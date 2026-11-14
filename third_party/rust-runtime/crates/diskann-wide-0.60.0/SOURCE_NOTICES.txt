@@ -1,0 +1,1329 @@
+===== Unmodified leading source comments: src/arch/aarch64/algorithms.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/double.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/f16x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/f16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/f32x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/f32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i16x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i32x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i64x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/i8x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/internal/load_first.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/internal/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/macros.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/masks.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # Masks
+//!
+//! Neon masks are bit-width specific, but type agnostic (meaning the mask representation
+//! for `u32x4` and `f32x4` are the same).
+//!
+//! The representation for a type with bitwidth `B` and `L` lanes is a SIMD register
+//! containing `L` lanes of `B`-bit unsigned integers.
+//!
+//! Within each lane, a mask is "set" is all `B` bits of the corresponding integer are 1,
+//! and unset if all `B` bits are 0. These masks are automatically generated in this form
+//! by the various compare intrinsics.
+//!
+//! Setting all bits is important because the `select` operations in Neon are bit-wise
+//! selects, unlike AVX2 where only the most-significant bit is important.
+
+
+===== Unmodified leading source comments: src/arch/aarch64/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u16x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u32x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u64x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/aarch64/u8x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/emulated/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Traits and functions supporting multi-architecture applications.
+//!
+//! Many SIMD instructions are micro-architecture specific, meaning that only a subset of
+//! CPUs found in the wild can support SIMD accelerated algorithms. This module provides
+//! tools for writing SIMD algorithms supporting multiple architectures and provides a
+//! light-weight runtime dispatching service to select the most appropriate implementation
+//! at run time.
+//!
+//! The example code below demonstrates a multi-versioned `X = X + Y` kernel:
+//! ```rust
+//! use diskann_wide::arch::{Target2, dispatch2};
+//!
+//! // A zero-sized type that we can use to implement a trait.
+//! struct Add;
+//!
+//! impl<A: diskann_wide::Architecture> Target2<A, (), &mut [f32], &[f32]> for Add {
+//!     #[inline]
+//!     fn run(self, _: A, dst: &mut [f32], src: &[f32]) {
+//!         std::iter::zip(dst.iter_mut(), src.iter()).for_each(|(d, s)| *d += *s);
+//!     }
+//! }
+//!
+//! fn add(dst: &mut [f32], src: &[f32]) {
+//!     dispatch2(Add, dst, src)
+//! }
+//!
+//! let mut dst = vec![1.0, 2.0, 3.0];
+//! add(&mut dst, &[2.0, 3.0, 4.0]);
+//! assert_eq!(dst, &[3.0, 5.0, 7.0]);
+//! ```
+//!
+//! Lets break down what's happening.
+//!
+//! The function [`dispatch2`] (suffixed with "2" because it takes two arguments, more on
+//! this later) takes the struct `Add`, which is required to implement [`Target2`] for all
+//! supported micro-architecture levels supported by `wide` for compilation target CPU.
+//!
+//! It then will determine at run time the features supported by the current CPU and invoke
+//! `Add::run` with the best architecture. The above example does not use any explicit SIMD
+//! and is generic with respect to the [`Architecture`]. This still allows the compiler to
+//! perform auto-vectorization for different platforms, which can still result in a speed-up.
+//!
+//! ## Mechanics of Dispatching
+//!
+//! Run time architecture detection happens only once (modulo race conditions) and once
+//! resolved involves an atomic load and a branch.
+//!
+//! ## Variadic traits and ABI
+//!
+//! The traits like [`Target1`] or [`dispatch2`] are suffixed by the number of additional
+//! arguments that they take. This is important for cases where we want the calling
+//! convention of the dispatched-to function to match the calling-convention of the
+//! dispatcher function. In this case, Rust will invoke the dispatched-to function using a
+//! jump instead of a function call.
+//!
+//! For example, if we had implemented the add method above without these variadics:
+//! ```rust
+//! use diskann_wide::arch::{Target, dispatch};
+//!
+//! struct AddV2<'a>(&'a mut [f32], &'a [f32]);
+//!
+//! impl<A: diskann_wide::Architecture> Target<A, ()> for AddV2<'_> {
+//!     #[inline]
+//!     fn run(self, _: A) {
+//!         std::iter::zip(self.0.iter_mut(), self.1.iter()).for_each(|(d, s)| *d += *s);
+//!     }
+//! }
+//!
+//! #[inline(never)]
+//! fn add_v2(dst: &mut [f32], src: &[f32]) {
+//!     dispatch(AddV2(dst, src))
+//! }
+//!
+//! let mut dst = vec![1.0, 2.0, 3.0];
+//! add_v2(&mut dst, &[2.0, 3.0, 4.0]);
+//! assert_eq!(dst, &[3.0, 5.0, 7.0]);
+//! ```
+//! then the function still works, but the assembly code goes from something that looks like
+//! this
+//! ```asm
+//!        mov rax, qword ptr [rip + diskann_wide::arch::x86_64::ARCH_NUMBER@GOTPCREL]
+//!        mov rax, qword ptr [rax]
+//!        cmp rax, 1
+//!        je diskann_wide::arch::x86_64::V3::run_with_2
+//!        test rax, rax
+//!        je diskann_wide::arch::x86_64::dispatch_resolve2
+//!        <scalar-code>
+//! ```
+//! where there are no stack writes and the `V3` compatible code is reached via `jmp` to
+//! something that looks like
+//! ```asm
+//!        sub rsp, 56
+//!        mov rax, qword ptr fs:[40]
+//!        mov qword ptr [rsp + 48], rax
+//!        mov rax, qword ptr [rip + diskann_wide::arch::x86_64::ARCH_NUMBER@GOTPCREL]
+//!        mov rax, qword ptr [rax]
+//!        test rax, rax
+//!        je .LBB14_3
+//!        cmp rax, 1
+//!        jne .LBB14_2
+//!        mov qword ptr [rsp + 8], rdi
+//!        mov qword ptr [rsp + 16], 3
+//!        lea rax, [rip + .L__unnamed_8]
+//!        mov qword ptr [rsp + 24], rax
+//!        mov qword ptr [rsp + 32], 3
+//!        lea rax, [rsp + 7]
+//!        mov qword ptr [rsp + 40], rax
+//!        lea rdi, [rsp + 8]
+//!        call diskann_wide::arch::x86_64::V3::run_with
+//!        jmp .LBB14_5
+//!.LBB14_3:
+//!        mov qword ptr [rsp + 8], rdi
+//!        mov qword ptr [rsp + 16], 3
+//!        lea rax, [rip + .L__unnamed_8]
+//!        mov qword ptr [rsp + 24], rax
+//!        mov qword ptr [rsp + 32], 3
+//!        lea rdi, [rsp + 8]
+//!        call diskann_wide::arch::x86_64::dispatch_resolve::<loop_example::AddV2, ()>
+//!        jmp .LBB14_5
+//!        <scalar-code>
+//! ```
+//! Notice some unconditional stack writes, stack preparation for calling the `V3` compatible
+//! code, and a `call` to run the code.
+//!
+//! What's happening is that Rust will not inline functions annotated with
+//! `target_feature(enable = "feature")]` into an incompatible context. Since `AddV3` exceeds
+//! 16 bytes, it must be passed on the stack (on Linux at least). Therefore, we have extra
+//! overhead of stack preparation to call the dispatch target.
+//!
+//! ## Function Pointer API
+//!
+//! The previous section discussed performing a dynamic dispatch at a single call site, but
+//! you need to pay the (admittedly small) overhead every time this function is called.
+//! Another approach would be to perform dispatch a single time by obtaining a function pointer
+//! to the dispatched function and then calling through that function pointer.
+//!
+//! This is a little tricky for two reasons (and a whole host of less obvious reasons).
+//!
+//! Reason 1: Functions with additional `target_features` cannot be inlined. This means the
+//! simple approach of
+//! ```rust
+//! use diskann_wide::{Architecture, arch::{Scalar, Target, Target2, dispatch2}};
+//!
+//! // A zero-sized type that we can use to implement a trait.
+//! struct Add;
+//!
+//! impl<A: Architecture> Target2<A, (), &mut [f32], &[f32]> for Add {
+//!     #[inline]
+//!     fn run(self, _: A, dst: &mut [f32], src: &[f32]) {
+//!         std::iter::zip(dst.iter_mut(), src.iter()).for_each(|(d, s)| *d += *s);
+//!     }
+//! }
+//!
+//! impl<A: Architecture> Target<A, fn(A, &mut [f32], &[f32])> for Add {
+//!    fn run(self, arch: A) -> fn(A, &mut [f32], &[f32]) {
+//!        // Create a non-capturing closure that invokes `arch.run2`.
+//!        //
+//!        // The invocation of `arch.run2` will apply the necessary target features and
+//!        // the non-capturing closure can be coerced into a function pointer.
+//!        let f = |arch: A, dst: &mut [f32], src: &[f32]| arch.run2(Add, dst, src);
+//!        f
+//!    }
+//! }
+//!
+//! let f: fn(Scalar, &mut [f32], &[f32]) = (Scalar).run(Add);
+//!
+//! let mut dst = vec![1.0, 2.0, 3.0];
+//! f(Scalar, &mut dst, &[2.0, 3.0, 4.0]);
+//! assert_eq!(dst, &[3.0, 5.0, 7.0]);
+//! ```
+//! would likely generate code that looks something like:
+//! ```asm
+//! .section .text.<<diskann_wide::Add as diskann_wide::arch::Target<_, _>::run::{closure#0} /* snip */>>
+//!        .p2align        4
+//!.type   <<diskann_wide::Add as _>::call_once,@function
+//!<<diskann_wide::Add as _>>::call_once:
+//!        .cfi_startproc
+//!        jmp <diskann_wide::arch::Scalar>::run_with_2::<diskann_wide::Add, &mut [f32], &[f32], ()>
+//! ```
+//! The body is simply an unconditional jump to the actual implementation precisely because
+//! the actual implementation cannot be inlined into the body of the closure we coerced into
+//! a function pointer. Unfortunately, the same applies to most other ways one would try to
+//! create a function pointer to the dispatched-to function.
+//!
+//! The consequence of this is that we need to take an **unsafe** function pointer so we
+//! can dispatch call directly to the implementation.
+//!
+//! Reason 2: Even if the above approach worked, the [`Architecture`] is still present in the
+//! signature of the `fn`, meaning we haven't really hidden the micro-architecture
+//! information.
+//!
+//! With that in mind, the current solution looks like the following.
+//! ```rust
+//! use diskann_wide::{
+//!     Architecture,
+//!     arch::{self, Dispatched2},
+//!     lifetime::{Ref, Mut},
+//! };
+//!
+//! struct Add;
+//!
+//! // Note the use of `FTarget` instead of `Target`. That is because the implementation is
+//! // simply an associated function instead of a method.
+//! impl<A: Architecture> arch::FTarget2<A, (), &mut [f32], &[f32]> for Add {
+//!     #[inline]
+//!     fn run(_: A, dst: &mut [f32], src: &[f32]) {
+//!         std::iter::zip(dst.iter_mut(), src.iter()).for_each(|(d, s)| *d += *s);
+//!     }
+//! }
+//!
+//! // The `Dispatched2` struct is a slightly magical wrapper around a function pointer,
+//! // returning the unit type `()` and taking two arguments; one `&mut [f32]` and
+//! // the other `&[f32]`.
+//! //
+//! // The need for `Mut` and `Ref` is described below.
+//! type FnPtr = Dispatched2<(), Mut<[f32]>, Ref<[f32]>>;
+//!
+//! impl<A: Architecture> arch::Target<A, FnPtr> for Add {
+//!    fn run(self, arch: A) -> FnPtr {
+//!        arch.dispatch2::<Self, (), Mut<[f32]>, Ref<[f32]>>()
+//!    }
+//! }
+//!
+//! let f: FnPtr = diskann_wide::arch::dispatch(Add);
+//! let mut dst = vec![1.0, 2.0, 3.0];
+//!
+//! // Invoke the function pointer
+//! f.call(&mut dst, &[2.0, 3.0, 4.0]);
+//! assert_eq!(dst, &[3.0, 5.0, 7.0]);
+//! ```
+//! The resulting function pointer (though "safely unsafe"), successfully hides that
+//! dispatched micro-architecture and when called will always go directly to the
+//! implementation rather than needing the trampoline.
+//!
+//! The [`Architecture`] methods
+//! * [`Architecture::dispatch1`], [`Architecture::dispatch2`], [`Architecture::dispatch3`]
+//!
+//! Will produce function pointers of the annotated arities
+//!
+//! * [`Dispatched1`], [`Dispatched2`], and [`Dispatched3`]
+//!
+//! and are accompanied by the generator traits
+//!
+//! * [`FTarget1`], [`FTarget2`], and [`FTarget3`]
+//!
+//! ### Lifetime Annotations and Limitations
+//!
+//! One thing to note in the above example is the use of [`crate::lifetime::Mut`] and
+//! [`crate::lifetime::Ref`] in the invocation of [`Architecture::dispatch2`]. This is an
+//! unfortunate limitation of the Rust compiler at the moment when it comes to inferring
+//! lifetimes of function pointers.
+//!
+//! For example, the following does not compile
+//! ```compile_fail
+//! pub struct Example;
+//!
+//! trait Run<T, U> {
+//!     fn run(x: T, y: U);
+//! }
+//!
+//! impl Example {
+//!     fn run<F, T, U>(self, x: T, y: U)
+//!     where
+//!         F: Run<T, U>,
+//!     {
+//!         F::run(x, y)
+//!     }
+//! }
+//!
+//! struct Add;
+//!
+//! impl Run<&mut [f32], &[f32]> for Add {
+//!     #[inline]
+//!     fn run(dst: &mut [f32], src: &[f32]) {
+//!         std::iter::zip(dst.iter_mut(), src.iter()).for_each(|(d, s)| *d += *s);
+//!     }
+//! }
+//!
+//! // This fails to compile! :(
+//! pub fn make() -> fn(Example, &mut [f32], &[f32]) {
+//!     let f = Example::run::<Add, &mut [f32], &[f32]>;
+//!     f
+//! }
+//! ```
+//! Fails to compile with the following error message
+//! ```text
+//! error[E0308]: mismatched types
+//!   --> <source>:27:5
+//!    |
+//! 25 | pub fn make() -> fn(Example, &mut [f32], &[f32]) {
+//!    |                  ------------------------------- expected `for<'a, 'b> fn(Example, &'a mut [f32], &'b [f32])` because of return type
+//! 26 |     let f = Example::run::<Add, &mut [f32], &[f32]>;
+//! 27 |     f
+//!    |     ^ one type is more general than the other
+//!    |
+//!    = note: expected fn pointer `for<'a, 'b> fn(Example, &'a mut _, &'b _)`
+//!                  found fn item `fn(Example, &mut _, &_) {Example::run::<Add, &mut [f32], &[f32]>}`
+//! ```
+//! The [`crate::lifetime::AddLifetime`] trait is the only solution the author found at time
+//! of writing that both avoids the trampoline the closure-like approaches induce and the above
+//! lifetime error. This leads to a few practical limitations:
+//!
+//! * Types passed through the function pointer interface can have at most a single lifetime.
+//! * The lifetimes of types passed through the function pointer interface must all be disjoint.
+//! * The return type cannot have a lifetime.
+//!
+//! Practically, these limitations are acceptable because micro-architecture dispatching is
+//! almost always the result of doing mathematical manipulation on primitive types and thus
+//! the lifetimes of the associated types are generally not complicated.
+//!
+//! ## Obtaining the [`Current`] Architecture
+//!
+//! When Rust crates are compiled, they can be provided with a target CPU. The function
+//! [`current`], the type [`Current`], and the constant [`crate::ARCH`] are all populated with
+//! the best matching wide [`Architecture`] selected at compile time.
+//!
+//! ## Hierarchies
+//!
+//! Each [`Architecture`] exposes a [`Level`] via [`Architecture::level()`] that
+//! can be used to compare capabilities without instantiating the architecture.
+//!
+//! ### X86
+//!
+//! * [`x86_64::V4`]: Supporting AVX-512 (and AVX2 and lower).
+//! * [`x86_64::V3`]: Supporting AVX2 and lower.
+//! * [`Scalar`]: Fallback architecture.
+//!
+//! The ordering is `Scalar` < `V3` < `V4`.
+//!
+//! ### Arm
+//!
+//! Currently, Arm support is limited to [`Scalar`].
+
+
+===== Unmodified leading source comments: src/arch/x86_64/algorithms.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/common.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/macros.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/conversion.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/f16x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/f16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/f32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/f32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/f32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i16x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i16x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i8x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/i8x64_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/masks.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u64x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u64x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u64x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u8x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v3/u8x64_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 masks
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/conversion.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/f16x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/f16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/f32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/f32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/f32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i16x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i16x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i16x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i8x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/i8x64_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # AVX-512 Support
+//!
+//! Access to AVX-512 intrinsics is provided by the [`V4`] backend.
+//!
+//! This backend corresponds to the features required for the [`V3`] architecture in addition
+//! to:
+//!
+//!
+//! * `avx512f`
+//! * `avx512bw`
+//! * `avx512cd`
+//! * `avx512vl`
+//! * `avx512dq`
+//! * `avx512vnni`
+//! * `avx512bitalg`
+//! * `avx512vpopcntdq`
+//! * `avx512vbmi`
+//!
+//! Note that the requirement of `avx512vnni`, `avx512bitalg`, `avx512vpopcntdq`, and
+//! `avx512vbmi` extend beyond the traditional requirements of `x86-64-v4`. These are
+//! included to assist with quantized distance functions and to avoid adding an additional
+//! backend solely for these features. These extensions are available on Ice Lake Server+
+//! and AMD Zen4+.
+//!
+//! ## Miri Support
+//!
+//! [Miri](https://github.com/rust-lang/miri) does not support much if any of the AVX-512
+//! feature set, and does not pass the [`is_x86_feature_detected!`] for AVX-512 related
+//! features.
+//!
+//! However, Miri is a great tool for assisting with writing kernels when it comes to
+//! validating bounds-checking. The [`V4`] supports running under Miri with a few caveats.
+//! First, when using `#[cfg(miri)]`, the type aliases such as [`f32x4`] will be mapped
+//! to emulated variants (i.e., [`crate::Emulated<f32, 4, V4>`]). Use of the standard SIMD functions
+//! like arithmetic, loading, storing, etc. will execute as expected, enabling Miri assisted
+//! bounds checking for loads and stores.
+//!
+//! Since Miri does not support the AVX-512 runtime features, the constructor
+//! [`V4::new_checked_miri`] can be used to safely construct a [`V4`] architecture if the
+//! runtime supports one, or if Miri is present.
+//!
+//! Note that even when running under Miri, we require the runtime CPU/Miri emulated
+//! environment to support [`V3`] since `V3: From<V4>` and we need to maintain the safety
+//! of that implementation.
+//!
+//! The accuracy of the emulated behavior is done via "best effort". Please report any
+//! divergences.
+//!
+//! ### Developer Notes
+//!
+//! Miri emulation is tackled by redefining the SIMD identifiers like `f32x4`. Under Miri,
+//! these are aliased to `Emulated` instead of the native intrinsic types.
+//!
+//! This means that regardless of Miri, the native intrinsic types are still defined and
+//! usable. They are just not mapped via `V4 as Architecture`. Thus, when working in the
+//! submodules like `f32x8_` that reference types like `f32x4`, make sure that the symbol
+//! `f32x4` is imported via `f32x4_::f32x4` to ensure compilation when using Miri.
+//!
+//! Additionally, if a direct intrinsic is needed that does not map to the usual traits
+//! exposed by this crate, it can be added as an inherent method of the [`V4`] architecture.
+//! Be sure to include and test a Miri-compliant emulated version of the intrinsic.
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u32x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u32x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u32x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u64x2_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u64x4_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u64x8_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u8x16_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u8x32_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/arch/x86_64/v4/u8x64_.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// x86 intrinsics
+
+===== Unmodified leading source comments: src/bitmask.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/constant.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Move a const-generic into the type domain to work around issues with the use and
+/// compile-time computation involving const-generic parameters.
+///
+/// See the notes for the various helper traits in `traits.rs`.
+
+===== Unmodified leading source comments: src/doubled.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/emulated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/helpers.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Utility macro for defining simple operations that lower to a single intrinsic.
+///
+/// SAFETY: It is the invoker's responsibility to ensure that the intrinsic is safe to call
+
+===== Unmodified leading source comments: src/lib.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # Wide - Cross Architecture SIMD
+//!
+//! This crate attempts to provide (mostly) Miri-compatible, cross-platform SIMD with support
+//! for light-weight architecture dispatching.
+//!
+//! ## Traits
+//!
+//! SIMD vectors are weird types as they behave both like scalars and containers. Primary
+//! traits exposed by `wide` are:
+//!
+//! * [`SIMDVector`]: General trait for working with a SIMD vector, including creation and
+//!   data access.
+//!
+//! * [`SIMDMask`]: Basically a SIMD boolean. Comparisons between `SIMDVectors` are done
+//!   lanewise, with the mask containing the results for each lane. Each [`SIMDVector`] has
+//!   an associated mask.
+//!
+//! * [`Architecture`]: SIMD instructions are architecture specific. Some server CPUs like
+//!   new(ish) x86 models support AVX512, while most consumer CPUs do not yet support that
+//!   instruction set extension.
+//!
+//!   To allow compilation of single binaries that support multiple architectures, `wide` has
+//!   taken the position that the [`Architecture`] is largely explicit when it comes to SIMD
+//!   types.
+//!
+//!   Generic, cross-architecture algorithms are still supported by using an [`Architecture`]s
+//!   associated SIMD types.
+//!
+//! A host of secondary SIMD related traits are also exported, all prefixed with `SIMD`.
+//! Refer to the documentation on each trait for more information.
+//!
+//! ## Structs
+//!
+//! Types implementing [`SIMDMask`] can take a variety of architecture specific shapes.
+//! To that end, each architecture-specific [`SIMDMask`] is associated with a [`BitMask`],
+//! where bit `i` is set to 1 if the corresponding lane in the full mask representation
+//! evaluates to a logic `true`, and `0` otherwise.
+//!
+//! Masks can be converted to and from their corresponding [`BitMask`] as needed.
+//!
+//! ## Safety
+//!
+//! One source of unsafety in SIMD is the accidental use of an intrinsic that is not supported
+//! by the current runtime CPU. This is made safe in `wide` by using the following strategy:
+//!
+//! * Each [`SIMDVector`] and [`SIMDMask`] type is uniquely associated with an [`Architecture`].
+//!
+//! * Construction of a new [`SIMDVector`] or [`SIMDMask`] requires either an instance of its
+//!   associated architecture, or a [`SIMDVector`]/[`SIMDMask`] of the same [`Architecture`].
+//!
+//! * [`Architecture`] instances can only be obtained:
+//!
+//!   - From an instance of a [`SIMDVector`]/[`SIMDMask`] associated with that [`Architecture`].
+//!   - From one of the safe constructors like [`arch::dispatch`] or `new_checked` which
+//!     perform runtime checks necessary to ensure the compatibility.
+//!   - Through an `unsafe` constructor, on which case all bets are off.
+//!
+//! So an [`Architecture`] is needed to bootstrap the use of SIMD, but from then on, the
+//! existence of SIMD types for a given [`Architecture`] serve as proof-of-safety.
+//!
+//! ## Special Architectures
+//!
+//! Some [`Architecture`]s are special and always available to use safely:
+//!
+//! * [`arch::Scalar`]: An architecture that uses emulation via loops to implement
+//!   SIMD-like operations. This architecture is safe because no special hardware intrinsics
+//!   are invoked.
+//!
+//! * [`arch::Current`]: The [`Architecture`] that is the closest fit to the current
+//!   compilation target. This is not always [`arch::Scalar`]. For example, if compiling
+//!   for `x86-64-v3`, then the [`arch::Current`] will be [`arch::x86_64::V3`]. This is
+//!   safe because it only uses intrinsics that are already available for the compiler to use.
+//!
+//!   The current architecture can be obtained using with [`arch::current()`] or the
+//!   constant [`crate::ARCH`].
+//!
+//! # Dev Docs
+//!
+//! ## Adding a new `TxN` vector type.
+//!
+//! 1. Implement the type for the backends in `arch` (you can usually follow and slightly
+//!    modify the existing examples).
+//!
+//! 2. Implement for `Emulated` for the implementations that require macro instantiation.
+//!
+//! 3. Add the type to the [`Architecture`] trait.
+//!
+//! At each step, be sure to include tests, which should be fairly straight forward.
+//!
+//! ## Adding a New Implementation to an Existing Trait
+//!
+//! Basically do steps 2-4 of the above list.
+//!
+//! ## Adding a New Trait
+//!
+//! 1. If needed, provide a reference implementation in the `reference` module.
+//!
+//! 2. If it's a relatively simple op, adding a new macro in `test_utils/ops.rs` that
+//!    invokes the reference implementation may be all that's needed.
+//!
+//!    More complicated operations may require their own test harness (see
+//!    `test_utils/dot_product.rs`).
+//!
+//!    Tests should go through the utilities in `test_utils::driver` to ensure adequate
+//!    coverage and low compile time.
+//!
+//! 3. Implement the trait for the needed types, implementing for [`Emulated`],
+//!    architecture-specific types, [`Architecture`].
+//!
+//! # Testing and Architectural Levels
+//!
+//! By default, `wide` will only run tests supported by the current runtime hardware. This
+//! allows the tests to pass on a wide variety of machines during development.
+//!
+//! However, this can mean that tests targeting architecture not supported by the runtime
+//! hardware will silently succeed.
+//!
+//! To ensure all tests either run, or generate an error if the runtime hardware does not
+//! support a test, set the environment variable
+//! ```text
+//! WIDE_TEST_MIN_ARCH="all"
+//! ```
+//! Various back-end specific values are supported. Note that this variable sets the
+//! minimum level of tests that are **required** to run. Tests for higher architecture
+//! levels will still be run if supported by the runtime hardware.
+//!
+//! ## x86_64
+//!
+//! * `x86-64-v4`: Target Wide's [`arch::x86_64::V4`] architecture.
+//! * `x86-64-v3`: Target Wide's [`arch::x86_64::V3`] architecture.
+//! * `scalar`: Target the scalar architecture.
+
+
+===== Unmodified leading source comments: src/lifetime.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Tools to pass objects with lifetimes across the function pointer API.
+//!
+//! Useful helpers include
+//!
+//! * [`As`]: Feed through the generic parameter unaltered with no lifetime.
+//! * [`Ref`]: Pass an argument through a shared reference.
+//! * [`Mut`]: Pass an argument through an exclusive reference.
+//!
+//! Common primitives like integers and floating point numbers pass through by value.
+
+
+===== Unmodified leading source comments: src/reference.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/splitjoin.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Split a type into or join from two halves.
+///
+/// For example, even dimensional fixed size arrays of length `N` will be split so the first
+/// `N / 2` elements are in the low half, and the last `N / 2` elements are in the high half.
+
+===== Unmodified leading source comments: src/test_utils/common.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/distribution.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! A distribution that generated random floating point numbers drawn from the following:
+//!
+//! - Normal (generating normal values uniformly)
+//! - Subnormal
+//! - Zero
+//!
+//! Within each category, positive and negative values are distributed evenly.
+//!
+//! Much of the inspiration for this code comes from `proptest::num::f32::Any`, and is
+//! largely reimplemented here to remove a dependency on `proptest`.
+
+
+===== Unmodified leading source comments: src/test_utils/dot_product.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/driver.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/load.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/mask.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/ops.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/test_utils/store.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/traits.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+

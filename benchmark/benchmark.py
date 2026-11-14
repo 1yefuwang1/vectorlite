@@ -11,7 +11,9 @@ https://github.com/nmslib/hnswlib/blob/v0.8.0/TESTING_RECALL.md.
 Configuration is driven by environment variables (read by ``conftest.py``):
 
     NUM_ELEMENTS           number of random vectors to index (default 3000)
+    BENCHMARK_SEED         optional integer seed for reproducible shared data
     VECTORLITE_PATH        path to a locally built vectorlite extension
+    BENCHMARK_DISKANN=1    enable vectorlite's SQLite-backed DiskANN backend
     BENCHMARK_VSS=1        enable sqlite_vss backend (Linux/macOS only)
     BENCHMARK_SQLITE_VEC=1 enable sqlite-vec backend (Linux/macOS only)
     BENCHMARK_MILVUS_LITE=1 enable milvus-lite backend (Linux/macOS only)
@@ -38,6 +40,7 @@ version is reported by ``sqlite3.sqlite_version``.
 from __future__ import annotations
 
 import dataclasses
+import json
 import platform
 import sqlite3
 from typing import List, Optional, Sequence, Tuple
@@ -92,17 +95,20 @@ class BenchmarkData:
     queries: dict       # dim -> np.ndarray (NUM_QUERIES x dim, float32)
     query_bytes: dict   # dim -> list[bytes]
     correct_labels: dict  # distance_type -> dim -> np.ndarray (NUM_QUERIES x K)
+    seed: Optional[int] = None
 
     @classmethod
     def generate(cls, dims: Sequence[int], num_elements: int,
                  num_queries: int, k: int,
-                 distance_types: Sequence[str]) -> "BenchmarkData":
-        data = {d: np.float32(np.random.random((num_elements, d))) for d in dims}
+                 distance_types: Sequence[str],
+                 seed: Optional[int] = None) -> "BenchmarkData":
+        rng = np.random.RandomState(seed) if seed is not None else np.random
+        data = {d: np.float32(rng.random((num_elements, d))) for d in dims}
         data_bytes = {
             d: [data[d][i].tobytes() for i in range(num_elements)] for d in dims
         }
         queries = {
-            d: np.float32(np.random.random((num_queries, d))) for d in dims
+            d: np.float32(rng.random((num_queries, d))) for d in dims
         }
         query_bytes = {
             d: [queries[d][i].tobytes() for i in range(num_queries)] for d in dims
@@ -121,7 +127,7 @@ class BenchmarkData:
                 del bf
 
         return cls(num_elements, data, data_bytes,
-                   queries, query_bytes, correct_labels)
+                   queries, query_bytes, correct_labels, seed)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,7 @@ class Backend:
     plot_label: str = "<unknown>"  # may include {distance_type} / {ef_search}
     uses_hnsw_params: bool = False
     supports_ef_search: bool = False
+    supports_search_list_size: bool = False
     supported_distances: Sequence[str] = DISTANCE_TYPES
     # Some backends should not appear in the query plot at high N because
     # their search time dwarfs every other point. Override per-backend.
@@ -242,6 +249,52 @@ class VectorliteBackend(_SqlBackend):
                 (self.data.query_bytes[dim][i], K, ef_search),
             ).fetchall())
         return results
+
+
+class VectorliteDiskAnnBackend(_SqlBackend):
+    """SQLite-backed DiskANN, using named rather than HNSW query tuning."""
+
+    name = "vectorlite_diskann"
+    plot_label = "vectorlite_diskann_{distance_type}{ef_search}"
+    supports_search_list_size = True
+
+    def setup(self, distance_type: str, dim: int,
+              ef_construction: Optional[int], M: Optional[int]) -> None:
+        self._dim = dim
+        self._table = f"table_diskann_{distance_type}_{dim}"
+        self.cursor.execute(
+            f"create virtual table {self._table} using vectorlite("
+            f"embedding float32[{dim}] {distance_type}, "
+            "diskann(degree=32, build_list_size=100))"
+        )
+
+    def do_insert(self, distance_type: str, dim: int) -> None:
+        self._insert_rows()
+
+    def do_search(self, distance_type: str, dim: int,
+                  ef_search: Optional[int]) -> List[Sequence[int]]:
+        # The shared harness passes the search window positionally. DiskANN
+        # requires JSON search_list_size, never the numeric HNSW ef argument.
+        tuning = None if ef_search is None else json.dumps(
+            {"search_list_size": ef_search})
+        results = []
+        for i in range(NUM_QUERIES):
+            if tuning is None:
+                sql = (f"select rowid from {self._table} "
+                       "where knn_search(embedding, knn_param(?, ?))")
+                parameters = (self.data.query_bytes[dim][i], K)
+            else:
+                sql = (f"select rowid from {self._table} "
+                       "where knn_search(embedding, knn_param(?, ?, ?))")
+                parameters = (self.data.query_bytes[dim][i], K, tuning)
+            results.append(self.cursor.execute(sql, parameters).fetchall())
+        return results
+
+    def query_label(self, distance_type: str, ef_search: Optional[int]) -> str:
+        return self.plot_label.format(
+            distance_type=distance_type,
+            ef_search=f"_L_{ef_search}" if ef_search is not None else "",
+        )
 
 
 class VectorliteBruteForceBackend(_SqlBackend):

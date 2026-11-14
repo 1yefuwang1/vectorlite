@@ -123,6 +123,7 @@ def _write_recall_csv(records: List[dict], path: Path) -> None:
          r["extra_info"].get("distance_type"),
          r["extra_info"].get("dim"),
          r["extra_info"].get("ef_search"),
+         r["extra_info"].get("search_list_size"),
          r["extra_info"].get("recall"))
         for r in records if "recall" in r["extra_info"]
     ]
@@ -130,7 +131,8 @@ def _write_recall_csv(records: List[dict], path: Path) -> None:
         return
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(("product", "distance_type", "dim", "ef_search", "recall"))
+        w.writerow(("product", "distance_type", "dim", "ef_search",
+                    "search_list_size", "recall"))
         w.writerows(rows)
 
 

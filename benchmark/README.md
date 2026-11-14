@@ -4,6 +4,7 @@ Compares vectorlite's vector-search performance and recall against:
 
 - `hnswlib` (in-memory, the library vectorlite is built on)
 - `vectorlite` brute-force (`SELECT ... ORDER BY vector_distance(...)`)
+- SQLite-backed Rust DiskANN _(optional; `BENCHMARK_DISKANN=1`)_
 - `sqlite_vss` _(optional)_
 - `sqlite_vec` _(optional)_
 - `milvus-lite` _(optional)_
@@ -36,6 +37,298 @@ The figures and raw tables in the repository's [main README](<../README.md#bench
 are **historical measurements from before the Rust-primary migration**, not
 new Rust performance results. Keep their recorded artifact paths and numbers
 as provenance; rerun this suite to measure the current implementation.
+
+## Highway versus DiskANN distance kernels
+
+The opt-in [matched kernel benchmark](<distance_kernels.rs>) compares the **actual
+production Highway C ABI** with DiskANN 0.60.0's production
+`f32::distance_comparer(metric, Some(dimension))` provider, including its available
+dimension specializations. It does not change the extension's distance routing.
+Configure the native dependencies first (`cmake --preset release`), then run:
+
+```bash
+mkdir -p build/benchmarks/distance-kernels
+# Local CPU-tuned comparison; the output path MUST NOT already exist.
+RUSTFLAGS='-C target-cpu=native' cargo bench --locked --bench distance_kernels -- \
+  --output build/benchmarks/distance-kernels/native.json
+# Separate default-target control; do not combine its timings above.
+RUSTFLAGS='' cargo bench --locked --bench distance_kernels -- \
+  --output build/benchmarks/distance-kernels/portable.json
+```
+
+On ARM64, DiskANN 0.60.0 selects its NEON backend only when both `neon` and
+`dotprod` are enabled **at compile time**, even through the provider API. A generic
+ARM64 build can therefore select its emulated/scalar backend. The local-native
+configuration avoids presenting that fallback as the strongest SIMD competitor;
+it is not a recommendation to ship CPU-specific wheels. Highway retains its
+production dynamic dispatch. JSON records the selected Highway target and the
+Rust compile-time feature flags; record compiler versions/flags and hardware
+alongside results. `CARGO_HOME` and `CARGO_TARGET_DIR` can isolate local build caches.
+
+Defaults: dimensions 32/128/129/384/768/1536/3000, squared L2 and normalized cosine
+(`1 - dot`), 64-byte-aligned or 4-byte-offset inputs, and shuffled corpora of 16
+or 4,096 vectors against one query. Both implementations receive exactly the same
+seeded float32 data. Cosine normalization uses Highway once **outside timing**.
+The benchmark warms both paths, calibrates a common operation count, and measures
+seven alternating AB/BA pairs with a target minimum of 75 ms per sample. Override
+with `--dimensions 128,768 --pairs 8 --milliseconds 100`.
+
+Each input is checked against a float64 reference outside timing, including self,
+opposite, near-identical, and zero-vector probes. JSON preserves raw pair times,
+checksums, bit mismatch counts, reference errors, and a stable input fingerprint.
+Cross-kernel bit equality is **not** assumed. Input generation, normalization,
+allocation, and numerical checks are excluded from timing; real call/dispatch,
+slice indexing, black-box barriers, and checksum overhead remain included. The
+corpora are warm-memory microbenchmarks, not SQLite/I/O or end-to-end ANN tests.
+Ratios above 1 (`DiskANN time / Highway time`) favor Highway. Partial results are
+saved after each case; only `status=complete` is a completed campaign.
+
+Validate and summarize **distinct, same-build** completed campaigns, and run the
+artifact-independent summary tests:
+
+```bash
+python benchmark/summarize_distance_kernels.py \
+  build/benchmarks/distance-kernels/native-r1.json \
+  build/benchmarks/distance-kernels/native-r2.json
+python -m unittest discover -s benchmark -p test_distance_kernel_results.py
+```
+
+[The recorded Apple M4 comparison](<../plan/2026-11-11-sqlite-native-diskann-optimizations/distance-kernel-comparison.md>)
+found **no general Highway advantage**: DiskANN's native provider was faster at
+smaller dimensions and mostly near parity at larger dimensions. Do not extrapolate
+the earlier SQLite-adapter speedups into an unmeasured kernel-speed claim.
+
+## Upstream RAM and SSD index-build comparison
+
+The [standalone upstream comparison](<upstream_diskann/README.md>) measures the
+unmodified pinned Rust DiskANN standard full-precision RAM provider and its genuine
+SSD-format build pipeline against vectorlite's SQLite provider. It uses shared
+seeded data, sequential fresh processes, explicit graph settings, persisted-output
+checks and float64-oracle recall validation. Its independent manifest/lock do not
+change vectorlite's production dependencies.
+
+The comparison is **not a storage-only overhead ratio**: native kernels, runtime
+lifetime, transactional guarantees, SSD PQ processing, roots and static pruning
+can differ. On macOS, the upstream saved-SSD reader loads the disk file into RAM;
+those searches validate quality, not SSD-resident query latency. See the
+[plan and source-selection notes](<../plan/2026-11-12-upstream-diskann-build-comparison/plan.md>)
+for timing boundaries and reproducibility constraints.
+
+## Small shared-data HNSW / DiskANN comparison
+
+The existing pytest suite defaults to **3,000 vectors**, dimensions 128/512/1536/3000,
+100 top-10 queries per configuration, and both L2 and cosine. Enable the
+SQLite-backed DiskANN cases alongside the existing baselines:
+
+```bash
+NUM_ELEMENTS=3000 BENCHMARK_SEED=42 BENCHMARK_DISKANN=1 \
+  pytest benchmark/test_benchmark.py \
+    --vectorlite-path=build/release/vectorlite/vectorlite.dylib \
+    -k 'vectorlite or hnswlib' --benchmark-json=bench-3000.json
+```
+
+All backends use the same generated vectors, queries, and exact ground truth.
+Insertions use one transaction per complete dataset, with one warm-up and three
+measured rebuilds. Query timings cover batches of 100 searches against already
+built indexes; setup/build time is excluded. The query-window sweep is 10/50/100:
+HNSW uses numeric `ef`, while DiskANN uses JSON `search_list_size`, recorded and
+labelled separately. Equal window values are **not** a guarantee of equal recall;
+compare recall as well as latency.
+
+This suite uses an **in-memory SQLite database**, so it measures the current
+SQL/graph adapter overhead, not cold-disk I/O, durable commit cost, or behavior
+beyond RAM. For those workloads, use the separate file-backed runner below.
+DiskANN requires SQLite 3.38 or newer and a build containing the new backend.
+Its graph settings here are `degree=32, build_list_size=100`; other options use
+the documented defaults. Existing HNSW settings remain `M=30, ef_construction=100`.
+
+## Focused native batch INSERT comparison
+
+Use [the bounded native runner](<diskann_batch_benchmark.py>) for pointer-based
+batch ingestion, rather than repeating the full pytest build matrix:
+
+```bash
+# Configure the release tree with BUILD_TESTING=ON, then build this opt-in target.
+cmake --build build/release --target diskann_batch_benchmark
+python benchmark/diskann_batch_benchmark.py \
+  --executable build/release/vectorlite/diskann_batch_benchmark \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --output-dir build/benchmarks/batch-insert-new --timeout 120
+```
+
+The native [C host](<diskann_batch_benchmark.c>) builds each HNSW / single DiskANN /
+batch-8 / batch-32 variant exactly once, then reuses that index for query windows
+10/50/100. Each variant runs in its own process with a hard timeout, and completed
+results are saved immediately. A failed mode stops the remaining sequence. The
+C host also has a 90-second insertion deadline via a SQLite progress handler.
+
+Defaults are one shared seeded 3,000-vector 128D L2 dataset and 100 top-10 queries.
+The Python driver computes exact ground truth and records individual-query
+mean/p50/p95 plus recall and artifact/data fingerprints. These timings differ from
+the pytest suite's repeated-batch medians: they exclude per-query bind/reset and
+have only one measured build/pass, so do not compare them as controlled before/
+after statistics. The database is `:memory:`; this is not cold-disk, durable commit,
+physical beyond-RAM, or production-quality evidence. Pointer ingestion is a native
+C/Rust API; this runner does not add a pointer bridge to Python's sqlite3 driver.
+The work allowance is explicit (`--max-visits`, default 65536) and applies to an
+entire true chunk; a batch-32 run may need a larger setting than batch-8. Failed
+runs remain in their own result directory instead of being silently retried.
+
+## Matched build-optimization A/B comparison
+
+Use [the identity-cache comparison runner](<diskann_identity_benchmark.py>) to
+measure a storage-adapter optimization against an immutable uncached baseline.
+Build both extension variants with the same compiler, native dependencies, target
+and release flags, and preserve each under its own directory with the public
+extension basename unchanged. Use **one native host executable** for both.
+
+```bash
+cmake --build build/release --target diskann_batch_benchmark
+.venv/bin/python benchmark/diskann_identity_benchmark.py \
+  --executable build/release/vectorlite/diskann_batch_benchmark \
+  --baseline build/benchmarks/cache-ab/baseline/vectorlite.dylib \
+  --optimized build/benchmarks/cache-ab/optimized/vectorlite.dylib \
+  --output-dir build/benchmarks/cache-ab/results-new --timeout 120
+```
+
+The example uses macOS artifact names and the project's venv; adjust the library
+suffix and venv interpreter path for Linux/Windows. Output directories and native
+database/snapshot destinations must be new. Failures retain completed and partial
+artifacts and stop further builds instead of silently retrying failed variants.
+
+The default cases are 3,000x128D L2 native batch-8 (five measured pairs), ordinary
+L2 INSERT and cosine batch-8 (three pairs each), and 10,000x128D L2 batch-8 with a
+fresh file-backed database (three pairs). Construction settings stay fixed at
+degree 32, build list 100, alpha 1.2, 64 MiB adapter workspace and 65,536 visits;
+query windows are 10/50/100 with k=10. Inputs are shared immutable seeded float32
+files. Two baseline-only self-checks precede any candidate build in each case,
+followed by a warm-up per variant and alternating A/B, B/A measured pairs.
+`--case`, `--count`, `--dimension` (1–3000), `--pairs`, `--queries` and `--warmups` can restrict a diagnostic
+run; small override runs are not substitutes for full-size timing evidence.
+
+The native timer includes BEGIN, INSERT preparation/binding/execution/finalization
+and COMMIT. Input/oracle generation, queries, snapshot backup and streaming graph
+verification happen outside build timing. Timed runs install no SQL tracing.
+Each run must match the first baseline's **exact ordered graph BLOBs and stable
+metadata** (excluding only the random instance ID), ordered query labels, raw
+float32 `distance_bits`, and recall against the same float64 L2/cosine oracle. File-backed originals are also
+compared with their post-timing backups. The report retains individual timings,
+paired speedups, medians, input/artifact hashes and both native-host and Python
+snapshot-reader SQLite versions. A graph, distance-bit, or recall mismatch fails the run.
+
+The [native host](<diskann_batch_benchmark.c>) retains its existing default L2
+`:memory:` CLI. Optional `VECTORLITE_BENCH_METRIC`, `VECTORLITE_BENCH_DATABASE`,
+`VECTORLITE_BENCH_SNAPSHOT` and `VECTORLITE_BENCH_TIMEOUT_SECONDS` environment
+controls support the matched runner; these are benchmark controls, not new SQL
+extension options. Snapshot creation/backup is outside timing and refuses an
+existing destination or SQLite URI/memory redirection.
+
+These are bounded local test datasets, not a physical beyond-RAM or cold-disk
+benchmark. The Python oracle materializes the test matrix outside timing, OS pages
+may be warm, and file-backed durability follows the native host's unchanged
+SQLite defaults. A high fraction of eliminated identity queries is **not** itself
+a wall-time speedup claim: use the repeated untraced build measurements.
+
+## Streamed SQLite-contained DiskANN benchmark
+
+[The standalone DiskANN runner](<diskann_benchmark.py>) is separate from the
+in-memory, multi-backend pytest suite below. It requires only Python's standard
+library and an **explicit, freshly built extension** with the DiskANN backend;
+SQLite 3.38 or newer is required. It never falls back to an installed wheel.
+
+```bash
+# Run after building the release extension; choose a NEW database and JSON file.
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-production.sqlite --output diskann-production.json \
+  --count 10000 --dim 128 --metric l2 --queries 32 --k 10 \
+  --degree 16 --build-list-size 64 --search-list-size 64 \
+  --cache-bytes 67108864 --max-visits 2048 --updates 16 --deletes 16
+
+# Reopen a previously generated database without changing its contents.
+# Dataset/graph settings come from its persisted benchmark manifest.
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-production.sqlite --query-only --queries 32 --k 10
+```
+
+Use `.so` on Linux or `.dll` on Windows. New runs fail if the database already
+exists; `--query-only` requires a database created by this runner. A JSON output
+file must also be new. Failed builds leave their partial database for inspection,
+not automatic reuse or deletion.
+
+### Measurement method
+
+- Seeded float32 L2 or cosine data is generated one vector at a time and inserted
+  through the public virtual-table API in transactions of at most 128 vectors.
+  There is no corpus-sized Python/NumPy matrix or vector list.
+- Build, query, exact-ground-truth and mutation stages use **separate fresh
+  interpreter processes**. Query workers do not inherit the builder's dataset
+  or memory high-water mark. Exact ground truth runs **after** timed queries in
+  another process, scanning stored vectors in bounded batches into per-query
+  top-k heaps. `--numpy-ground-truth` optionally accelerates those bounded
+  batches; NumPy is never imported by measured query workers.
+- JSON records recall@k, the first query, first-pass and repeated warm-pass
+  p50/p95 latency, extension path/SHA-256, SQLite/Python versions, build cost,
+  update/delete/consolidation costs, database/WAL sizes, and per-stage peak RSS.
+  Mutation measurements are followed by another fresh query/recall run.
+- “Fresh-process first pass” **does not mean cold OS cache**. The builder and
+  earlier workers can leave OS pages cached; this runner never drops global
+  OS caches. Both first-pass and warm latency exclude synthetic query generation.
+- Every connection uses an 8 MiB SQLite page-cache setting and `mmap_size=0`.
+  `--cache-bytes` is the graph workspace budget, not total process RSS. Linux
+  `ru_maxrss` is converted from KiB, macOS from bytes; Windows uses
+  `GetProcessMemoryInfo.PeakWorkingSetSize`.
+- `--query-memory-limit-mib` applies and verifies Linux `RLIMIT_AS` in query
+  workers only. This limits **virtual address space, not RSS**. It is rejected
+  on macOS/Windows, whose corresponding behavior is not verified here.
+- Format-3 soft deletions retain vectors and adjacency until maintenance.
+  Consolidation performs a SQLite-staged full graph rebuild with bounded Rust
+  workspace, not merely deleted-neighbor cleanup; its cost can scale with the
+  entire live population. Use `--skip-consolidation` if that cost is intentionally
+  outside a run. The runtime descriptor/format is recorded so prototype format-2
+  measurements are not confused with format-3 results. No default latency or
+  recall SLA is implied by this benchmark.
+
+### Controlled large-storage fixture
+
+To exercise lazy storage/working memory without waiting for a large production
+ANN build, the runner also offers a synthetic linear graph:
+
+```bash
+python benchmark/diskann_benchmark.py \
+  --extension build/release/vectorlite/vectorlite.dylib \
+  --database diskann-storage.sqlite --output diskann-storage.json \
+  --fixture storage-linear --count 65536 --dim 1024 --metric l2 \
+  --degree 4 --build-list-size 32 --search-list-size 64 \
+  --cache-bytes 16777216 --max-visits 1024 --queries 32 --k 10 \
+  --require-beyond-ram
+```
+
+**This is not a production ANN build or a general recall benchmark.** It uses a
+public first-row bootstrap, then deliberately populates private format-2/3 shadow
+tables in streamed batches. The runtime descriptor is preserved and its format
+recorded; no descriptor is fabricated to bypass extension validation. Those
+writes are benchmark fixture construction,
+**not a supported import API**. The two-row atomic carrier and descriptor remain
+unchanged. Frozen node 0 connects to a bidirectional chain of live nodes; vectors
+have their row ID in the first float32 coordinate and zeros elsewhere. Queries
+address only the reachable start prefix and verify analytic nearest labels and
+squared distances after reopening in a fresh process. Mutations are skipped.
+JSON uses fixture coverage rather than reporting production ANN recall.
+
+The example stores **256 MiB of live vector payload**, plus SQLite and graph
+storage overhead. `--require-beyond-ram` succeeds only when the measured database
+file is larger than both the query worker's peak RSS and the configured graph
+workspace plus SQLite cache. This is measured evidence about this controlled
+workload, **not proof of random-query performance, a cold OS cache, or universal
+memory bounds**. Small fixture smoke runs make no beyond-RAM claim.
+
+Artifact-independent utility tests do not load an extension or benchmark deps:
+
+```bash
+python -B -m unittest discover -s benchmark -p 'test_diskann_benchmark_utils.py' -v
+```
 
 ## Requirements
 
@@ -190,7 +483,9 @@ Driven by environment variables; defaults in `benchmark/benchmark.py`.
 | Variable | Default | Effect |
 |---|---|---|
 | `NUM_ELEMENTS` | `3000` | Number of random vectors indexed per case. |
+| `BENCHMARK_SEED` | unset | Optional integer seed shared by every backend. |
 | `VECTORLITE_PATH` | wheel default | Vectorlite shared library to load. |
+| `BENCHMARK_DISKANN` | `0` | `1` enables vectorlite's SQLite-backed Rust DiskANN. |
 | `BENCHMARK_VSS` | `0` | `1` enables the `sqlite_vss` backend (Linux/macOS). |
 | `BENCHMARK_SQLITE_VEC` | `0` | `1` enables the `sqlite_vec` backend (Linux/macOS). |
 | `BENCHMARK_MILVUS_LITE` | `0` | `1` enables the `milvus-lite` backend (Linux/macOS). |
@@ -254,5 +549,6 @@ raises `AttributeError` or `OperationalError` and you'll need a different
 Python build.
 
 The benchmark itself does not use vectorlite's metadata-filter (rowid
-pushdown) feature, so any SQLite version that vectorlite loads on works
-here. The bundled SQLite version is reported in the session header.
+pushdown) feature. Existing HNSW cases work with any SQLite version that loads
+the extension; opt-in DiskANN cases require SQLite 3.38 or newer. The bundled
+SQLite version is reported in the session header.

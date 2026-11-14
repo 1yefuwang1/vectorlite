@@ -1,0 +1,36 @@
+{
+  "file": "diskann/src/graph/test/cases/inline.rs",
+  "test": "graph/test/cases/inline/inline_search_returns_only_final_level_matches",
+  "payload": {
+    "comparisons": 40,
+    "grid_size": 0,
+    "hops": 36,
+    "k": 8,
+    "l": 32,
+    "matching_points": 0,
+    "query": [
+      2.0
+    ],
+    "result_count": 8,
+    "result_distances": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "result_ids": [
+      69,
+      70,
+      67,
+      68,
+      65,
+      66,
+      63,
+      64
+    ]
+  }
+}

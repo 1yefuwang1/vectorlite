@@ -3,20 +3,25 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
 
+use crate::batch_input::BatchView;
 use crate::core::{Index, SearchFilter, SearchResult};
+use crate::diskann_store::{DiskAnnTable, QueryRows};
 use crate::ffi::{
     self, sqlite3, sqlite3_context, sqlite3_index_info, sqlite3_module, sqlite3_value,
     sqlite3_vtab, sqlite3_vtab_cursor, Value,
 };
-use crate::index_options::IndexOptions;
+use crate::index_error::IndexError;
+use crate::index_options::BackendOptions;
 use crate::registry::{IndexEntry, Registry, RegistryKey};
 use crate::scalar::{self, KnnParam, KNN_PARAM_TYPE};
+use crate::sqlite::{Connection, Statement};
 use crate::vector;
 use crate::vector_space::{parse_named_vector_space, NamedVectorSpace};
 
@@ -26,6 +31,8 @@ const COL_OPERATION: c_int = 2;
 const COL_PATH: c_int = 3;
 const FUNC_KNN: c_int = ffi::SQLITE_INDEX_CONSTRAINT_FUNCTION as c_int;
 const SQLITE_VTAB_DIRECTONLY_MIN_VERSION: c_int = 3_031_000;
+// The low bits remain SQLite's argument count, preserving the checked plan.
+const PLAN_VECTOR_OUTPUT: c_int = 1 << 30;
 
 /// SQLite owns the header and can write it while Rust holds shared references
 /// to the table state. `UnsafeCell` explicitly permits those writes. `repr(C)`
@@ -39,7 +46,73 @@ pub struct VTab {
     table: String,
     // Retaining the entry avoids registry lookups and key allocations in row
     // callbacks, while the registry retains it across xDisconnect/xConnect.
-    entry: Rc<IndexEntry>,
+    backend: Backend,
+}
+
+/// HNSW retains its registry-owned graph. DiskANN owns only host-connection
+/// handles; its authoritative data survives independently in shadow tables.
+enum Backend {
+    Hnsw(Rc<IndexEntry>),
+    Diskann(Box<DiskAnnTable>),
+}
+
+thread_local! {
+    static DISKANN_CALLBACK_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Keeps exact-scan and graph paths under the same callback reentrancy rule.
+/// The marker prevents moving cleanup to a different thread's TLS instance.
+struct DiskannCallbackGuard(PhantomData<Rc<()>>);
+
+impl DiskannCallbackGuard {
+    fn enter() -> Result<Self, VTabError> {
+        DISKANN_CALLBACK_ACTIVE.with(|active| {
+            if active.replace(true) {
+                return Err(VTabError::with_code(
+                    ffi::SQLITE_LOCKED as c_int,
+                    "recursive DiskANN callbacks are not supported",
+                ));
+            }
+            Ok(Self(PhantomData))
+        })
+    }
+
+    fn for_backend(backend: &Backend) -> Result<Option<Self>, VTabError> {
+        if matches!(backend, Backend::Diskann(_)) {
+            Self::enter().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Drop for DiskannCallbackGuard {
+    fn drop(&mut self) {
+        DISKANN_CALLBACK_ACTIVE.with(|active| active.set(false));
+    }
+}
+
+impl Backend {
+    fn space(&self) -> &NamedVectorSpace {
+        match self {
+            Self::Hnsw(entry) => &entry.space,
+            Self::Diskann(table) => table.space(),
+        }
+    }
+
+    fn contains(&self, rowid: u64) -> Result<bool, VTabError> {
+        match self {
+            Self::Hnsw(entry) => Ok(entry.index.contains(rowid)),
+            Self::Diskann(table) => table.contains(rowid).map_err(Into::into),
+        }
+    }
+
+    fn mark_delete(&self, rowid: u64) -> Result<(), VTabError> {
+        match self {
+            Self::Hnsw(entry) => entry.index.mark_delete(rowid).map_err(VTabError::new),
+            Self::Diskann(table) => table.mark_delete(rowid).map_err(Into::into),
+        }
+    }
 }
 
 #[repr(C)]
@@ -47,6 +120,8 @@ pub struct Cursor {
     base: sqlite3_vtab_cursor,
     result: Vec<SearchResult>,
     current: usize,
+    disk_vectors: Option<Vec<Vec<u8>>>,
+    snapshot_anchor: Option<Statement<'static>>,
 }
 
 #[derive(Debug)]
@@ -68,6 +143,12 @@ impl VTabError {
             code,
             message: message.into(),
         }
+    }
+}
+
+impl From<IndexError> for VTabError {
+    fn from(error: IndexError) -> Self {
+        Self::with_code(error.code, error.message)
     }
 }
 
@@ -119,7 +200,7 @@ unsafe fn cstr<'a>(p: *const c_char) -> &'a str {
 
 struct TableDefinition {
     space: NamedVectorSpace,
-    options: IndexOptions,
+    options: BackendOptions,
     vector_space_str: String,
     index_options_str: String,
 }
@@ -131,7 +212,7 @@ impl TableDefinition {
                 "Invalid vector space: {vector_space_str}. Reason: {error}"
             ))
         })?;
-        let options = IndexOptions::parse(&index_options_str).map_err(|error| {
+        let options = BackendOptions::parse(&index_options_str).map_err(|error| {
             VTabError::new(format!(
                 "Invalid index_options {index_options_str}. Reason: {error}"
             ))
@@ -157,6 +238,9 @@ fn find_or_create_entry(
         vector_space_str,
         index_options_str,
     } = definition;
+    let BackendOptions::Hnsw(options) = options else {
+        return Err(VTabError::new("HNSW registry cannot own a DiskANN table"));
+    };
     if !is_create {
         if let Some(existing) = registry.find(&key) {
             if existing.vector_space_str == vector_space_str
@@ -198,11 +282,6 @@ unsafe fn init_vtab(
     pp_vtab: *mut *mut sqlite3_vtab,
     pz_err: *mut *mut c_char,
 ) -> c_int {
-    // SAFETY: this helper is called only from xCreate/xConnect with SQLite's db.
-    let rc = unsafe { ffi::vtab_config_constraint_support(db) };
-    if rc != ffi::SQLITE_OK as c_int {
-        return rc;
-    }
     // DIRECTONLY prevents a database schema from invoking the save/load command
     // channel through a trigger or view. Older SQLite hosts do not know this op.
     // SAFETY: extension initialization validated this host API entry.
@@ -243,6 +322,25 @@ unsafe fn init_vtab(
             return error.code;
         }
     };
+    let is_diskann = matches!(definition.options, BackendOptions::Diskann(_));
+    // SAFETY: constructor callbacks supply a live connection. DiskANN's many
+    // shadow writes need ABORT handling, not a promise of pre-write constraints.
+    let rc = unsafe {
+        if is_diskann {
+            ffi::vtab_config_constraint_support_disabled(db)
+        } else {
+            ffi::vtab_config_constraint_support(db)
+        }
+    };
+    if rc != ffi::SQLITE_OK as c_int {
+        return rc;
+    }
+    // SAFETY: the initialized host API provides its actual version.
+    if is_diskann && unsafe { ffi::libversion_number() } < 3038000 {
+        // SAFETY: SQLite supplies the constructor's writable error output.
+        unsafe { ffi::set_err(pz_err, "DiskANN requires SQLite 3.38.0 or newer") };
+        return ffi::SQLITE_ERROR as c_int;
+    }
     let declare_sql = format!(
         "CREATE TABLE X({}, distance REAL hidden, operation TEXT hidden, path TEXT hidden)",
         definition.space.vector_name
@@ -254,17 +352,43 @@ unsafe fn init_vtab(
         return rc;
     }
     let registry = p_aux.cast::<Registry>();
-    // SAFETY: the module owns a Registry in pAux until every table disconnects.
-    // No SQLite calls occur while this mutable registry borrow is held.
-    let entry = match find_or_create_entry(
-        unsafe { &mut *registry },
-        is_create,
-        (schema.clone(), table.clone()),
-        definition,
-    ) {
-        Ok(entry) => entry,
+    let backend = match &definition.options {
+        BackendOptions::Hnsw(_) => {
+            // SAFETY: pAux outlives the tables. This HNSW factory performs no
+            // SQLite calls while borrowing the connection-local registry.
+            find_or_create_entry(
+                unsafe { &mut *registry },
+                is_create,
+                (schema.clone(), table.clone()),
+                definition,
+            )
+            .map(Backend::Hnsw)
+        }
+        BackendOptions::Diskann(options) => {
+            // SAFETY: SQLite owns this VTab and all derived cursors, closes them
+            // before closing db, and serializes connection callbacks. The erased
+            // lifetime stays private in these non-Send host-borrowing handles.
+            let connection: Result<Connection<'static>, IndexError> =
+                unsafe { Connection::borrow(db) };
+            connection
+                .and_then(|connection| {
+                    DiskAnnTable::open(
+                        connection,
+                        &schema,
+                        &table,
+                        definition.space,
+                        options.clone(),
+                        is_create,
+                    )
+                })
+                .map(|table| Backend::Diskann(Box::new(table)))
+                .map_err(Into::into)
+        }
+    };
+    let backend = match backend {
+        Ok(backend) => backend,
         Err(error) => {
-            // SAFETY: pz_err is SQLite's writable error output.
+            // SAFETY: pz_err is SQLite's writable constructor error output.
             unsafe { ffi::set_err(pz_err, &error.message) };
             return error.code;
         }
@@ -278,7 +402,7 @@ unsafe fn init_vtab(
         registry,
         schema,
         table,
-        entry,
+        backend,
     });
     // SAFETY: SQLite supplies a writable output slot and takes ownership until
     // xDisconnect/xDestroy. VTab's first field has sqlite3_vtab's layout.
@@ -318,20 +442,38 @@ unsafe extern "C" fn x_disconnect(p_vtab: *mut sqlite3_vtab) -> c_int {
 }
 
 unsafe extern "C" fn x_destroy(p_vtab: *mut sqlite3_vtab) -> c_int {
-    // SAFETY: SQLite transfers the table allocation back exactly once.
+    // SAFETY: SQLite retains this live allocation if destruction fails.
+    let vtab = unsafe { &*p_vtab.cast::<VTab>() };
+    if let Backend::Diskann(table) = &vtab.backend {
+        if let Err(error) = table.destroy() {
+            return vtab.report(error.into());
+        }
+    }
+    // SAFETY: successful destruction now transfers the allocation exactly once.
     let vtab = unsafe { Box::from_raw(p_vtab.cast::<VTab>()) };
-    // SAFETY: pAux outlives this table; serialized callbacks and the retained
-    // entry ensure no registry reference is live during this mutation.
-    unsafe { &mut *vtab.registry }.erase(&vtab.key());
+    if matches!(vtab.backend, Backend::Hnsw(_)) {
+        // SAFETY: pAux outlives the table. No SQLite call or registry borrow is
+        // active; live HNSW handles retain independently owned entries.
+        unsafe { &mut *vtab.registry }.erase(&vtab.key());
+    }
     drop(vtab);
     ffi::SQLITE_OK as c_int
 }
 
 unsafe extern "C" fn x_rename(p_vtab: *mut sqlite3_vtab, z_new: *const c_char) -> c_int {
-    // SAFETY: SQLite provides exclusive callback access to this live table.
-    let vtab = unsafe { &mut *p_vtab.cast::<VTab>() };
+    // SAFETY: SQLite keeps this wrapper live through the rename callback.
+    let vtab = unsafe { &*p_vtab.cast::<VTab>() };
     // SAFETY: z_new is a valid callback-scoped C string.
     let new_table = unsafe { cstr(z_new) }.to_owned();
+    if let Backend::Diskann(table) = &vtab.backend {
+        return match table.rename(&new_table) {
+            Ok(()) => ffi::SQLITE_OK as c_int,
+            Err(error) => vtab.report(error.into()),
+        };
+    }
+    // SAFETY: only HNSW remains; its rename performs no SQLite calls, so no
+    // reentrant callback can alias this exclusive registry/name mutation.
+    let vtab = unsafe { &mut *p_vtab.cast::<VTab>() };
     let old_key = vtab.key();
     let new_key = (vtab.schema.clone(), new_table.clone());
     // SAFETY: the module registry remains live and no registry borrow is kept
@@ -351,6 +493,8 @@ unsafe extern "C" fn x_open(
         base: sqlite3_vtab_cursor { pVtab: p_vtab },
         result: Vec::new(),
         current: 0,
+        disk_vectors: None,
+        snapshot_anchor: None,
     });
     // SAFETY: SQLite supplies the output slot and retains ownership until
     // xClose. Cursor is repr(C) with sqlite3_vtab_cursor as its first field.
@@ -409,7 +553,26 @@ unsafe extern "C" fn x_column(
         COL_VECTOR => {
             // SAFETY: SQLite keeps the parent table alive until xClose.
             let vtab = unsafe { &*cursor.base.pVtab.cast::<VTab>() };
-            match vtab.entry.index.get_vector(row.rowid) {
+            if matches!(vtab.backend, Backend::Diskann(_)) {
+                if let Some(bytes) = cursor
+                    .disk_vectors
+                    .as_ref()
+                    .and_then(|vectors| vectors.get(cursor.current))
+                {
+                    // SAFETY: ctx is live and SQLite copies cursor-owned bytes;
+                    // these bytes belong to the same snapshot as its distance.
+                    unsafe { ffi::result_blob(ctx, bytes) };
+                    return ffi::SQLITE_OK as c_int;
+                }
+                return vtab.report(VTabError::with_code(
+                    ffi::SQLITE_MISUSE as c_int,
+                    "DiskANN vector column was not included in its snapshot projection",
+                ));
+            }
+            let Backend::Hnsw(entry) = &vtab.backend else {
+                return ffi::SQLITE_MISUSE as c_int;
+            };
+            match entry.index.get_vector(row.rowid) {
                 Some(v) => {
                     // SAFETY: SQLite copies these bytes before return.
                     unsafe { ffi::result_blob(ctx, &vector::blob_from_f32(&v)) };
@@ -517,6 +680,9 @@ unsafe extern "C" fn x_best_index(
     info.idxStr = plan;
     info.needToFreeIdxStr = 1;
     info.idxNum = argv_index;
+    if matches!(vtab.backend, Backend::Diskann(_)) && info.colUsed & 1 != 0 {
+        info.idxNum |= PLAN_VECTOR_OUTPUT;
+    }
     ffi::SQLITE_OK as c_int
 }
 
@@ -531,7 +697,7 @@ enum Constraint {
 
 fn parse_plan(idx_num: c_int, codes: &[u8], argc: c_int) -> Result<Vec<Constraint>, VTabError> {
     if argc <= 0
-        || idx_num != argc
+        || idx_num & !PLAN_VECTOR_OUTPUT != argc
         || !codes.len().is_multiple_of(2)
         || codes.len() / 2 != argc as usize
     {
@@ -643,6 +809,7 @@ struct Constraints<'a> {
 unsafe fn materialize_constraints<'a>(
     plan: &[Constraint],
     values: &mut [Value<'a>],
+    diskann_in_limit: Option<usize>,
 ) -> Result<Constraints<'a>, VTabError> {
     let mut constraints = Constraints::default();
     for (code, value) in plan.iter().zip(values.iter_mut()) {
@@ -669,8 +836,34 @@ unsafe fn materialize_constraints<'a>(
                 if *code == Constraint::In {
                     // SAFETY: this checked plan code corresponds to xBestIndex's
                     // successful all-at-once IN selection for this argument.
-                    constraints.rowid_in =
-                        Some(unsafe { InRowids::new(value) }.collect::<Result<_, _>>()?);
+                    // SAFETY: the selected IN value remains scoped to this
+                    // callback. DiskANN limits even the caller's filter set.
+                    let rowids = unsafe { InRowids::new(value) };
+                    if let Some(limit) = diskann_in_limit {
+                        let mut ids = HashSet::new();
+                        for rowid in rowids {
+                            let rowid = rowid?;
+                            if ids.contains(&rowid) {
+                                continue;
+                            }
+                            if ids.len() >= limit {
+                                return Err(VTabError::with_code(
+                                    ffi::SQLITE_TOOBIG as c_int,
+                                    "DiskANN rowid filter exceeds its memory budget",
+                                ));
+                            }
+                            ids.try_reserve(1).map_err(|_| {
+                                VTabError::with_code(
+                                    ffi::SQLITE_NOMEM as c_int,
+                                    "cannot allocate DiskANN rowid filter",
+                                )
+                            })?;
+                            ids.insert(rowid);
+                        }
+                        constraints.rowid_in = Some(ids);
+                    } else {
+                        constraints.rowid_in = Some(rowids.collect::<Result<_, _>>()?);
+                    }
                 } else {
                     if value.kind() != ffi::SQLITE_INTEGER as c_int {
                         return Err(VTabError::new("rowid must be of type INTEGER"));
@@ -688,6 +881,11 @@ fn query_rows(
     constraints: Constraints<'_>,
 ) -> Result<Vec<SearchResult>, VTabError> {
     if let Some(knn) = constraints.knn {
+        if knn.diskann_search_list_size.is_some() {
+            return Err(VTabError::new(
+                "search_list_size is a DiskANN option; HNSW uses integer ef",
+            ));
+        }
         if knn.query_vector.len() != entry.space.dim {
             return Err(VTabError::new(format!(
                 "query vector's dimension({}) doesn't match {}'s dimension: {}",
@@ -731,6 +929,49 @@ fn query_rows(
     }
 }
 
+enum QueryBatch {
+    Hnsw(Vec<SearchResult>),
+    Diskann(QueryRows),
+}
+
+fn query_backend(
+    backend: &Backend,
+    constraints: Constraints<'_>,
+    project_vector: bool,
+) -> Result<QueryBatch, VTabError> {
+    let Backend::Diskann(table) = backend else {
+        let Backend::Hnsw(entry) = backend else {
+            return Err(VTabError::new("unknown vector backend"));
+        };
+        return query_rows(entry, constraints).map(QueryBatch::Hnsw);
+    };
+    let filter = if let Some(ref ids) = constraints.rowid_in {
+        SearchFilter::In(ids)
+    } else if let Some(rowid) = constraints.rowid_eq {
+        SearchFilter::Equals(rowid)
+    } else {
+        SearchFilter::None
+    };
+    let rows = if let Some(knn) = constraints.knn {
+        if knn.ef.is_some() {
+            return Err(VTabError::new(
+                "integer ef is an HNSW option; DiskANN uses JSON search_list_size",
+            ));
+        }
+        let k =
+            usize::try_from(knn.k).map_err(|_| VTabError::new("k exceeds the supported range"))?;
+        let search_l = knn
+            .diskann_search_list_size
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| VTabError::new("search_list_size exceeds the supported range"))?;
+        table.knn(&knn.query_vector, k, search_l, filter, project_vector)
+    } else {
+        table.select_rowids(filter, project_vector)
+    }?;
+    Ok(QueryBatch::Diskann(rows))
+}
+
 unsafe extern "C" fn x_filter(
     p_cur: *mut sqlite3_vtab_cursor,
     idx_num: c_int,
@@ -742,7 +983,18 @@ unsafe extern "C" fn x_filter(
     let cursor = unsafe { &mut *p_cur.cast::<Cursor>() };
     // SAFETY: SQLite keeps the cursor's parent table alive during the callback.
     let vtab = unsafe { &*cursor.base.pVtab.cast::<VTab>() };
-    cursor.result.clear();
+    let _operation = match DiskannCallbackGuard::for_backend(&vtab.backend) {
+        Ok(guard) => guard,
+        Err(error) => return vtab.report(error),
+    };
+    if matches!(vtab.backend, Backend::Diskann(_)) {
+        // Release old capacity before admitting a new operation's workspace.
+        cursor.result = Vec::new();
+    } else {
+        cursor.result.clear();
+    }
+    cursor.disk_vectors = None;
+    cursor.snapshot_anchor = None;
     cursor.current = 0;
     let codes = if idx_str.is_null() {
         &[][..]
@@ -759,11 +1011,29 @@ unsafe extern "C" fn x_filter(
     let values = unsafe { ffi::arguments(argc, argv) };
     // SAFETY: plan and values come from xBestIndex and this xFilter invocation;
     // both IN iteration and the KnnParam borrow end before this callback exits.
-    let result = unsafe { materialize_constraints(&plan, values) }
-        .and_then(|constraints| query_rows(&vtab.entry, constraints));
+    let in_limit = match &vtab.backend {
+        Backend::Diskann(table) => Some(table.options().cache_bytes / 256),
+        Backend::Hnsw(_) => None,
+    };
+    // SAFETY: the validated xBestIndex plan describes these protected xFilter
+    // values; IN iteration and KnnParam borrows remain within this callback.
+    let result =
+        unsafe { materialize_constraints(&plan, values, in_limit) }.and_then(|constraints| {
+            query_backend(
+                &vtab.backend,
+                constraints,
+                idx_num & PLAN_VECTOR_OUTPUT != 0,
+            )
+        });
     match result {
-        Ok(rows) => {
+        Ok(QueryBatch::Hnsw(rows)) => {
             cursor.result = rows;
+            ffi::SQLITE_OK as c_int
+        }
+        Ok(QueryBatch::Diskann(rows)) => {
+            cursor.result = rows.results;
+            cursor.disk_vectors = rows.vectors;
+            cursor.snapshot_anchor = Some(rows.anchor);
             ffi::SQLITE_OK as c_int
         }
         Err(error) => vtab.report(error),
@@ -818,31 +1088,112 @@ fn execute_persistence(entry: &IndexEntry, values: &mut [Value<'_>]) -> Result<i
     Ok(0)
 }
 
+/// The options are a strict JSON object, not a path or source-table name.
+/// A streaming map visitor rejects duplicate keys before JSON can erase them.
+const DEFAULT_INSERT_BATCH: usize = 8;
+struct BatchOptions(usize);
+
+impl<'de> serde::Deserialize<'de> for BatchOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BatchOptions;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object containing only batch_size (integer 1..=32)")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut batch_size = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != "batch_size" {
+                        return Err(serde::de::Error::custom("unknown insert_batch option"));
+                    }
+                    if batch_size.is_some() {
+                        return Err(serde::de::Error::custom("duplicate batch_size option"));
+                    }
+                    let value = map.next_value::<usize>()?;
+                    if !(1..=32).contains(&value) {
+                        return Err(serde::de::Error::custom(
+                            "batch_size must be an integer 1..=32",
+                        ));
+                    }
+                    batch_size = Some(value);
+                }
+                Ok(BatchOptions(batch_size.unwrap_or(DEFAULT_INSERT_BATCH)))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+fn parse_batch_options(text: &str) -> Result<usize, VTabError> {
+    // The only legal option is tiny; bound allocations even for hostile keys.
+    if text.len() > 1024 {
+        return Err(VTabError::new("insert_batch options exceed 1024 bytes"));
+    }
+    serde_json::from_str::<BatchOptions>(text)
+        .map(|options| options.0)
+        .map_err(|error| VTabError::new(format!("invalid insert_batch options: {error}")))
+}
+
+fn execute_insert_batch(table: &DiskAnnTable, values: &mut [Value<'_>]) -> Result<i64, VTabError> {
+    if values[1].kind() != ffi::SQLITE_NULL as c_int
+        || values[(2 + COL_DISTANCE) as usize].kind() != ffi::SQLITE_NULL as c_int
+    {
+        return Err(VTabError::new(
+            "insert_batch accepts only operation, embedding and optional path",
+        ));
+    }
+    let path = &mut values[(2 + COL_PATH) as usize];
+    let batch_size = match path.kind() {
+        kind if kind == ffi::SQLITE_NULL as c_int => DEFAULT_INSERT_BATCH,
+        kind if kind == ffi::SQLITE_TEXT as c_int => parse_batch_options(path.text()?)?,
+        _ => {
+            return Err(VTabError::new(
+                "insert_batch path must be NULL or a TEXT JSON object",
+            ))
+        }
+    };
+    let batch = BatchView::from_value(&values[(2 + COL_VECTOR) as usize], table.space().dim)?;
+    table.insert_batch(&batch, batch_size)?;
+    Ok(0)
+}
+
 fn insert_or_update_vector(
-    entry: &IndexEntry,
+    backend: &Backend,
     value: &mut Value<'_>,
     rowid: u64,
+    is_update: bool,
 ) -> Result<(), VTabError> {
     if value.kind() != ffi::SQLITE_BLOB as c_int {
         return Err(VTabError::new("vector must be of type Blob"));
     }
     let vec = vector::view_from_blob(value.blob()?)
         .map_err(|error| VTabError::new(format!("Failed to perform insertion due to: {error}")))?;
-    if vec.len() != entry.space.dim {
+    if vec.len() != backend.space().dim {
         return Err(VTabError::new(format!(
             "Dimension mismatch: vector's dimension {}, table's dimension {}",
             vec.len(),
-            entry.space.dim
+            backend.space().dim
         )));
     }
-    entry
-        .index
-        .add(&vec, rowid)
-        .map_err(|error| VTabError::new(format!("Failed to insert row {rowid} due to: {error}")))
+    match backend {
+        Backend::Hnsw(entry) => entry.index.add(&vec, rowid).map_err(|error| {
+            VTabError::new(format!("Failed to insert row {rowid} due to: {error}"))
+        }),
+        Backend::Diskann(table) => if is_update {
+            table.update(rowid, rowid, &vec)
+        } else {
+            table.insert(rowid, &vec)
+        }
+        .map_err(Into::into),
+    }
 }
 
 fn update(
-    entry: &IndexEntry,
+    backend: &Backend,
     values: &mut [Value<'_>],
     insert_rowid: Option<i64>,
 ) -> Result<i64, VTabError> {
@@ -854,7 +1205,23 @@ fn update(
     let integer = ffi::SQLITE_INTEGER as c_int;
     if values.len() > 1 && argv0_type == null {
         if values[(2 + COL_OPERATION) as usize].kind() == ffi::SQLITE_TEXT as c_int {
-            return execute_persistence(entry, values);
+            return match backend {
+                Backend::Hnsw(entry) => execute_persistence(entry, values),
+                Backend::Diskann(table) => {
+                    // Read the operation before inspecting the embedding kind:
+                    // sqlite3_bind_pointer values deliberately have SQL NULL type.
+                    match values[(2 + COL_OPERATION) as usize].text()? {
+                        "insert_batch" => execute_insert_batch(table, values),
+                        "consolidate" => {
+                            table.consolidate().map_err(VTabError::from)?;
+                            Ok(0)
+                        }
+                        _ => Err(VTabError::new(
+                            "DiskANN data persists inside SQLite; use SQLite backup instead of save/load. Supported operations: consolidate, insert_batch",
+                        )),
+                    }
+                }
+            };
         }
         if values[1].kind() == null {
             return Err(VTabError::new("rowid must be specified during insertion"));
@@ -864,19 +1231,22 @@ fn update(
             return Err(VTabError::new(format!("rowid {raw_rowid} out of range")));
         }
         let rowid = raw_rowid as u64;
-        if entry.index.contains(rowid) {
-            return Err(VTabError::new(format!("row {rowid} already exists")));
+        if backend.contains(rowid)? {
+            let error = format!("row {rowid} already exists");
+            return Err(if matches!(backend, Backend::Diskann(_)) {
+                VTabError::with_code(ffi::SQLITE_CONSTRAINT as c_int, error)
+            } else {
+                VTabError::new(error)
+            });
         }
-        insert_or_update_vector(entry, &mut values[2], rowid)?;
+        insert_or_update_vector(backend, &mut values[2], rowid, false)?;
         Ok(raw_rowid)
     } else if values.len() == 1 && argv0_type != null {
         let raw_rowid = values[0].int64();
         if raw_rowid < 0 {
             return Err(VTabError::new(format!("rowid {raw_rowid} out of range")));
         }
-        entry.index.mark_delete(raw_rowid as u64).map_err(|error| {
-            VTabError::new(format!("Delete failed with rowid {raw_rowid}: {error}"))
-        })?;
+        backend.mark_delete(raw_rowid as u64)?;
         Ok(raw_rowid)
     } else if values.len() > 1 && argv0_type != null {
         if argv0_type != integer {
@@ -893,10 +1263,10 @@ fn update(
             return Err(VTabError::new(format!("rowid {source_rowid} out of range")));
         }
         let rowid = source_rowid as u64;
-        if !entry.index.contains(rowid) {
+        if !backend.contains(rowid)? {
             return Err(VTabError::new(format!("rowid {source_rowid} not found")));
         }
-        insert_or_update_vector(entry, &mut values[2], rowid)?;
+        insert_or_update_vector(backend, &mut values[2], rowid, true)?;
         Ok(source_rowid)
     } else {
         Err(VTabError::new("Operation not supported for now"))
@@ -911,6 +1281,10 @@ unsafe extern "C" fn x_update(
 ) -> c_int {
     // SAFETY: SQLite provides this module's live table for the callback.
     let vtab = unsafe { &*p_vtab.cast::<VTab>() };
+    let _operation = match DiskannCallbackGuard::for_backend(&vtab.backend) {
+        Ok(guard) => guard,
+        Err(error) => return vtab.report(error),
+    };
     if argc != 1 && argc != 6 {
         return vtab.report(VTabError::new("invalid update argument count"));
     }
@@ -926,7 +1300,16 @@ unsafe extern "C" fn x_update(
     } else {
         None
     };
-    match update(&vtab.entry, values, insert_rowid) {
+    let result = match &vtab.backend {
+        Backend::Hnsw(_) => update(&vtab.backend, values, insert_rowid),
+        Backend::Diskann(table) => table
+            .atomic_write(|| {
+                update(&vtab.backend, values, insert_rowid)
+                    .map_err(|error| IndexError::with_code(error.code, error.message))
+            })
+            .map_err(Into::into),
+    };
+    match result {
         Ok(rowid) => {
             // SQLite only requires p_rowid for inserts; do not assume it is
             // writable for DELETE callbacks (argc == 1).
@@ -938,6 +1321,34 @@ unsafe extern "C" fn x_update(
         }
         Err(error) => vtab.report(error),
     }
+}
+
+// ---- transaction / shadow-table callbacks ----
+
+// DiskANN writes through inside its ordinary, multirow journal-carrier UPDATE.
+// SQLite owns semantic undo, including statement savepoints: a single VUpdate
+// callback alone is not a sufficient journal boundary for several shadow writes.
+// No graph/workspace is buffered between callbacks, and xCommit must never do
+// fallible I/O. HNSW remains intentionally nontransactional despite these hooks.
+unsafe extern "C" fn x_transaction(_p_vtab: *mut sqlite3_vtab) -> c_int {
+    ffi::SQLITE_OK as c_int
+}
+
+unsafe extern "C" fn x_savepoint(_p_vtab: *mut sqlite3_vtab, _savepoint: c_int) -> c_int {
+    // Includes SQLite's statement rollback-to(-1) and late enrollment. Every
+    // DiskANN operation discarded its transient workspace before this callback.
+    ffi::SQLITE_OK as c_int
+}
+
+unsafe extern "C" fn x_shadow_name(suffix: *const c_char) -> c_int {
+    if suffix.is_null() {
+        return 0;
+    }
+    // SAFETY: SQLite supplies the NUL-terminated suffix synchronously.
+    i32::from(matches!(
+        unsafe { cstr(suffix) },
+        "diskann_meta" | "diskann_nodes" | "diskann_txn" | "diskann_rebuild"
+    ))
 }
 
 // ---- module definition ----
@@ -962,16 +1373,16 @@ static MODULE: ModuleWrap = ModuleWrap(sqlite3_module {
     xColumn: Some(x_column),
     xRowid: Some(x_rowid),
     xUpdate: Some(x_update),
-    xBegin: None,
-    xSync: None,
-    xCommit: None,
-    xRollback: None,
+    xBegin: Some(x_transaction),
+    xSync: Some(x_transaction),
+    xCommit: Some(x_transaction),
+    xRollback: Some(x_transaction),
     xFindFunction: Some(x_find_function),
     xRename: Some(x_rename),
-    xSavepoint: None,
-    xRelease: None,
-    xRollbackTo: None,
-    xShadowName: None,
+    xSavepoint: Some(x_savepoint),
+    xRelease: Some(x_savepoint),
+    xRollbackTo: Some(x_savepoint),
+    xShadowName: Some(x_shadow_name),
     xIntegrity: None,
 });
 
@@ -982,6 +1393,36 @@ pub fn module_ptr() -> *const sqlite3_module {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_options_are_strict_bounded_json_objects() {
+        assert_eq!(parse_batch_options("{}").unwrap(), 8);
+        assert_eq!(parse_batch_options(r#"{"batch_size":1}"#).unwrap(), 1);
+        assert_eq!(parse_batch_options(r#"{"batch_size":32}"#).unwrap(), 32);
+        for text in [
+            "null",
+            "[]",
+            "1",
+            "true",
+            r#""options""#,
+            r#"{"batch_size":0}"#,
+            r#"{"batch_size":33}"#,
+            r#"{"batch_size":-1}"#,
+            r#"{"batch_size":1.0}"#,
+            r#"{"batch_size":1e0}"#,
+            r#"{"batch_size":true}"#,
+            r#"{"batch_size":"2"}"#,
+            r#"{"batch_size":null}"#,
+            r#"{"batch_size":1,"batch_size":2}"#,
+            r#"{"batch_size":1,"batch_\u0073ize":2}"#,
+            r#"{"unknown":1}"#,
+            r#"{"batch_size":1,"extra":2}"#,
+            r#"{"batch_size":1} {}"#,
+        ] {
+            assert!(parse_batch_options(text).is_err(), "accepted {text}");
+        }
+        assert!(parse_batch_options(&" ".repeat(1025)).is_err());
+    }
 
     #[test]
     fn plan_requires_matching_counts_and_known_codes() {

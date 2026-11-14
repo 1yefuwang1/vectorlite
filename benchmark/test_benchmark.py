@@ -92,6 +92,7 @@ def _run_insert(benchmark, backend: Backend, data: BenchmarkData,
         "distance_type": distance_type,
         "dim": dim,
         "num_elements": data.num_elements,
+        "dataset_seed": data.seed,
     })
 
 
@@ -105,8 +106,9 @@ def _run_search(benchmark, backend: Backend, data: BenchmarkData,
     once outside the timer.
     """
     _skip_if_unsupported(backend, distance_type)
-    if ef_search is not None and not backend.supports_ef_search:
-        pytest.skip(f"{backend.name} does not parametrise on ef_search")
+    if ef_search is not None and not (
+            backend.supports_ef_search or backend.supports_search_list_size):
+        pytest.skip(f"{backend.name} does not parametrise on search windows")
 
     backend.setup(distance_type, dim, ef_construction, M)
     try:
@@ -124,11 +126,15 @@ def _run_search(benchmark, backend: Backend, data: BenchmarkData,
         "product": backend.name,
         "distance_type": distance_type,
         "dim": dim,
-        "ef_search": ef_search,
+        "ef_search": ef_search if backend.supports_ef_search else None,
         "recall": recall,
         "include_in_query_plot": backend.include_in_query_plot,
         "num_queries": NUM_QUERIES,
+        "num_elements": data.num_elements,
+        "dataset_seed": data.seed,
     })
+    if backend.supports_search_list_size:
+        benchmark.extra_info["search_list_size"] = ef_search
 
 
 # Common parametrisation marks
@@ -159,6 +165,29 @@ def test_search_vectorlite(benchmark, vectorlite_backend, benchmark_data,
                            distance_type, dim, ef_search):
     _run_search(benchmark, vectorlite_backend, benchmark_data,
                 distance_type, dim, _ec, _M, ef_search)
+
+
+# ---------------------------------------------------------------------------
+# vectorlite DiskANN (SQLite-backed, opt-in)
+# ---------------------------------------------------------------------------
+
+
+@_param_dim
+@_param_distance
+def test_insert_vectorlite_diskann(benchmark, vectorlite_diskann_backend,
+                                  benchmark_data, distance_type, dim):
+    _run_insert(benchmark, vectorlite_diskann_backend, benchmark_data,
+                distance_type, dim, None, None)
+
+
+@pytest.mark.parametrize("search_list_size", EF_SEARCH_VALUES)
+@_param_dim
+@_param_distance
+def test_search_vectorlite_diskann(benchmark, vectorlite_diskann_backend,
+                                  benchmark_data, distance_type, dim,
+                                  search_list_size):
+    _run_search(benchmark, vectorlite_diskann_backend, benchmark_data,
+                distance_type, dim, None, None, search_list_size)
 
 
 # ---------------------------------------------------------------------------

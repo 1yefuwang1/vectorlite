@@ -1,0 +1,138 @@
+===== Unmodified leading source comments: src/block.rs =====
+// Copyright 2018 Developers of the Rand project.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! The `BlockRngCore` trait and implementation helpers
+//!
+//! The [`BlockRngCore`] trait exists to assist in the implementation of RNGs
+//! which generate a block of data in a cache instead of returning generated
+//! values directly.
+//!
+//! Usage of this trait is optional, but provides two advantages:
+//! implementations only need to concern themselves with generation of the
+//! block, not the various [`RngCore`] methods (especially [`fill_bytes`], where
+//! the optimal implementations are not trivial), and this allows
+//! `ReseedingRng` (see [`rand`](https://docs.rs/rand) crate) perform periodic
+//! reseeding with very low overhead.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use rand_core::{RngCore, SeedableRng};
+//! use rand_core::block::{BlockRngCore, BlockRng};
+//!
+//! struct MyRngCore;
+//!
+//! impl BlockRngCore for MyRngCore {
+//!     type Item = u32;
+//!     type Results = [u32; 16];
+//!
+//!     fn generate(&mut self, results: &mut Self::Results) {
+//!         unimplemented!()
+//!     }
+//! }
+//!
+//! impl SeedableRng for MyRngCore {
+//!     type Seed = [u8; 32];
+//!     fn from_seed(seed: Self::Seed) -> Self {
+//!         unimplemented!()
+//!     }
+//! }
+//!
+//! // optionally, also implement CryptoBlockRng for MyRngCore
+//!
+//! // Final RNG.
+//! let mut rng = BlockRng::<MyRngCore>::seed_from_u64(0);
+//! println!("First value: {}", rng.next_u32());
+//! ```
+//!
+//! [`BlockRngCore`]: crate::block::BlockRngCore
+//! [`fill_bytes`]: RngCore::fill_bytes
+
+
+===== Unmodified leading source comments: src/impls.rs =====
+// Copyright 2018 Developers of the Rand project.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! Helper functions for implementing `RngCore` functions.
+//!
+//! For cross-platform reproducibility, these functions all use Little Endian:
+//! least-significant part first. For example, `next_u64_via_u32` takes `u32`
+//! values `x, y`, then outputs `(y << 32) | x`. To implement `next_u32`
+//! from `next_u64` in little-endian order, one should use `next_u64() as u32`.
+//!
+//! Byte-swapping (like the std `to_le` functions) is only needed to convert
+//! to/from byte sequences, and since its purpose is reproducibility,
+//! non-reproducible sources (e.g. `OsRng`) need not bother with it.
+
+
+===== Unmodified leading source comments: src/le.rs =====
+// Copyright 2018 Developers of the Rand project.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! Little-Endian utilities
+//!
+//! Little-Endian order has been chosen for internal usage; this makes some
+//! useful functions available.
+
+/// Reads unsigned 32 bit integers from `src` into `dst`.
+///
+/// # Panics
+///
+/// If `dst` has insufficient space (`4*dst.len() < src.len()`).
+
+===== Unmodified leading source comments: src/lib.rs =====
+// Copyright 2018 Developers of the Rand project.
+// Copyright 2017-2018 The Rust Project Developers.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! Random number generation traits
+//!
+//! This crate is mainly of interest to crates publishing implementations of
+//! [`RngCore`]. Other users are encouraged to use the [`rand`] crate instead
+//! which re-exports the main traits and error types.
+//!
+//! [`RngCore`] is the core trait implemented by algorithmic pseudo-random number
+//! generators and external random-number sources.
+//!
+//! [`SeedableRng`] is an extension trait for construction from fixed seeds and
+//! other random number generators.
+//!
+//! The [`impls`] and [`le`] sub-modules include a few small functions to assist
+//! implementation of [`RngCore`].
+//!
+//! [`rand`]: https://docs.rs/rand
+
+
+===== Unmodified leading source comments: src/os.rs =====
+// Copyright 2019 Developers of the Rand project.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! Interface to the random number generator of the operating system.
+
+
