@@ -21,7 +21,8 @@ use identity_cache::{Identity, IdentityCache};
 use crate::batch_input::BatchView;
 use crate::core::{SearchFilter, SearchResult};
 use crate::diskann_core::{
-    self, GraphConfig, GraphStore, NodeState, ResourceLimits, VectorBatchAction,
+    self, GraphConfig, GraphStore, NodeState, ResourceLimits, StoredVector, ValidatedVector,
+    VectorBatchAction, VectorValidationError,
 };
 use crate::ffi;
 use crate::index_error::IndexError;
@@ -393,21 +394,30 @@ fn with_decoded_vector(
     bytes: &[u8],
     dimension: usize,
     decode_buffer: &mut Vec<f32>,
-    action: &mut dyn FnMut(&[f32]) -> Result<()>,
+    action: &mut dyn FnMut(StoredVector<'_>) -> Result<()>,
 ) -> Result<()> {
-    if bytes.len() != checked_product(dimension, 4, "vector")? {
-        return Err(corrupt("DiskANN vector has an invalid byte length"));
-    }
+    // Preserve the checked dimension arithmetic even on a borrowed projection.
+    checked_product(dimension, 4, "vector")?;
     if cfg!(target_endian = "little") {
         if let Ok(vector) = bytemuck::try_cast_slice::<u8, f32>(bytes) {
-            if vector.iter().any(|value| !value.is_finite()) {
-                return Err(corrupt("DiskANN stored vector contains a non-finite value"));
-            }
-            return action(vector);
+            // The sole authoritative length/finite check for this exact borrowed
+            // slice. Core still matches its own GraphConfig dimension, but does
+            // not rescan the proof before scoring or copying.
+            let vector = ValidatedVector::new(vector, dimension).map_err(|error| match error {
+                VectorValidationError::Dimension => {
+                    corrupt("DiskANN vector has an invalid byte length")
+                }
+                VectorValidationError::NonFinite => {
+                    corrupt("DiskANN stored vector contains a non-finite value")
+                }
+            })?;
+            return action(StoredVector::Validated(vector));
         }
     }
+    // Misaligned/big-endian values keep the checked LE decoder and its errors.
+    // It does not manufacture a proof; core may recheck this uncommon copy path.
     decode_vector_into(bytes, dimension, decode_buffer)?;
-    action(decode_buffer)
+    action(StoredVector::Unvalidated(decode_buffer))
 }
 
 fn validate_numeric_range(vector: &[f32], metric: DistanceType) -> Result<f64> {
@@ -1412,13 +1422,17 @@ impl GraphStore for SqliteGraphStore<'_> {
         let dim = self.table.space.dim;
         self.with_vector(id, &mut |slice| {
             reserve(&mut out, dim)?;
-            out.extend_from_slice(slice);
+            out.extend_from_slice(slice.as_slice());
             Ok(())
         })?;
         Ok(out)
     }
 
-    fn with_vector(&mut self, id: u64, action: &mut dyn FnMut(&[f32]) -> Result<()>) -> Result<()> {
+    fn with_vector(
+        &mut self,
+        id: u64,
+        action: &mut dyn FnMut(StoredVector<'_>) -> Result<()>,
+    ) -> Result<()> {
         checked_id(id)?;
         let table = self.table;
         table.visit(&mut self.visits)?;
@@ -2886,6 +2900,102 @@ mod tests {
         assert!(decode_vector(&bytes[..11], 3).is_err());
         assert!(decode_vector(&f32::NAN.to_le_bytes(), 1).is_err());
         assert!(decode_vector(&f32::INFINITY.to_le_bytes(), 1).is_err());
+    }
+
+    #[test]
+    fn borrowed_vector_decoder_lends_a_checked_proof_for_the_exact_slice() {
+        if !cfg!(target_endian = "little") {
+            return;
+        }
+        let values = [1.25f32, -2.5, -0.0];
+        let bytes = bytemuck::cast_slice::<f32, u8>(&values);
+        let mut buffer = Vec::new();
+        let mut calls = 0;
+        with_decoded_vector(bytes, 3, &mut buffer, &mut |vector| {
+            calls += 1;
+            assert!(matches!(vector, StoredVector::Validated(_)));
+            let slice = vector.validate(3).unwrap();
+            assert_eq!(slice.as_ptr(), values.as_ptr());
+            assert_eq!(slice[2].to_bits(), (-0.0f32).to_bits());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(
+            buffer.capacity(),
+            0,
+            "borrowed proof must not allocate a decode buffer"
+        );
+        let error = with_decoded_vector(bytes, 2, &mut buffer, &mut |_| {
+            panic!("wrong-length value must not reach the callback");
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ffi::SQLITE_CORRUPT as i32);
+        assert!(error.message.contains("invalid byte length"));
+    }
+
+    #[test]
+    fn decoded_vector_copy_fallback_preserves_le_values_and_callback_errors() {
+        let values = [1.25, -2.5, -0.0];
+        let encoded = encode_vector(&values).unwrap();
+        // u32 storage guarantees a four-byte-aligned base; offset one forces
+        // the checked copy fallback even on a little-endian test host.
+        let mut storage = [0u32; 4];
+        let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut storage);
+        bytes[1..13].copy_from_slice(&encoded);
+        let mut buffer = Vec::new();
+        with_decoded_vector(&bytes[1..13], 3, &mut buffer, &mut |vector| {
+            assert!(matches!(vector, StoredVector::Unvalidated(_)));
+            let slice = vector.validate(3).unwrap();
+            assert_eq!(slice, values);
+            assert_eq!(slice[2].to_bits(), (-0.0f32).to_bits());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(buffer.len(), 3);
+        let callback_error = IndexError::with_code(779, "original callback error");
+        for offset in [0, 1] {
+            bytes[offset..offset + 12].copy_from_slice(&encoded);
+            let error =
+                with_decoded_vector(&bytes[offset..offset + 12], 3, &mut buffer, &mut |_| {
+                    Err(callback_error.clone())
+                })
+                .unwrap_err();
+            assert_eq!(error, callback_error);
+        }
+    }
+
+    #[test]
+    fn decoded_vector_rejects_nonfinite_and_bad_lengths_before_callbacks() {
+        let mut storage = [0u32; 3];
+        let bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut storage);
+        let mut buffer = Vec::new();
+        for offset in [0, 1] {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let encoded = encode_vector(&[0.0, value]).unwrap();
+                bytes[offset..offset + 8].copy_from_slice(&encoded);
+                let error =
+                    with_decoded_vector(&bytes[offset..offset + 8], 2, &mut buffer, &mut |_| {
+                        panic!("non-finite value must not reach the callback")
+                    })
+                    .unwrap_err();
+                assert_eq!(error.code, ffi::SQLITE_CORRUPT as i32);
+                assert!(error
+                    .message
+                    .contains("stored vector contains a non-finite"));
+            }
+            for length in [0, 1, 4, 7, 9] {
+                let error = with_decoded_vector(
+                    &bytes[offset..offset + length],
+                    2,
+                    &mut buffer,
+                    &mut |_| panic!("invalid length must not reach the callback"),
+                )
+                .unwrap_err();
+                assert_eq!(error.code, ffi::SQLITE_CORRUPT as i32);
+                assert!(error.message.contains("invalid byte length"));
+            }
+        }
     }
 
     #[test]

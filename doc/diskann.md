@@ -286,7 +286,10 @@ reconnects:
 - Vector reads use synchronous borrowed SQLite BLOB SIMD distance evaluation,
   multi-row `IN (...)` point lookups, and query-local distance reuse (`<= 31`
   entries per beam search) without caching vector payloads or adjacency lists in
-  `SqliteGraphStore`.
+  `SqliteGraphStore`. A callback-local checked view can carry dimension/finiteness
+  validation for the exact borrowed BLOB; core still checks its configured
+  dimension. Untrusted and copied values remain checked, and no view outlives
+  row access or suppresses SQL-cleanup errors.
 
 Vector/adjacency payload checks, dangling-edge checks, and `max_visits`
 traversal limits are preserved on every operation. This is bounded callback
@@ -300,6 +303,32 @@ file cache, caller-supplied SQL BLOBs, the backend-agnostic `knn_param` producer
 and allocator/code overhead have their own memory costs. Work/visit limits are
 conservative, not an exact public count of expanded graph nodes. Exceeding limits
 returns an explicit error; writes do not silently accept a truncated graph repair.
+
+### Optional host-owned pager tuning
+
+SQLite pager memory is separate from the adapter budget. For an index in `main`,
+this is an explicit application-owned example, not an extension default:
+
+```sql
+PRAGMA main.cache_size = -32768; -- suggested 32 MiB pager budget
+```
+
+Negative `cache_size` uses KiB. It is a SQLite cache hint, not a hard RSS cap;
+allocator/page overhead and other memory remain outside it. The setting affects
+other tables in that database on the connection. For an attached database, use
+its schema instead of `main`, and budget concurrent connections separately.
+The extension never silently sets this or changes the application's journal,
+synchronous, spill or mmap policy for speed. Keep durability settings fixed
+when comparing builds.
+
+The [local matched results](<../plans/2026-11-13-diskann-insertion-performance-results.md>)
+separate the smaller format-preserving code gain from larger pager-budget effects,
+including the 32 MiB example on both file workloads and separate RSS/pager
+diagnostics. Those bounded, warm-cache observations are not a universal tuning
+recommendation or evidence of beyond-RAM performance. The
+[matched runner](<../benchmark/diskann_identity_benchmark.py>) records effective
+settings and rejects mismatched code comparisons; `--comparison pager-cache`
+requires identical library hashes for separate host-budget attribution.
 
 Cursors retain a SQLite snapshot anchor. Projected vector bytes are materialized
 with their result distances, so a later same-connection update does not mix an old

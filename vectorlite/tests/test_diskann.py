@@ -1055,6 +1055,106 @@ def test_diskann_corrupt_shadow_nodes_raise_errors_not_false_absence(extension_p
         reopened.close()
 
 
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+@pytest.mark.parametrize("access", ["point", "search", "filtered", "insert", "consolidate"])
+@pytest.mark.parametrize("payload", [
+    pytest.param(b"\0", id="misaligned-length"),
+    pytest.param(_blob([1.0]), id="short-dimension"),
+    pytest.param(_blob([1.0, 0.0, 0.0]), id="long-dimension"),
+    pytest.param("not a blob", id="text"),
+    pytest.param(1, id="integer"),
+    pytest.param(_blob([math.nan, 0.0]), id="nan"),
+    pytest.param(_blob([0.0, math.inf]), id="positive-infinity"),
+    pytest.param(_blob([-math.inf, 0.0]), id="negative-infinity"),
+])
+def test_diskann_stored_vector_validation_keeps_error_codes_and_atomicity(
+    extension_path, metric, access, payload,
+):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        if access == "consolidate":
+            connection.execute("DELETE FROM v WHERE rowid=7")
+        live = _live_id(connection, 1)
+        original = connection.execute(
+            "SELECT vector FROM v_diskann_nodes WHERE node_id=?", (live,),
+        ).fetchone()[0]
+        # Ensure graph traversal visits the damaged node rather than depending
+        # on a particular small-graph edge chosen by construction.
+        neighbors = [row[0] for row in connection.execute(
+            "SELECT node_id FROM v_diskann_nodes WHERE state=0 ORDER BY node_id",
+        )]
+        connection.execute(
+            "UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=0",
+            (struct.pack(f"<{len(neighbors)}Q", *neighbors),),
+        )
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (payload, live),
+        )
+        assert connection.execute(
+            "SELECT vector FROM v_diskann_nodes WHERE node_id=?", (live,),
+        ).fetchone()[0] == payload, "the corruption injection must actually persist"
+        before = _snapshot(connection)
+        with pytest.raises(sqlite3.DatabaseError) as error:
+            if access == "point":
+                _get(connection, 1)
+            elif access == "search":
+                _knn(connection)
+            elif access == "filtered":
+                connection.execute(
+                    "SELECT rowid,distance FROM v WHERE "
+                    "knn_search(embedding,knn_param(?,2)) AND rowid IN (1,19)",
+                    (_blob([1.0, 0.0]),),
+                ).fetchall()
+            elif access == "insert":
+                _insert(connection, 99, [2.0, 1.0])
+            else:
+                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        if access == "consolidate" and (not isinstance(payload, bytes) or len(payload) != 8):
+            # Preserve the baseline staging CASE->NULL/NOT NULL SQL error,
+            # including its extended status; do not replace it with decoder CORRUPT.
+            expected_primary = sqlite3.SQLITE_CONSTRAINT
+            expected_extended = sqlite3.SQLITE_CONSTRAINT_NOTNULL
+        else:
+            expected_primary = expected_extended = sqlite3.SQLITE_CORRUPT
+        assert error.value.sqlite_errorcode & 0xff == expected_primary
+        assert error.value.sqlite_errorcode == expected_extended
+        assert _snapshot(connection) == before
+        connection.execute(
+            "UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (original, live),
+        )
+        _insert(connection, 99, [2.0, 1.0])
+        assert _knn(connection, k=1)[0][0] == 1
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+def test_diskann_stored_vector_not_null_guard_rejects_injection(extension_path, metric):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        live = _live_id(connection, 1)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        before = _snapshot(connection)
+        with pytest.raises(sqlite3.IntegrityError) as error:
+            connection.execute(
+                "UPDATE v_diskann_nodes SET vector=NULL WHERE node_id=?", (live,),
+            )
+        # Unlike CHECK, NOT NULL cannot be bypassed by the injection PRAGMA.
+        # This is schema-level rejection, not a successfully injected bad vector.
+        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CONSTRAINT
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_NOTNULL
+        assert _snapshot(connection) == before
+        _insert(connection, 99, [2.0, 1.0])
+        assert _knn(connection, k=1)[0][0] == 1
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("column,value", [
     ("revision", -1), ("next_node_id", 0), ("live_count", -1),
     ("deleted_count", -1), ("entrypoints", b"\x01"),
@@ -1293,15 +1393,19 @@ def test_diskann_shadow_trigger_mutating_vector_payload_is_not_masked_by_callbac
         # rebuilt node; an AFTER UPDATE OF neighbors trigger then poisons node 0
         # so the next rebuilt node MUST re-read SQLite rather than hit a stale
         # callback vector cache.
+        poisoned = []
+        connection.create_function("record_vector_poison", 0, lambda: poisoned.append(True))
         connection.execute(
             f"CREATE {qualifier}TRIGGER poison_vector_on_edge_write "
             "AFTER UPDATE OF neighbors ON v_diskann_nodes "
-            "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
+            "BEGIN SELECT record_vector_poison(); "
+            "UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
         )
         connection.execute("BEGIN")
         before = _snapshot(connection)
         with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
             connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+        assert poisoned, "the corruption trigger must actually execute"
         assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
         assert _snapshot(connection) == before
         connection.execute("ROLLBACK")

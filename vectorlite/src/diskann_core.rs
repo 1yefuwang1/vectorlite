@@ -29,9 +29,12 @@ use crate::index_error::IndexError;
 use crate::ops;
 use crate::vector_space::DistanceType;
 
+mod validated_vector;
+pub(crate) use validated_vector::{StoredVector, ValidatedVector, VectorValidationError};
+
 type StoreResult<T> = Result<T, IndexError>;
 pub(crate) type VectorBatchAction<'a> =
-    dyn FnMut(usize, u64, Option<u64>, &[f32]) -> StoreResult<()> + 'a;
+    dyn FnMut(usize, u64, Option<u64>, StoredVector<'_>) -> StoreResult<()> + 'a;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NodeState {
@@ -55,18 +58,20 @@ pub(crate) trait GraphStore {
     fn remaining_vector_visits(&self) -> usize {
         usize::MAX
     }
-    /// Synchronously lends a validated stored vector slice to `action`.
+    /// Synchronously lends one stored vector view to `action`. Only a checked
+    /// decoder may issue a proof; generic providers lend unvalidated slices and
+    /// core stages their validation outcome until provider cleanup succeeds.
     /// Implementations charge one owner vector visit and complete any SQL
     /// cleanup before returning `Ok`.
     fn with_vector(
         &mut self,
         id: u64,
-        action: &mut dyn FnMut(&[f32]) -> StoreResult<()>,
+        action: &mut dyn FnMut(StoredVector<'_>) -> StoreResult<()>,
     ) -> StoreResult<()> {
         let vector = self.vector(id)?;
-        action(&vector)
+        action(StoredVector::Unvalidated(&vector))
     }
-    /// Fetches up to `ids.len()` distinct validated vectors, charging one owner
+    /// Fetches up to `ids.len()` distinct stored vector views, charging one owner
     /// vector visit per ID and invoking `action(index, id, rowid, slice)` once
     /// per requested slot. Default calls `rowid` + `with_vector` sequentially.
     fn with_vectors_batch(
@@ -291,12 +296,13 @@ impl GraphConfig {
         Ok(bytes)
     }
     fn validate_vector(&self, vector: &[f32]) -> StoreResult<()> {
-        if vector.len() != self.dimension || vector.iter().any(|x| !x.is_finite()) {
-            return Err(IndexError::new(
-                "DiskANN vector has wrong dimension or non-finite values",
-            ));
-        }
-        Ok(())
+        self.validate_stored_vector(StoredVector::Unvalidated(vector))
+            .map(|_| ())
+    }
+    fn validate_stored_vector<'a>(&self, vector: StoredVector<'a>) -> StoreResult<&'a [f32]> {
+        vector
+            .validate(self.dimension)
+            .map_err(|_| IndexError::new("DiskANN vector has wrong dimension or non-finite values"))
     }
 }
 #[derive(Default)]
@@ -437,10 +443,31 @@ impl OperationContext {
     fn fetch_vector(&self, id: u64) -> StoreResult<OwnedVector> {
         self.visit()?;
         let lease = self.reserve_vector()?;
-        let data = with_store(self, |store| store.vector(id))?;
-        self.config
-            .validate_vector(&data)
-            .map_err(|e| self.fail(e))?;
+        let mut data = Vec::new();
+        let mut outcome = None;
+        with_store(self, |store| {
+            store.with_vector(id, &mut |vector| {
+                // Copy directly into the leased snapshot, but do not publish a
+                // validation/allocation error ahead of SQL statement cleanup.
+                outcome = Some(
+                    self.config
+                        .validate_stored_vector(vector)
+                        .and_then(|vector| {
+                            data.clear();
+                            data.try_reserve_exact(vector.len())
+                                .map_err(|_| allocation_error())?;
+                            data.extend_from_slice(vector);
+                            Ok(())
+                        }),
+                );
+                Ok(())
+            })
+        })?;
+        self.check()?;
+        outcome
+            .ok_or_else(|| IndexError::new("DiskANN vector callback did not run"))
+            .and_then(|value| value)
+            .map_err(|error| self.fail(error))?;
         Ok(OwnedVector {
             data,
             _lease: lease,
@@ -901,9 +928,9 @@ impl<'a> Accessor<'a> {
         with_store(&self.context, |store| {
             store.with_vector(id, &mut |vector| {
                 // Stage pure math outcome until SQL statement cleanup finishes.
-                outcome = Some(self.context.config.validate_vector(vector).and_then(|()| {
-                    pure_distance(self.context.config.distance, &self.query.data, vector)
-                }));
+                outcome = Some(self.context.config.validate_stored_vector(vector).and_then(
+                    |vector| pure_distance(self.context.config.distance, &self.query.data, vector),
+                ));
                 Ok(())
             })
         })
@@ -1016,13 +1043,15 @@ impl<'a> Accessor<'a> {
                         &miss_ids[..miss_count],
                         need_rowid,
                         &mut |index, _id, rowid, vector| {
-                            let res = self.context.config.validate_vector(vector).and_then(|()| {
-                                pure_distance(
-                                    self.context.config.distance,
-                                    &self.query.data,
-                                    vector,
-                                )
-                            });
+                            let res = self.context.config.validate_stored_vector(vector).and_then(
+                                |vector| {
+                                    pure_distance(
+                                        self.context.config.distance,
+                                        &self.query.data,
+                                        vector,
+                                    )
+                                },
+                            );
                             staged[index] = Some((rowid, res));
                             Ok(())
                         },
@@ -1357,12 +1386,15 @@ impl PruneAccessor {
                     &batch_ids[..count],
                     false,
                     &mut |index, _id, _rowid, vector| {
-                        if let Err(error) = self.context.config.validate_vector(vector) {
-                            if staged_error.is_none() {
-                                staged_error = Some(error);
+                        let vector = match self.context.config.validate_stored_vector(vector) {
+                            Ok(vector) => vector,
+                            Err(error) => {
+                                if staged_error.is_none() {
+                                    staged_error = Some(error);
+                                }
+                                return Ok(());
                             }
-                            return Ok(());
-                        }
+                        };
                         if let Some(slot) = &mut slots[index] {
                             slot.data.clear();
                             slot.data.extend_from_slice(vector);

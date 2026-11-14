@@ -104,10 +104,10 @@ impl GraphStore for FakeStore {
     fn with_vector(
         &mut self,
         id: u64,
-        action: &mut dyn FnMut(&[f32]) -> StoreResult<()>,
+        action: &mut dyn FnMut(StoredVector<'_>) -> StoreResult<()>,
     ) -> StoreResult<()> {
         let vector = self.vector(id)?;
-        action(&vector)?;
+        action(StoredVector::Unvalidated(&vector))?;
         if self.fail_cleanup_after_vector == Some(id) {
             return Err(IndexError::with_code(
                 779,
@@ -906,6 +906,179 @@ fn upstream_pure_phase_errors_are_not_success_or_guard_fallback() {
         );
         drop(scope);
         assert!(ACTIVE.with(|active| active.get().is_none()));
+    }
+}
+
+#[test]
+fn checked_proof_must_still_match_graph_config_dimension() {
+    let cfg = config();
+    let wrong = [1.0];
+    let proof = ValidatedVector::new(&wrong, 1).unwrap();
+    let error = cfg
+        .validate_stored_vector(StoredVector::Validated(proof))
+        .unwrap_err();
+    assert_eq!(error.code, crate::ffi::SQLITE_ERROR as i32);
+    assert!(error.message.contains("wrong dimension"));
+    let good = [1.0, -0.0];
+    let proof = ValidatedVector::new(&good, 2).unwrap();
+    assert_eq!(
+        cfg.validate_stored_vector(StoredVector::Validated(proof))
+            .unwrap()
+            .as_ptr(),
+        good.as_ptr()
+    );
+    assert_eq!(
+        std::mem::size_of::<ValidatedVector<'_>>(),
+        std::mem::size_of::<&[f32]>()
+    );
+}
+
+#[test]
+fn raw_provider_validation_is_staged_until_scalar_batch_and_prune_cleanup() {
+    for invalid in [
+        vec![],
+        vec![1.0],
+        vec![1.0, 0.0, 0.0],
+        vec![f32::NAN, 0.0],
+        vec![0.0, f32::INFINITY],
+        vec![f32::NEG_INFINITY, 0.0],
+    ] {
+        for cleanup in [false, true] {
+            for path in [
+                "scalar",
+                "batch",
+                "rowid-batch",
+                "fetch",
+                "prune-one",
+                "prune-batch",
+            ] {
+                let mut store = FakeStore::default();
+                let good = store.allocate(1, &[1.0, 0.0]).unwrap();
+                let bad = store.allocate(2, &[2.0, 0.0]).unwrap();
+                store.nodes.get_mut(&bad).unwrap().vector = invalid.clone();
+                store.fail_cleanup_after_vector = cleanup.then_some(bad);
+                let mut published = 0;
+                let error = operation(&mut store, &config(), |_, context| match path {
+                    "scalar" => {
+                        let mut accessor =
+                            Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+                        accessor.distance(bad).map(|_| ()).map_err(index_error)
+                    }
+                    "batch" | "rowid-batch" => {
+                        let mut accessor =
+                            Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+                        accessor
+                            .expand_neighbors(
+                                &[good, bad],
+                                path == "rowid-batch",
+                                |_| true,
+                                |_, _, _| published += 1,
+                            )
+                            .map_err(index_error)
+                    }
+                    "fetch" => context.fetch_vector(bad).map(|_| ()),
+                    _ => {
+                        let mut accessor =
+                            glue::PruneStrategy::prune_accessor(&Strategy, &Provider, context, 0)
+                                .map_err(index_error)?;
+                        let ids = if path == "prune-one" {
+                            vec![bad]
+                        } else {
+                            vec![good, bad]
+                        };
+                        let result = accessor.fill_batch(ids.into_iter());
+                        assert!(accessor.vectors.is_empty());
+                        result
+                    }
+                })
+                .unwrap_err();
+                if cleanup {
+                    assert_eq!(error.code, 779, "{path}: {invalid:?}: {error}");
+                    assert!(error.message.contains("cleanup failure"));
+                    assert_eq!(
+                        published, 0,
+                        "cleanup failure must not publish batch scores"
+                    );
+                } else {
+                    assert_eq!(
+                        error.code,
+                        crate::ffi::SQLITE_ERROR as i32,
+                        "{path}: {error}"
+                    );
+                    assert!(
+                        error.message.contains("wrong dimension or non-finite"),
+                        "{path}: {error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn later_provider_error_beats_earlier_staged_invalid_batch_vector() {
+    for prune in [false, true] {
+        for source_error in [false, true] {
+            let mut store = FakeStore::default();
+            let bad = store.allocate(1, &[1.0, 0.0]).unwrap();
+            let good = store.allocate(2, &[2.0, 0.0]).unwrap();
+            store.nodes.get_mut(&bad).unwrap().vector = vec![f32::NAN, 0.0];
+            store.calls.clear();
+            if source_error {
+                store.fail_at = Some(("vector", 2));
+            } else {
+                store.fail_cleanup_after_vector = Some(good);
+            }
+            let mut published = 0;
+            let error = operation(&mut store, &config(), |_, context| {
+                if prune {
+                    let mut accessor =
+                        glue::PruneStrategy::prune_accessor(&Strategy, &Provider, context, 0)
+                            .map_err(index_error)?;
+                    accessor.fill_batch([bad, good].into_iter())
+                } else {
+                    let mut accessor =
+                        Accessor::new(context, &[0.0, 0.0], None).map_err(index_error)?;
+                    accessor
+                        .expand_neighbors(&[bad, good], false, |_| true, |_, _, _| published += 1)
+                        .map_err(index_error)
+                }
+            })
+            .unwrap_err();
+            assert_eq!(error.code, if source_error { 778 } else { 779 }, "{error}");
+            assert_eq!(published, 0);
+        }
+    }
+}
+
+#[test]
+fn filtered_search_keeps_raw_provider_validation_and_cleanup_priority() {
+    for invalid in [
+        vec![1.0],
+        vec![f32::NAN, 0.0],
+        vec![f32::INFINITY, 0.0],
+        vec![0.0, f32::NEG_INFINITY],
+    ] {
+        for cleanup in [false, true] {
+            let mut store = FakeStore::default();
+            let bad = store.allocate(1, &[1.0, 0.0]).unwrap();
+            let good = store.allocate(2, &[2.0, 0.0]).unwrap();
+            store.set_neighbors(0, &[bad, good]).unwrap();
+            store.nodes.get_mut(&bad).unwrap().vector = invalid.clone();
+            store.fail_cleanup_after_vector = cleanup.then_some(bad);
+            let filter = HashSet::from([1, 2]);
+            let error =
+                search(&mut store, &config(), &[0.0, 0.0], 1, None, Some(&filter)).unwrap_err();
+            assert_eq!(
+                error.code,
+                if cleanup {
+                    779
+                } else {
+                    crate::ffi::SQLITE_ERROR as i32
+                },
+                "{error}"
+            );
+        }
     }
 }
 
