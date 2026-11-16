@@ -216,8 +216,8 @@ Formal plan reviewers (read-only, same canonical absolute path/version):
 | Gate | State |
 |---|---|
 | All three formal plan verdicts APPROVED | APPROVED: Sol, Carbon, independent Sol; v1 design hash 831d6ea61f20a41142d4c2260eaf9a45847d004040e3735cf95f958917f34e38 |
-| User explicit implementation approval after reviewed plan | APPROVED: user said "approved" on 2026-11-15 at 16:15 +08 |
-| Integrated verification + all three integrated APPROVED | integration verification PASS including Linux x64, Windows x64 and macOS arm64 CI execution (§15.14); final reviewer confirmations in §15.15 |
+| User explicit implementation approval after reviewed plan | APPROVED 2026-11-15 16:15 +08; commit+push authorised 2026-11-16 |
+| Integrated verification + all three integrated APPROVED | **PASS**: integration + both profiles + packaging + accuracy/performance evidence, CI green on Linux x64 / Windows x64 / macOS arm64 (§15.14), and 3/3 integrated reviewer APPROVED (§15.15) |
 
 Record full individual verdict receipts or faithful references in this file only before user approval. For REVISE, address every blocker, increment vN and rerun all three; for NEEDS_USER/material disagreement, stop and ask. Stop after three review rounds without approval or a repeated blocker twice without new evidence. Reuse these three identities for revisions/final review; no fourth consolidator. Implementation agents are separate. Plan-only completion is presentation of the reviewed plan and the Approve/Revise/Stop request, not code delivery.
 
@@ -680,3 +680,24 @@ only.
 Residual, unchanged: the tests ran on GitHub-hosted runner images, not on a real
 macOS 11 machine; cold-disk, beyond-RAM, update-heavy and multi-worker native builds
 remain out of scope as disclosed in section 11.
+
+### 15.15 Final integrated verdicts: all three APPROVED
+
+With platform execution evidence in place, the same three reviewer identities returned
+final verdicts on HEAD `7a9c023`:
+
+| Reviewer | Verdict | Basis |
+|---|---|---|
+| deferred-plan-independent | **APPROVED** | Independently confirmed CI run 43824647766 at that exact HEAD (Linux x64, Windows x64, macOS arm64 build/test plus all three wheel jobs). Explicitly states the platform gate "is satisfied without W2". Confirmed no extension runtime or Cargo dependency files changed after the reviewed delivery commit, and re-checked the documentation delta without finding a new blocker. |
+| deferred-advisory-carbon | **APPROVED** | Same CI confirmation; audited `df39315..HEAD` and the plan sections recording the CI iterations; judged the post-delivery commits sound build/test infrastructure fixes with zero change to extension runtime behaviour. |
+| deferred-seat3-review | **APPROVED** | CI API confirmed all seven active jobs succeeded; independently verified that the diff from the reviewed delivery commit to HEAD is empty across `vectorlite/src`, `vectorlite/cpp`, the Cargo manifests/lockfile and the committed sys bindings; prior integrated approval stands. |
+
+Earlier rounds and their resolutions are in 15.6-15.8; the CI iterations that produced
+the platform evidence are in 15.12-15.14.
+
+**Completion state**: the review-gated delivery is complete. Implementation, integration,
+both build profiles, packaging (wheel, sdist, installed wheel, npm notices), the native
+accuracy parity matrix and the diagnostic performance campaign all pass; CI is green on
+all three release platforms; and all three formal reviewers approve the integrated
+result. Nothing in section 10 remains unwaived, and the disclosed limitations in
+section 11 are unchanged.
