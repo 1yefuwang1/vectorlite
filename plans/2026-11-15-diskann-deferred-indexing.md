@@ -217,7 +217,7 @@ Formal plan reviewers (read-only, same canonical absolute path/version):
 |---|---|
 | All three formal plan verdicts APPROVED | APPROVED: Sol, Carbon, independent Sol; v1 design hash 831d6ea61f20a41142d4c2260eaf9a45847d004040e3735cf95f958917f34e38 |
 | User explicit implementation approval after reviewed plan | APPROVED: user said "approved" on 2026-11-15 at 16:15 +08 |
-| Integrated verification + all three integrated APPROVED | integration verification PASS (see §15); integrated review pending |
+| Integrated verification + all three integrated APPROVED | integration verification PASS including Linux x64, Windows x64 and macOS arm64 CI execution (§15.14); final reviewer confirmations in §15.15 |
 
 Record full individual verdict receipts or faithful references in this file only before user approval. For REVISE, address every blocker, increment vN and rerun all three; for NEEDS_USER/material disagreement, stop and ask. Stop after three review rounds without approval or a repeated blocker twice without new evidence. Reuse these three identities for revisions/final review; no fourth consolidator. Implementation agents are separate. Plan-only completion is presentation of the reviewed plan and the Approve/Revise/Stop request, not code delivery.
 
@@ -646,3 +646,37 @@ different, platform-specific reason that no local macOS run could have exposed:
 
 Both are repository-infrastructure fixes, again with no extension runtime change.
 The third run's outcome is recorded in 15.14.
+
+### 15.14 Platform gate CLEARED: CI green on Linux x64, Windows x64 and macOS arm64
+
+Run [43824647766](https://github.com/1yefuwang1/vectorlite/actions/runs/43824647766)
+on commit `7a9c023` finished **success**, with every job green:
+
+| Job | Result |
+|---|---|
+| Check version consistency | success |
+| Build and test (ubuntu-latest, x86_64-unknown-linux-gnu) | **success** |
+| Build and test (windows-latest, x86_64-pc-windows-msvc) | **success** |
+| Build and test (macos-15, aarch64-apple-darwin) | **success** |
+| Build Rust wheels on ubuntu-latest | success |
+| Build Rust wheels on windows-latest | success |
+| Build Rust wheels on macos-15 | success |
+
+Each `build_and_test` job ran the full sequence on that platform: vcpkg bootstrap,
+CMake/Cargo release build and deploy, `cargo fmt`, strict Clippy, the complete CTest
+suite (28 tests on macOS; 34 on Windows/Linux, which add platform-specific native
+ops/dialect cases), the binding checks where applicable, and **both Python suites**
+against the freshly built extension. The wheel jobs then built all three platform
+wheels.
+
+This is the platform evidence plan section 10 required, so **the Linux/Windows
+execution gate is satisfied without any waiver**. Getting there took four CI
+iterations, and each failure was a genuine pre-existing repository defect rather than
+a regression in this delivery: a platform-dependent bindgen layout assertion, an
+unsafe Windows ctypes auto-discovery, and CRLF checkout conversion changing hashed
+byte content. All four fixes are recorded in 15.12 and 15.13 and are infrastructure
+only.
+
+Residual, unchanged: the tests ran on GitHub-hosted runner images, not on a real
+macOS 11 machine; cold-disk, beyond-RAM, update-heavy and multi-worker native builds
+remain out of scope as disclosed in section 11.
