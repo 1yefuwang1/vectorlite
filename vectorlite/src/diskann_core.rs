@@ -174,14 +174,21 @@ impl GraphConfig {
         .build()
         .map_err(|e| IndexError::new(e.to_string()))
     }
-    fn scratch_bytes(&self, physical_degree: usize) -> StoreResult<usize> {
+    /// Shared workspace bounds for one operation at a physical degree and an
+    /// effective search list. Returns the operation scratch bytes together with
+    /// the floor (scratch plus the minimum vector payload) that admission compares
+    /// against `max_vector_bytes`.
+    fn workspace_bounds(
+        &self,
+        physical_degree: usize,
+        search_l: usize,
+    ) -> StoreResult<(usize, usize)> {
         // Pinned 0.60: fixed best queue + visited HashSet; insert additionally
         // records visited Neighbors, inline search collects matching Neighbors.
         // Account geometric Vec/hash capacities, their initial degree*L reserve,
         // default750 prune states, and OneHop's degree-squared topology work.
         // Conservative single-operation bounds. No paged/resize APIs are used.
-        let search_l = self
-            .search_l
+        let search_l = search_l
             .max(self.construction_l)
             .checked_add(1)
             .ok_or_else(|| limit("DiskANN scratch estimate overflow"))?;
@@ -212,13 +219,33 @@ impl GraphConfig {
             .and_then(|n| n.checked_add(vector_metadata_bytes()))
             .and_then(|n| n.checked_mul(2))
             .ok_or_else(|| limit("DiskANN vector estimate overflow"))?;
-        if bytes
+        let floor = bytes
             .checked_add(minimum_vector)
-            .is_none_or(|n| n > self.limits.max_vector_bytes)
-        {
+            .ok_or_else(|| limit("DiskANN algorithm scratch exceeds workspace limit"))?;
+        Ok((bytes, floor))
+    }
+
+    fn scratch_bytes(&self, physical_degree: usize) -> StoreResult<usize> {
+        let (bytes, floor) = self.workspace_bounds(physical_degree, self.search_l)?;
+        if floor > self.limits.max_vector_bytes {
             return Err(limit("DiskANN algorithm scratch exceeds workspace limit"));
         }
         Ok(bytes)
+    }
+
+    /// Whole-core admission floor for one search with the given effective list.
+    ///
+    /// This is exactly `scratch_bytes(physical_degree) + minimum vector payload`,
+    /// the sum the existing scratch admission compares with `max_vector_bytes`.
+    /// The caller derives `effective_l` as `override_l.unwrap_or(search_l).max(k)`
+    /// and passes it here; the helper only substitutes it into the existing
+    /// estimate. The physical degree is derived exactly as operation entry does.
+    /// The floor is a value, not an admission decision: the caller composes an
+    /// allowance from it, and core still rejects when its copied allowance is
+    /// below this floor.
+    pub(crate) fn workspace_floor(&self, effective_l: usize) -> StoreResult<usize> {
+        let physical_degree = self.core_config()?.max_degree().get();
+        Ok(self.workspace_bounds(physical_degree, effective_l)?.1)
     }
     fn validate_vector(&self, vector: &[f32]) -> StoreResult<()> {
         self.validate_stored_vector(StoredVector::Unvalidated(vector))
@@ -1558,3 +1585,111 @@ pub(crate) fn search(
 #[cfg(test)]
 #[path = "diskann_core/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod workspace_floor_tests {
+    use super::*;
+
+    fn fixture_config() -> GraphConfig {
+        GraphConfig {
+            dimension: 2,
+            distance: DistanceType::L2,
+            max_degree: 8,
+            construction_l: 32,
+            search_l: 32,
+            alpha: 1.2,
+            limits: ResourceLimits::default(),
+        }
+    }
+
+    fn physical_degree(config: &GraphConfig) -> usize {
+        config.core_config().unwrap().max_degree().get()
+    }
+
+    fn minimum_vector(config: &GraphConfig) -> usize {
+        (config.dimension * 4 + vector_metadata_bytes()) * 2
+    }
+
+    #[test]
+    fn floor_is_the_existing_scratch_threshold_for_the_effective_list() {
+        let config = fixture_config();
+        let physical = physical_degree(&config);
+        let minimum = minimum_vector(&config);
+        assert_eq!(
+            config.workspace_floor(config.search_l).unwrap(),
+            config.scratch_bytes(physical).unwrap() + minimum
+        );
+        // The effective list replaces search_l exactly as core's admitted search
+        // config does, including the construction-list clamp.
+        let mut admitted = config.clone();
+        admitted.search_l = 100;
+        assert_eq!(
+            config.workspace_floor(100).unwrap(),
+            admitted.scratch_bytes(physical_degree(&admitted)).unwrap() + minimum
+        );
+        assert!(
+            config.workspace_floor(100).unwrap() > config.workspace_floor(config.search_l).unwrap()
+        );
+        assert_eq!(
+            config.workspace_floor(1).unwrap(),
+            config.workspace_floor(config.construction_l).unwrap()
+        );
+    }
+
+    #[test]
+    fn admission_accepts_at_the_floor_and_rejects_below_it() {
+        let mut config = fixture_config();
+        let physical = physical_degree(&config);
+        let scratch = config.scratch_bytes(physical).unwrap();
+        let floor = config.workspace_floor(config.search_l).unwrap();
+        assert_eq!(floor, scratch + minimum_vector(&config));
+        config.limits.max_vector_bytes = floor - 1;
+        let error = config.scratch_bytes(physical).unwrap_err();
+        assert_eq!(error.code, crate::ffi::SQLITE_TOOBIG as i32);
+        assert!(error.message.contains("scratch"));
+        config.limits.max_vector_bytes = floor;
+        assert_eq!(config.scratch_bytes(physical).unwrap(), scratch);
+        // The existing tight-budget outcome is preserved: 4096 bytes never admits
+        // the 32-deep estimate, and a 50,000-wide effective list still exceeds the
+        // 16 MiB budget used by the existing limits test.
+        let mut tight = fixture_config();
+        tight.limits.max_vector_bytes = 4096;
+        assert_eq!(
+            tight
+                .scratch_bytes(physical_degree(&tight))
+                .unwrap_err()
+                .code,
+            crate::ffi::SQLITE_TOOBIG as i32
+        );
+        assert!(tight.workspace_floor(50_000).unwrap() > 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn floor_matches_the_recorded_construction_budget_boundaries() {
+        // The construction/query fixtures at vectorlite/tests/test_diskann.py
+        // (cache_bytes 4096, 24576, 32768) and test_diskann_deferred_query.py
+        // (131072) keep their behaviour only if the helper returns the same
+        // threshold the previous admission formula produced at every one of those
+        // budgets.
+        for budget in [4096usize, 24_576, 32_768, 131_072] {
+            let mut config = fixture_config();
+            config.max_degree = 4;
+            config.construction_l = 8;
+            config.search_l = 8;
+            config.limits.max_visits = 128;
+            config.limits.max_vector_bytes = budget;
+            let mut ample = config.clone();
+            ample.limits.max_vector_bytes = 64 * 1024 * 1024;
+            assert_eq!(
+                config.workspace_floor(config.search_l).unwrap(),
+                ample.scratch_bytes(physical_degree(&ample)).unwrap() + minimum_vector(&ample)
+            );
+            // The floor is independent of the current allowance: it is a value the
+            // caller subtracts, never a clamped admission result.
+            assert_eq!(
+                config.workspace_floor(config.search_l).unwrap(),
+                ample.workspace_floor(ample.search_l).unwrap()
+            );
+        }
+    }
+}

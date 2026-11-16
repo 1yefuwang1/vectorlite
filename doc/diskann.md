@@ -518,7 +518,11 @@ policy.
 
 `cache_bytes` is an **adapter/query workspace** budget: admitted result sets,
 filter/projection accounting, and bounded SQL-adapter buffers. It is not a
-process-wide RSS cap. `max_visits` bounds traversal work per operation across
+process-wide RSS cap. Prepared query readers are retained only for the duration of
+one operation and are admitted from this same workspace after the owner reservation
+and the core scratch floor, with a 256 KiB reserve bound; when they cannot be
+admitted the adapter silently uses its scalar read path, so admission outcomes do
+not change. `max_visits` bounds traversal work per operation across
 roughly shared allowances. Exceeding a limit returns an explicit error; nothing is
 silently truncated.
 
@@ -614,3 +618,23 @@ recall, and database/WAL size. Recall must be compared against unmodified native
 DiskANN OneShot at matched inputs and settings; a database merely larger than the
 pager cache does not establish a physical beyond-RAM benchmark. Do not interpret
 the repository's historical HNSW figures as new DiskANN performance results.
+
+### Measured query latency (experimental, one host)
+
+On the release build (Apple M4, macOS arm64, file-backed WAL/FULL, 100 seeded
+queries, k=10, degree 32, build list 100, `cache_bytes` 64 MiB, five interleaved
+AB/BA runs) the SQL `knn_search` p50 fell from **14.276 ms to 1.903 ms** at
+10,000 x 128 with L=10 (7.50x) and from **77.667 ms to 10.749 ms** at L=100 (7.23x),
+with identical recall@10. At 10,000 x 768 the p50 is **2.078 / 6.974 / 12.637 ms**
+at L=10/50/100 (6.2-6.5x versus the previous adapter). The improvement comes from
+preparing a small set of readers once per operation and reusing them, and from
+reading a candidate's identity and vector in one statement.
+
+These are single-host, warm-cache measurements, not a platform, cold-disk or
+beyond-RAM claim. The SQL surface, published-generation/current-version eligibility,
+`max_visits` and `cache_bytes` remain unchanged. Query readers exist only for the
+duration of one operation; there is no cross-query vector or identity cache, so every
+query reads through SQLite and observes its own snapshot. When two faults coincide
+(for example corruption at a node whose visit would also exhaust `max_visits`), the
+reported error may differ from earlier versions; a failing query never returns rows,
+and stale or superseded versions are never returned.

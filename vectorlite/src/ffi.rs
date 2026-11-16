@@ -336,19 +336,42 @@ macro_rules! statement_api {
     };
 }
 
-statement_api!(
-    prepare_v2(
-        db: *mut sqlite3,
-        sql: *const c_char,
-        length: c_int,
-        statement: *mut *mut sqlite3_stmt,
-        tail: *mut *const c_char,
-    ) -> c_int
-);
-statement_api!(finalize(statement: *mut sqlite3_stmt) -> c_int);
-#[cfg(test)]
+/// Routes `sqlite3_prepare_v2` and counts each dispatch attempt and successful
+/// preparation separately in Debug builds.
+///
+/// # Safety
+/// Arguments must satisfy `sqlite3_prepare_v2`'s connection, SQL, output
+/// statement and output-tail contracts. The API must be initialized.
+pub unsafe fn prepare_v2(
+    db: *mut sqlite3,
+    sql: *const c_char,
+    length: c_int,
+    statement: *mut *mut sqlite3_stmt,
+    tail: *mut *const c_char,
+) -> c_int {
+    #[cfg(debug_assertions)]
+    instrumentation::note_prepare_attempt();
+    // SAFETY: the caller supplies this routine's SQLite argument contract;
+    // set_api validated this entry in the supported prefix.
+    let status = unsafe { (api_field!(prepare_v2))(db, sql, length, statement, tail) };
+    #[cfg(debug_assertions)]
+    instrumentation::note_prepare(status);
+    status
+}
+/// Routes `sqlite3_finalize` and counts every statement-boundary finalization in Debug builds.
+///
+/// # Safety
+/// `statement` must be null or the unique statement being finalized on its live
+/// connection's callback thread; no column view may outlive this call.
+pub unsafe fn finalize(statement: *mut sqlite3_stmt) -> c_int {
+    // SAFETY: the caller transfers the unique statement and its finalizing lease;
+    // set_api validated this entry in the supported prefix.
+    let status = unsafe { (api_field!(finalize))(statement) };
+    #[cfg(debug_assertions)]
+    instrumentation::note_finalize();
+    status
+}
 statement_api!(reset(statement: *mut sqlite3_stmt) -> c_int);
-#[cfg(test)]
 statement_api!(clear_bindings(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(bind_int64(statement: *mut sqlite3_stmt, index: c_int, value: i64) -> c_int);
 statement_api!(
@@ -392,6 +415,92 @@ statement_api!(errmsg(db: *mut sqlite3) -> *const c_char);
 statement_api!(extended_errcode(db: *mut sqlite3) -> c_int);
 statement_api!(randomness(length: c_int, output: *mut c_void) -> ());
 statement_api!(changes(db: *mut sqlite3) -> c_int);
+statement_api!(stmt_status(statement: *mut sqlite3_stmt, op: c_int, reset: c_int) -> c_int);
+
+// --- debug-only statement lifecycle instrumentation ---
+
+/// Statement prepare/finalize counters for Debug-only native test hosts.
+///
+/// The counters are incremented at the two `Statement` lifecycle boundaries:
+/// once for every `sqlite3_prepare_v2` dispatch that reported success, and once
+/// for every `sqlite3_finalize` dispatch (explicit `finish` or `Drop`). A query
+/// that retains readers must therefore report `prepares == finalizes` once every
+/// statement is finalized. A separate attempt counter also counts failed prepare
+/// dispatches, so forced-failure paths can be told apart from successful work.
+/// Release builds compile this module out entirely, so no `vectorlite_test_`
+/// symbol is present in release artifacts.
+#[cfg(debug_assertions)]
+pub(crate) mod instrumentation {
+    use std::os::raw::c_int;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Successful `sqlite3_prepare_v2` dispatches since the last reset.
+    static PREPARES: AtomicU64 = AtomicU64::new(0);
+    /// Total `sqlite3_prepare_v2` dispatch attempts since the last reset,
+    /// successful or failed.
+    static PREPARE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    /// `sqlite3_finalize` dispatches since the last reset.
+    static FINALIZES: AtomicU64 = AtomicU64::new(0);
+
+    /// Counts one prepare dispatch attempt before SQLite reports its status, so a
+    /// forced or failing preparation appears here but not in `PREPARES`.
+    pub(crate) fn note_prepare_attempt() {
+        PREPARE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts one preparation when SQLite reported success for it.
+    pub(crate) fn note_prepare(status: c_int) {
+        if status == super::SQLITE_OK as c_int {
+            PREPARES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Counts one statement finalization.
+    pub(crate) fn note_finalize() {
+        FINALIZES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Resets all Debug-only statement counters to zero.
+    ///
+    /// Exported only by Debug builds so a native test host can measure one query.
+    #[no_mangle]
+    pub extern "C" fn vectorlite_test_reset_counters() {
+        PREPARES.store(0, Ordering::Relaxed);
+        PREPARE_ATTEMPTS.store(0, Ordering::Relaxed);
+        FINALIZES.store(0, Ordering::Relaxed);
+    }
+
+    /// Writes `[prepares, finalizes]` into `out` for a Debug-only native test host.
+    ///
+    /// # Safety
+    /// `out` must be null or point to two writable, properly aligned `u64`
+    /// slots that remain valid for this call and are not concurrently written
+    /// through another alias.
+    #[no_mangle]
+    pub unsafe extern "C" fn vectorlite_test_read_counters(out: *mut u64) {
+        if out.is_null() {
+            return;
+        }
+        // SAFETY: the caller guarantees two writable slots at `out`; both are
+        // written synchronously and the pointer is not retained.
+        unsafe {
+            out.write(PREPARES.load(Ordering::Relaxed));
+            out.add(1).write(FINALIZES.load(Ordering::Relaxed));
+        }
+    }
+
+    /// Reports the monotonic count of `sqlite3_prepare_v2` dispatch attempts.
+    ///
+    /// Unlike the successful-preparation count reported by
+    /// `vectorlite_test_read_counters`, this includes attempts that SQLite (or a
+    /// Debug-only forced reader-prepare failure) rejected, so a host can separate
+    /// attempted work from prepared work. Debug builds only; release artifacts
+    /// export no instrumentation.
+    #[no_mangle]
+    pub extern "C" fn vectorlite_test_prepare_attempts() -> u64 {
+        PREPARE_ATTEMPTS.load(Ordering::Relaxed)
+    }
+}
 
 // --- optional transaction-free DiskANN build capabilities ---
 

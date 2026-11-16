@@ -273,7 +273,9 @@ impl Statement<'_> {
     /// Rewinds a completed statement without discarding its bindings. A Row
     /// must be drained through DONE first: resetting unfinished DML can hide a
     /// late error or commit successful effects. Failed steps are never reused.
-    #[cfg(test)]
+    ///
+    /// Reset is the first half of a reuse cycle: it is accepted only in Ready or
+    /// Done and leaves the statement Ready; a reset failure marks it Failed.
     pub(crate) fn reset(&mut self) -> Result<()> {
         if !matches!(self.state, State::Ready | State::Done) {
             return Err(IndexError::with_code(
@@ -292,8 +294,9 @@ impl Statement<'_> {
         Ok(())
     }
 
-    /// Clears copied buffers and private pointer bindings before reuse.
-    #[cfg(test)]
+    /// Clears copied buffers and private pointer bindings before reuse. Bindings
+    /// are cleared only while Ready, i.e. after a completed statement was reset;
+    /// a failure is propagated and the statement stays Ready for another attempt.
     pub(crate) fn clear_bindings(&mut self) -> Result<()> {
         if self.state != State::Ready {
             return Err(IndexError::with_code(
@@ -305,6 +308,24 @@ impl Statement<'_> {
         // only its own binding storage; non-owning pointer bindings have no dtor.
         let status = unsafe { ffi::clear_bindings(self.raw()) };
         self.check(status, "clear statement bindings")
+    }
+
+    /// Heap bytes currently retained by this prepared statement's VM.
+    ///
+    /// Returns `None` when the measurement is unavailable: a finalized or
+    /// consumed statement has no VM, and SQLite reports zero for an unsupported
+    /// status or a missing value. A reported zero is normalized to `None`, which
+    /// callers must treat as unknown rather than as a free reader.
+    pub(crate) fn memory_used(&self) -> Option<usize> {
+        let pointer = self.pointer?;
+        // SAFETY: the owned statement is live on its borrowed host connection and
+        // SQLITE_STMTSTATUS_MEMUSED is a read-only status query that neither steps
+        // the statement nor invalidates a column view. The reset flag is zero, so
+        // taking the measurement never clears SQLite's accumulated accounting.
+        let bytes = unsafe {
+            ffi::stmt_status(pointer.as_ptr(), ffi::SQLITE_STMTSTATUS_MEMUSED as c_int, 0)
+        };
+        usize::try_from(bytes).ok().filter(|&bytes| bytes != 0)
     }
 
     pub(crate) fn step(&mut self) -> Result<Step> {
@@ -545,6 +566,9 @@ pub(crate) fn qualified_name(schema: &str, table: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::os::raw::c_char;
+    use std::sync::Once;
 
     #[test]
     fn identifier_quoting_keeps_schema_and_table_separate() {
@@ -620,5 +644,315 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.code, ffi::SQLITE_MISUSE as c_int);
+    }
+
+    // --- fake host API for the statement lifecycle fixtures ---
+    //
+    // Unit tests do not link SQLite, so this installs a fixture extension API for
+    // the test binary, the same pattern ffi::tests uses. Every unused entry is a
+    // presence-only placeholder that aborts if dispatched; the mocks below never
+    // dereference a SQLite connection, statement or runtime, so an allocated
+    // opaque handle is enough to stand in for a prepared VM.
+
+    thread_local! {
+        static RESET_STATUS: Cell<c_int> = const { Cell::new(ffi::SQLITE_OK as c_int) };
+        static CLEAR_STATUS: Cell<c_int> = const { Cell::new(ffi::SQLITE_OK as c_int) };
+        static STATUS_VALUE: Cell<c_int> = const { Cell::new(0) };
+        static STATUS_OP: Cell<c_int> = const { Cell::new(-1) };
+        static STATUS_RESET_FLAG: Cell<c_int> = const { Cell::new(-1) };
+    }
+
+    unsafe extern "C" fn fixture_version() -> c_int {
+        3_020_000
+    }
+
+    unsafe extern "C" fn fixture_unused() {
+        std::process::abort();
+    }
+
+    /// Returns a distinct non-null opaque handle standing in for one prepared VM.
+    ///
+    /// The mocks never interpret the allocation as a real statement and the fake
+    /// finalize does not free it, so each handle is a one-byte test-process leak.
+    fn fixture_handle() -> *mut ffi::sqlite3_stmt {
+        Box::into_raw(Box::new(0u8)).cast::<ffi::sqlite3_stmt>()
+    }
+
+    unsafe extern "C" fn fixture_prepare(
+        _db: *mut ffi::sqlite3,
+        sql: *const c_char,
+        length: c_int,
+        statement: *mut *mut ffi::sqlite3_stmt,
+        tail: *mut *const c_char,
+    ) -> c_int {
+        // SAFETY: Connection::prepare supplies its writable output slots and the
+        // live NUL-terminated statement text; the mock only stores the opaque
+        // handle and reports the end of the single checked statement.
+        unsafe {
+            *statement = fixture_handle();
+            let offset = usize::try_from(length)
+                .ok()
+                .and_then(|length| length.checked_sub(1))
+                .unwrap_or(0);
+            *tail = sql.add(offset);
+        }
+        ffi::SQLITE_OK as c_int
+    }
+
+    unsafe extern "C" fn fixture_finalize(_statement: *mut ffi::sqlite3_stmt) -> c_int {
+        ffi::SQLITE_OK as c_int
+    }
+
+    unsafe extern "C" fn fixture_reset(_statement: *mut ffi::sqlite3_stmt) -> c_int {
+        RESET_STATUS.with(|status| status.get())
+    }
+
+    unsafe extern "C" fn fixture_clear_bindings(_statement: *mut ffi::sqlite3_stmt) -> c_int {
+        CLEAR_STATUS.with(|status| status.get())
+    }
+
+    unsafe extern "C" fn fixture_bind_int64(
+        _statement: *mut ffi::sqlite3_stmt,
+        _index: c_int,
+        _value: i64,
+    ) -> c_int {
+        ffi::SQLITE_OK as c_int
+    }
+
+    unsafe extern "C" fn fixture_stmt_status(
+        _statement: *mut ffi::sqlite3_stmt,
+        op: c_int,
+        reset_flag: c_int,
+    ) -> c_int {
+        STATUS_OP.with(|slot| slot.set(op));
+        STATUS_RESET_FLAG.with(|slot| slot.set(reset_flag));
+        if op == ffi::SQLITE_STMTSTATUS_MEMUSED as c_int {
+            STATUS_VALUE.with(|value| value.get())
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn fixture_extended_errcode(_db: *mut ffi::sqlite3) -> c_int {
+        ffi::SQLITE_ERROR as c_int
+    }
+
+    unsafe extern "C" fn fixture_errmsg(_db: *mut ffi::sqlite3) -> *const c_char {
+        std::ptr::null()
+    }
+
+    #[allow(clippy::missing_transmute_annotations)]
+    fn fixture_table() -> ffi::sqlite3_api_routines {
+        // SAFETY: every field of sqlite3_api_routines is an optional function
+        // pointer; zero is the valid None representation for all of them.
+        let mut table: ffi::sqlite3_api_routines = unsafe { std::mem::zeroed() };
+        table.libversion_number = Some(fixture_version);
+        macro_rules! present {
+            ($($field:ident),+ $(,)?) => {$(
+                // SAFETY: the fixture installs this entry only so the required
+                // 3.20 prefix validation accepts the table. The placeholder is a
+                // correctly typed stand-in that aborts if it is ever dispatched.
+                table.$field = Some(unsafe {
+                    std::mem::transmute::<unsafe extern "C" fn(), _>(
+                        fixture_unused as unsafe extern "C" fn(),
+                    )
+                });
+            )+};
+        }
+        present!(
+            value_type,
+            value_bytes,
+            value_blob,
+            value_text,
+            value_int64,
+            value_pointer,
+            result_double,
+            result_null,
+            result_blob,
+            result_text,
+            result_error,
+            result_pointer,
+            malloc,
+            free,
+            declare_vtab,
+            vtab_config,
+            create_module_v2,
+            create_function_v2,
+            prepare_v2,
+            finalize,
+            reset,
+            clear_bindings,
+            bind_int64,
+            bind_blob,
+            bind_text,
+            bind_pointer,
+            context_db_handle,
+            user_data,
+            result_error_code,
+            step,
+            column_count,
+            column_type,
+            column_int64,
+            column_blob,
+            column_bytes,
+            column_text,
+            errmsg,
+            extended_errcode,
+            randomness,
+            changes,
+            stmt_status,
+        );
+        table.prepare_v2 = Some(fixture_prepare);
+        table.finalize = Some(fixture_finalize);
+        table.reset = Some(fixture_reset);
+        table.clear_bindings = Some(fixture_clear_bindings);
+        table.bind_int64 = Some(fixture_bind_int64);
+        table.stmt_status = Some(fixture_stmt_status);
+        table.extended_errcode = Some(fixture_extended_errcode);
+        table.errmsg = Some(fixture_errmsg);
+        table
+    }
+
+    fn install_fixture_api() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            // Leaked deliberately: set_api retains this table for the rest of the
+            // test process, so it must outlive every statement created below.
+            let table = Box::leak(Box::new(fixture_table()));
+            // SAFETY: the leaked fixture table is readable for the rest of the
+            // process and every installed entry is a correctly typed mock.
+            let installed = unsafe { ffi::set_api(table) };
+            assert_eq!(installed, Ok(()));
+        });
+    }
+
+    fn fixture_connection() -> Connection<'static> {
+        Connection {
+            db: NonNull::<ffi::sqlite3>::dangling(),
+            _lifetime: PhantomData,
+            _connection_local: PhantomData,
+        }
+    }
+
+    fn fixture_statement(
+        pointer: Option<NonNull<ffi::sqlite3_stmt>>,
+        state: State,
+    ) -> Statement<'static> {
+        Statement {
+            pointer,
+            connection: fixture_connection(),
+            state,
+        }
+    }
+
+    #[test]
+    fn statement_reuse_memory_and_debug_finalize_balance() {
+        install_fixture_api();
+        let connection = fixture_connection();
+
+        // Ready and Done are the only reusable states: reset restores Ready and
+        // clear_bindings then drops every copied or pointer binding.
+        let mut statement = connection.prepare("SELECT 1").unwrap();
+        assert!(matches!(statement.state, State::Ready));
+        assert!(statement.reset().is_ok(), "reset while Ready is accepted");
+        assert!(
+            statement.clear_bindings().is_ok(),
+            "clearing bindings while Ready is accepted"
+        );
+        assert!(
+            statement.bind_i64(1, 7).is_ok(),
+            "binding is accepted once reset and cleared"
+        );
+        assert!(statement.reset().is_ok());
+        assert!(statement.clear_bindings().is_ok());
+        assert!(
+            statement.bind_i64(1, 9).is_ok(),
+            "rebinding after a full reuse cycle is accepted"
+        );
+        statement.state = State::Done;
+        assert_eq!(
+            statement.bind_i64(1, 11).unwrap_err().code,
+            ffi::SQLITE_MISUSE as c_int,
+            "bindings are bound only while Ready"
+        );
+        assert!(statement.reset().is_ok(), "reset while Done is accepted");
+        assert!(matches!(statement.state, State::Ready));
+        assert!(statement.clear_bindings().is_ok());
+
+        // A partially consumed row or a failed step is never reused.
+        for state in [State::Row, State::Failed] {
+            statement.state = state;
+            assert_eq!(
+                statement.reset().unwrap_err().code,
+                ffi::SQLITE_MISUSE as c_int
+            );
+            assert_eq!(
+                statement.clear_bindings().unwrap_err().code,
+                ffi::SQLITE_MISUSE as c_int
+            );
+        }
+        assert_eq!(
+            statement.step().unwrap_err().code,
+            ffi::SQLITE_MISUSE as c_int,
+            "a Failed statement is never stepped again"
+        );
+
+        // A reset failure marks the statement Failed and blocks later reuse.
+        statement.state = State::Done;
+        RESET_STATUS.with(|status| status.set(ffi::SQLITE_ERROR as c_int));
+        let error = statement.reset().unwrap_err();
+        RESET_STATUS.with(|status| status.set(ffi::SQLITE_OK as c_int));
+        assert_eq!(error.code, ffi::SQLITE_ERROR as c_int);
+        assert!(matches!(statement.state, State::Failed));
+        assert_eq!(
+            statement.reset().unwrap_err().code,
+            ffi::SQLITE_MISUSE as c_int
+        );
+        assert_eq!(
+            statement.clear_bindings().unwrap_err().code,
+            ffi::SQLITE_MISUSE as c_int
+        );
+
+        // clear_bindings propagates its error without consuming Ready.
+        let mut clearing = connection.prepare("SELECT 1").unwrap();
+        CLEAR_STATUS.with(|status| status.set(ffi::SQLITE_CORRUPT as c_int));
+        let error = clearing.clear_bindings().unwrap_err();
+        CLEAR_STATUS.with(|status| status.set(ffi::SQLITE_OK as c_int));
+        assert_eq!(error.code, ffi::SQLITE_CORRUPT as c_int);
+        assert!(matches!(clearing.state, State::Ready));
+        assert!(clearing.clear_bindings().is_ok());
+
+        // memory_used: unknown for a consumed statement, and a zero report is
+        // normalized to unknown instead of being mistaken for a free reader.
+        assert_eq!(fixture_statement(None, State::Ready).memory_used(), None);
+        STATUS_VALUE.with(|value| value.set(4096));
+        assert_eq!(clearing.memory_used(), Some(4096));
+        assert_eq!(
+            STATUS_OP.with(|slot| slot.get()),
+            ffi::SQLITE_STMTSTATUS_MEMUSED as c_int
+        );
+        assert_eq!(STATUS_RESET_FLAG.with(|slot| slot.get()), 0);
+        STATUS_VALUE.with(|value| value.set(0));
+        assert_eq!(clearing.memory_used(), None);
+        STATUS_VALUE.with(|value| value.set(-1));
+        assert_eq!(clearing.memory_used(), None);
+        STATUS_VALUE.with(|value| value.set(0));
+
+        // Debug instrumentation counts every successful prepare and every
+        // finalize exactly once, through both Drop and explicit finish.
+        #[cfg(debug_assertions)]
+        {
+            use crate::ffi::instrumentation;
+            instrumentation::vectorlite_test_reset_counters();
+            let dropped = connection.prepare("SELECT 1").unwrap();
+            drop(dropped);
+            let finished = connection.prepare("SELECT 1").unwrap();
+            finished.finish().unwrap();
+            let mut counts = [u64::MAX; 2];
+            // SAFETY: counts is a live local two-slot array that stays writable
+            // and uniquely borrowed for this call.
+            unsafe { instrumentation::vectorlite_test_read_counters(counts.as_mut_ptr()) };
+            assert_eq!(counts, [2, 2], "prepare/finalize balance after close");
+        }
     }
 }

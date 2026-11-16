@@ -168,6 +168,27 @@ if(BUILD_TESTING)
                 --executable "$<TARGET_FILE:diskann_batch_native_test>"
                 --extension "${VECTORLITE_EXTENSION}"
                 --work-root "${CMAKE_CURRENT_BINARY_DIR}")
+
+    # C3 statement-shape gate. The host only links SQLite, loads the extension,
+    # and resolves Debug-only instrumentation after sqlite3_load_extension, so
+    # the target exists only for Debug configurations; Release exports none of
+    # those symbols by design. Single-config generators name the configuration in
+    # CMAKE_BUILD_TYPE; multi-config generators leave it empty and select the
+    # configuration at build time, so the gate must not be registered there
+    # rather than guessed from an unset build type.
+    if((NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+       AND NOT CMAKE_CONFIGURATION_TYPES)
+        add_executable(diskann_query_counts_test tests/diskann_query_counts.c)
+        target_link_libraries(diskann_query_counts_test PRIVATE unofficial::sqlite3::sqlite3)
+        target_include_directories(diskann_query_counts_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        set_target_properties(diskann_query_counts_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+        add_dependencies(diskann_query_counts_test vectorlite)
+        add_test(NAME diskann_query_counts
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run_query_counts_test.py"
+                    --executable "$<TARGET_FILE:diskann_query_counts_test>"
+                    --extension "${VECTORLITE_EXTENSION}"
+                    --work-root "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     add_test(NAME diskann_batch_tokio_host
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run_batch_tokio_host.py"
                 --cargo "${CARGO_EXECUTABLE}"
