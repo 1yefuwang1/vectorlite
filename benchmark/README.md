@@ -174,47 +174,42 @@ The work allowance is explicit (`--max-visits`, default 65536) and applies to an
 entire true chunk; a batch-32 run may need a larger setting than batch-8. Failed
 runs remain in their own result directory instead of being silently retried.
 
-## Matched build-optimization A/B comparison
+## Deferred-backend measurements (Format 4)
 
-Use [the identity-cache comparison runner](<diskann_identity_benchmark.py>) to
-measure a storage-adapter optimization against an immutable uncached baseline.
-Build both extension variants with the same compiler, native dependencies, target
-and release flags, and preserve each under its own directory with the public
-extension basename unchanged. Use **one native host executable** for both.
+The DiskANN backend is store-first: ordinary INSERT/UPDATE/DELETE commit canonical
+versions, and a separate fenced SQL maintenance job builds one global graph and
+publishes it. Ingestion and graph construction are therefore **different phases**
+and must be reported separately; do not quote a single "index build" number that
+silently mixes them. See the [SQL/operational guide](../doc/diskann.md#how-indexing-works).
+
+`diskann_benchmark.py` measures this design end to end: streamed canonical
+ingestion, the maintenance lifecycle on a second connection to the same file
+(prepare, bounded snapshot steps, claim, native build, bounded import and
+validation, publish), plus eligibility/coverage, query latency and exact-oracle
+recall before and after mutation. Both CI smoke invocations use it:
 
 ```bash
-cmake --build build/release --target diskann_batch_benchmark
-.venv/bin/python benchmark/diskann_identity_benchmark.py \
-  --executable build/release/vectorlite/diskann_batch_benchmark \
-  --baseline build/benchmarks/cache-ab/baseline/vectorlite.dylib \
-  --optimized build/benchmarks/cache-ab/optimized/vectorlite.dylib \
-  --output-dir build/benchmarks/cache-ab/results-new --timeout 120
+.venv/bin/python benchmark/diskann_benchmark.py --extension <ext> \
+  --database new.db --count 128 --dim 16 --metric l2 --queries 4 --k 10 \
+  --warm-runs 1 --updates 4 --deletes 4 --output production-smoke.json
+.venv/bin/python benchmark/diskann_benchmark.py --extension <ext> \
+  --database new.db --fixture storage-linear --count 2048 --dim 128 --metric l2 \
+  --queries 4 --k 10 --warm-runs 1 --updates 0 --deletes 0 --output storage-smoke.json
 ```
 
-The example uses macOS artifact names and the project's venv; adjust the library
-suffix and venv interpreter path for Linux/Windows. Output directories and native
-database/snapshot destinations must be new. Failures retain completed and partial
-artifacts and stop further builds instead of silently retrying failed variants.
+The `storage-linear` fixture writes a synthetic published generation to test lazy
+storage/traversal accounting. It is **not** ANN quality, recall or build-time
+evidence. Measured phases are recorded in the JSON (`build.phase_seconds`,
+`maintenance`, `eligible_coverage`), and fresh subprocesses keep RSS attribution
+honest.
 
-The default cases are 3,000x128D L2 native batch-8 (five measured pairs), ordinary
-L2 INSERT and cosine batch-8 (three pairs each), and 10,000x128D L2 batch-8 with a
-fresh file-backed database (three pairs). Construction settings stay fixed at
-degree 32, build list 100, alpha 1.2, 64 MiB adapter workspace and 65,536 visits;
-query windows are 10/50/100 with k=10. Inputs are shared immutable seeded float32
-files. Two baseline-only self-checks precede any candidate build in each case,
-followed by a warm-up per variant and alternating A/B, B/A measured pairs.
-`--case`, `--count`, `--dimension` (1–3000), `--pairs`, `--queries` and `--warmups` can restrict a diagnostic
-run; small override runs are not substitutes for full-size timing evidence.
-
-The native timer includes BEGIN, INSERT preparation/binding/execution/finalization
-and COMMIT. Input/oracle generation, queries, snapshot backup and streaming graph
-verification happen outside build timing. Timed runs install no SQL tracing.
-Each run must match the first baseline's **exact ordered graph BLOBs and stable
-metadata** (excluding only the random instance ID), ordered query labels, raw
-float32 `distance_bits`, and recall against the same float64 L2/cosine oracle. File-backed originals are also
-compared with their post-timing backups. The report retains individual timings,
-paired speedups, medians, input/artifact hashes and both native-host and Python
-snapshot-reader SQLite versions. A graph, distance-bit, or recall mismatch fails the run.
+The retired `diskann_identity_benchmark.py` Format 3 A/B runner and its graph
+snapshot comparison no longer describe this layout; its remaining generic pager,
+hashing and oracle helpers stay tested. `upstream_diskann_benchmark.py` now compares
+only upstream RAM and SSD builds: its SQLite comparison backends are rejected
+because a Format 3 synchronous build no longer exists. Deferred end-to-end
+measurements, native recall parity and the concurrent-writer evidence live under
+`build/benchmarks/diskann-deferred-*` in the delivery that introduced Format 4.
 
 The [native host](<diskann_batch_benchmark.c>) retains its existing default L2
 `:memory:` CLI. Optional `VECTORLITE_BENCH_METRIC`, `VECTORLITE_BENCH_DATABASE`,
@@ -235,6 +230,13 @@ a wall-time speedup claim: use the repeated untraced build measurements.
 in-memory, multi-backend pytest suite below. It requires only Python's standard
 library and an **explicit, freshly built extension** with the DiskANN backend;
 SQLite 3.38 or newer is required. It never falls back to an installed wheel.
+
+A run has two independent parts and reports both: streamed canonical ingestion on
+one connection, then the public maintenance lifecycle (prepare, bounded snapshot
+steps, claim, native build, bounded import, bounded validation, publish) on a
+second connection to the same file. Only the published generation is searchable,
+so every query stage reports `eligible_count`/`eligible_coverage` alongside recall;
+pending rows are counted, not silently treated as misses.
 
 ```bash
 # Run after building the release extension; choose a NEW database and JSON file.
@@ -282,13 +284,14 @@ not automatic reuse or deletion.
 - `--query-memory-limit-mib` applies and verifies Linux `RLIMIT_AS` in query
   workers only. This limits **virtual address space, not RSS**. It is rejected
   on macOS/Windows, whose corresponding behavior is not verified here.
-- Format-3 soft deletions retain vectors and adjacency until maintenance.
-  Consolidation performs a SQLite-staged full graph rebuild with bounded Rust
-  workspace, not merely deleted-neighbor cleanup; its cost can scale with the
-  entire live population. Use `--skip-consolidation` if that cost is intentionally
-  outside a run. The runtime descriptor/format is recorded so prototype format-2
-  measurements are not confused with format-3 results. No default latency or
-  recall SLA is implied by this benchmark.
+- Deferred maintenance costs scale with the captured population: the native
+  OneShot build is O(N) in graph work and memory, the bounded import/validation
+  steps are O(N+E) in total, and reclamation is a separate bounded phase. Each
+  phase's wall time is recorded separately from canonical ingestion. Use
+  `--skip-consolidation` to leave the run's post-mutation changes pending and
+  ineligible instead of republishing. The runtime descriptor/format version is
+  recorded so older experimental layouts cannot be mistaken for Format 4 results.
+  No default latency or recall SLA is implied by this benchmark.
 
 ### Controlled large-storage fixture
 
@@ -306,16 +309,16 @@ python benchmark/diskann_benchmark.py \
 ```
 
 **This is not a production ANN build or a general recall benchmark.** It uses a
-public first-row bootstrap, then deliberately populates private format-2/3 shadow
-tables in streamed batches. The runtime descriptor is preserved and its format
-recorded; no descriptor is fabricated to bypass extension validation. Those
-writes are benchmark fixture construction,
-**not a supported import API**. The two-row atomic carrier and descriptor remain
-unchanged. Frozen node 0 connects to a bidirectional chain of live nodes; vectors
-have their row ID in the first float32 coordinate and zeros elsewhere. Queries
-address only the reachable start prefix and verify analytic nearest labels and
-squared distances after reopening in a fresh process. Mutations are skipped.
-JSON uses fixture coverage rather than reporting production ANN recall.
+public canonical bootstrap, then writes a synthetic Format 4 published generation
+(bounded graph nodes plus the current mapping). The runtime descriptor is preserved
+and its format recorded; no descriptor is fabricated to bypass extension
+validation. Those writes are benchmark fixture construction, **not a supported
+import API**. The frozen root connects through a bidirectional chain of live
+nodes; vectors have their row ID in the first float32 coordinate and zeros
+elsewhere. Queries address only the reachable start prefix and verify analytic
+nearest labels and squared distances after reopening in a fresh process. Mutations
+are skipped. JSON uses fixture coverage rather than reporting production ANN
+recall.
 
 The example stores **256 MiB of live vector payload**, plus SQLite and graph
 storage overhead. `--require-beyond-ram` succeeds only when the measured database

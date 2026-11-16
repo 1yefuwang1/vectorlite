@@ -3,12 +3,14 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use crate::diskann_registration::{Registration, TargetLease};
 use std::cell::{Cell, UnsafeCell};
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::batch_input::BatchView;
 use crate::core::{Index, SearchFilter, SearchResult};
@@ -47,6 +49,8 @@ pub struct VTab {
     // Retaining the entry avoids registry lookups and key allocations in row
     // callbacks, while the registry retains it across xDisconnect/xConnect.
     backend: Backend,
+    diskann_registration: Option<Arc<Registration>>,
+    diskann_lease: Option<TargetLease>,
 }
 
 /// HNSW retains its registry-owned graph. DiskANN owns only host-connection
@@ -393,6 +397,34 @@ unsafe fn init_vtab(
             return error.code;
         }
     };
+    // Clone only owned registration metadata; no registry borrow survives SQL.
+    // SAFETY: module pAux retains this Registry throughout constructor callbacks.
+    let registration = unsafe { &*registry }.registration.clone();
+    let lease = if let Backend::Diskann(table_handle) = &backend {
+        let result = (|| {
+            let state = registration
+                .as_ref()
+                .ok_or_else(|| IndexError::new("DiskANN registration missing"))?;
+            let metadata = crate::diskann_store::jobs::metadata(table_handle)?;
+            state.connect(
+                &schema,
+                &table,
+                table_handle.space().clone(),
+                table_handle.options().clone(),
+                metadata.instance_id,
+            )
+        })();
+        match result {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                // SAFETY: constructor error output belongs to this SQLite callback.
+                unsafe { ffi::set_err(pz_err, &error.message) };
+                return error.code;
+            }
+        }
+    } else {
+        None
+    };
     let vtab = Box::new(VTab {
         base: UnsafeCell::new(sqlite3_vtab {
             pModule: std::ptr::null(),
@@ -403,6 +435,8 @@ unsafe fn init_vtab(
         schema,
         table,
         backend,
+        diskann_registration: if lease.is_some() { registration } else { None },
+        diskann_lease: lease,
     });
     // SAFETY: SQLite supplies a writable output slot and takes ownership until
     // xDisconnect/xDestroy. VTab's first field has sqlite3_vtab's layout.
@@ -466,10 +500,46 @@ unsafe extern "C" fn x_rename(p_vtab: *mut sqlite3_vtab, z_new: *const c_char) -
     // SAFETY: z_new is a valid callback-scoped C string.
     let new_table = unsafe { cstr(z_new) }.to_owned();
     if let Backend::Diskann(table) = &vtab.backend {
-        return match table.rename(&new_table) {
-            Ok(()) => ffi::SQLITE_OK as c_int,
-            Err(error) => vtab.report(error.into()),
+        let state = vtab
+            .diskann_registration
+            .as_ref()
+            .expect("live DiskANN registration")
+            .clone();
+        let result = (|| {
+            table.rename(&new_table)?;
+            let reopened = DiskAnnTable::open(
+                table.connection().clone(),
+                &vtab.schema,
+                &new_table,
+                table.space().clone(),
+                table.options().clone(),
+                false,
+            )?;
+            let instance = crate::diskann_store::jobs::metadata(&reopened)?.instance_id;
+            Ok::<_, IndexError>((reopened, instance))
+        })();
+        let (reopened, instance) = match result {
+            Ok(v) => v,
+            Err(e) => return vtab.report(e.into()),
         };
+        // SAFETY: all SQL and shared table borrows finished; SQLite serializes this
+        // callback. Replace only this wrapper's owned declaration/lifetime lease.
+        let vtab = unsafe { &mut *p_vtab.cast::<VTab>() };
+        vtab.diskann_lease.take();
+        let lease = match state.connect(
+            &vtab.schema,
+            &new_table,
+            reopened.space().clone(),
+            reopened.options().clone(),
+            instance,
+        ) {
+            Ok(lease) => lease,
+            Err(e) => return vtab.report(e.into()),
+        };
+        vtab.diskann_lease = Some(lease);
+        vtab.table = new_table;
+        vtab.backend = Backend::Diskann(Box::new(reopened));
+        return ffi::SQLITE_OK as c_int;
     }
     // SAFETY: only HNSW remains; its rename performs no SQLite calls, so no
     // reentrant callback can alias this exclusive registry/name mutation.
@@ -1212,10 +1282,7 @@ fn update(
                     // sqlite3_bind_pointer values deliberately have SQL NULL type.
                     match values[(2 + COL_OPERATION) as usize].text()? {
                         "insert_batch" => execute_insert_batch(table, values),
-                        "consolidate" => {
-                            table.consolidate().map_err(VTabError::from)?;
-                            Ok(0)
-                        }
+                        "consolidate" => Err(VTabError::new("consolidate must use the prepared index_prepare protocol")),
                         _ => Err(VTabError::new(
                             "DiskANN data persists inside SQLite; use SQLite backup instead of save/load. Supported operations: consolidate, insert_batch",
                         )),
@@ -1302,12 +1369,85 @@ unsafe extern "C" fn x_update(
     };
     let result = match &vtab.backend {
         Backend::Hnsw(_) => update(&vtab.backend, values, insert_rowid),
-        Backend::Diskann(table) => table
-            .atomic_write(|| {
-                update(&vtab.backend, values, insert_rowid)
-                    .map_err(|error| IndexError::with_code(error.code, error.message))
-            })
-            .map_err(Into::into),
+        Backend::Diskann(table) => {
+            // Parameter parsing, owned token resolution, fresh SQL cursor reads and
+            // bounded candidate copying happen BEFORE the journal carrier dispatch.
+            let prepared = (|| -> Result<_, VTabError> {
+                if argc != 6
+                    || values[0].kind() != ffi::SQLITE_NULL as c_int
+                    || values[(2 + COL_OPERATION) as usize].kind() == ffi::SQLITE_NULL as c_int
+                {
+                    return Ok(None);
+                }
+                let operation = values[(2 + COL_OPERATION) as usize].text()?.to_owned();
+                if operation == "insert_batch" {
+                    return Ok(None);
+                }
+                if values[1].kind() != ffi::SQLITE_NULL as c_int
+                    || values[(2 + COL_VECTOR) as usize].kind() != ffi::SQLITE_NULL as c_int
+                    || values[(2 + COL_DISTANCE) as usize].kind() != ffi::SQLITE_NULL as c_int
+                {
+                    return Err(VTabError::new(
+                        "DiskANN controls accept only operation and path",
+                    ));
+                }
+                let path = &mut values[(2 + COL_PATH) as usize];
+                let path = if operation == "consolidate" && path.kind() == ffi::SQLITE_NULL as c_int
+                {
+                    "{}"
+                } else {
+                    if path.kind() != ffi::SQLITE_TEXT as c_int {
+                        return Err(VTabError::new("control path must be TEXT JSON"));
+                    }
+                    // SAFETY: the protected TEXT is not coerced; reject length before the view.
+                    if unsafe { ffi::value_bytes(path.as_ptr()) } > 4096 {
+                        return Err(VTabError::with_code(
+                            ffi::SQLITE_TOOBIG as c_int,
+                            "control JSON byte bound",
+                        ));
+                    }
+                    path.text()?
+                };
+                let state = vtab
+                    .diskann_registration
+                    .as_ref()
+                    .ok_or_else(|| VTabError::new("DiskANN registration missing"))?;
+                crate::diskann_control::prepare_action(
+                    table,
+                    state,
+                    &vtab.schema,
+                    &vtab.table,
+                    &operation,
+                    path,
+                )
+                .map(Some)
+                .map_err(Into::into)
+            })();
+            match prepared {
+                Err(error) => Err(error),
+                Ok(Some(action)) => {
+                    let state = vtab
+                        .diskann_registration
+                        .as_ref()
+                        .expect("validated registration");
+                    table
+                        .atomic_write(|| {
+                            crate::diskann_control::execute_action(table, state, &action)
+                        })
+                        .and_then(|effect| {
+                            crate::diskann_control::after_action(state, &action, effect)
+                        })
+                        .map(|()| 0)
+                        .map_err(Into::into)
+                }
+                Ok(None) => table
+                    .atomic_write(|| {
+                        update(&vtab.backend, values, insert_rowid)
+                            .map_err(|error| IndexError::with_code(error.code, error.message))
+                    })
+                    .map_err(Into::into),
+            }
+        }
     };
     match result {
         Ok(rowid) => {
@@ -1347,7 +1487,14 @@ unsafe extern "C" fn x_shadow_name(suffix: *const c_char) -> c_int {
     // SAFETY: SQLite supplies the NUL-terminated suffix synchronously.
     i32::from(matches!(
         unsafe { cstr(suffix) },
-        "diskann_meta" | "diskann_nodes" | "diskann_txn" | "diskann_rebuild"
+        "diskann_meta"
+            | "diskann_entries"
+            | "diskann_current"
+            | "diskann_generations"
+            | "diskann_graph_nodes"
+            | "diskann_jobs"
+            | "diskann_snapshot_map"
+            | "diskann_txn"
     ))
 }
 

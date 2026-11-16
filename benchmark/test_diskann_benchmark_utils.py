@@ -75,8 +75,8 @@ class StreamingUtilities(unittest.TestCase):
 
     def test_linear_vectors_and_adjacency(self):
         self.assertEqual(list(bench.unpack_vector(bench.linear_vector(7, 4), 4)), [7, 0, 0, 0])
-        self.assertEqual(struct.unpack("<2Q", bench.linear_neighbors(1, 5)), (0, 2))
-        self.assertEqual(struct.unpack("<Q", bench.linear_neighbors(5, 5)), (4,))
+        self.assertEqual(struct.unpack("<2Q", bench.linear_neighbors(1, 5)), (5, 1))
+        self.assertEqual(struct.unpack("<Q", bench.linear_neighbors(5, 5)), (3,))
         self.assertEqual(bench.linear_truth(2.25, 65536, 4), [2, 3, 1, 4])
         self.assertEqual(bench.linear_truth(8.25, 1, 1), [1])
 
@@ -105,22 +105,34 @@ class StreamingUtilities(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_truth_worker_scans_live_rows_without_extension(self):
-        config = self.config(count=3, dim=2, queries=2, k=2, batch_size=1)
+    def format4_descriptor(self, dimension):
+        config = self.config()
+        options = {key: config[key] for key in ("degree", "build_list_size", "search_list_size",
+                                                "cache_bytes", "max_visits")}
+        options["alpha"] = struct.unpack("<f", struct.pack("<f", config["alpha"]))[0]
+        return {"backend": "diskann", "format_version": 4, "dimension": dimension,
+                "metric": "l2_squared", "maintenance": "deferred-oneshot-v1", "options": options}
+
+    def test_truth_worker_scans_only_published_current_versions_without_extension(self):
+        description = self.format4_descriptor(2)
+        config = self.config(count=4, dim=2, queries=2, k=2, batch_size=1,
+                             storage_format_version=4, storage_descriptor=description)
         connection = sqlite3.connect(":memory:", isolation_level=None)
-        connection.execute(f"CREATE TABLE {bench.MANIFEST}(singleton INTEGER,config TEXT)")
-        connection.execute(f"INSERT INTO {bench.MANIFEST} VALUES(1,?)",
-                           (json.dumps({**config, "manifest_version": 1}),))
-        connection.execute(f"CREATE TABLE {bench.TABLE}_diskann_meta(live_count INTEGER)")
-        connection.execute(f"INSERT INTO {bench.TABLE}_diskann_meta VALUES(2)")
-        connection.execute(f"CREATE TABLE {bench.TABLE}_diskann_nodes"
-                           "(node_id INTEGER,public_rowid INTEGER,state INTEGER,vector BLOB)")
+        connection.executescript(
+            f"CREATE TABLE {bench.MANIFEST}(singleton INTEGER,config TEXT);"
+            f"CREATE TABLE {bench.TABLE}_diskann_meta(singleton INTEGER,format_version INTEGER,descriptor BLOB,published_generation INTEGER);"
+            f"CREATE TABLE {bench.TABLE}_diskann_current(public_rowid INTEGER,entry_id INTEGER);"
+            f"CREATE TABLE {bench.TABLE}_diskann_entries(entry_id INTEGER,public_rowid INTEGER,vector BLOB);"
+            f"CREATE TABLE {bench.TABLE}_diskann_graph_nodes(generation_id INTEGER,native_local_id INTEGER,entry_id INTEGER,state INTEGER);")
+        connection.execute(f"INSERT INTO {bench.MANIFEST} VALUES(1,?)", (json.dumps({**config, "manifest_version": 1}),))
+        connection.execute(f"INSERT INTO {bench.TABLE}_diskann_meta VALUES(1,4,?,1)", (json.dumps(description),))
         vectors = {1: [0.0, 0.0], 3: [1.0, 1.0]}
-        for rowid, vector in vectors.items():
-            connection.execute(f"INSERT INTO {bench.TABLE}_diskann_nodes VALUES(?,?,0,?)",
-                               (rowid, rowid, bench.pack_vector(vector)))
-        connection.execute(f"INSERT INTO {bench.TABLE}_diskann_nodes VALUES(2,NULL,1,?)",
-                           (bench.pack_vector([99.0, 99.0]),))
+        # entry 2 is superseded, entry 4 is pending, entry 5 belongs to a candidate.
+        for entry, rowid, vector in [(1, 1, vectors[1]), (2, 2, [0, 0]), (3, 3, vectors[3]),
+                                      (4, 2, [99, 99]), (5, 4, [0, 0])]:
+            connection.execute(f"INSERT INTO {bench.TABLE}_diskann_entries VALUES(?,?,?)", (entry, rowid, bench.pack_vector(vector)))
+        connection.executemany(f"INSERT INTO {bench.TABLE}_diskann_current VALUES(?,?)", [(1, 1), (2, 4), (3, 3), (4, 5)])
+        connection.executemany(f"INSERT INTO {bench.TABLE}_diskann_graph_nodes VALUES(?,?,?,?)", [(1, 0, 1, 0), (1, 1, 2, 0), (1, 2, 3, 0), (2, 0, 5, 0), (1, 3, None, 2)])
         with mock.patch.object(bench, "connect", return_value=connection):
             result = bench.truth_worker(config)
         expected = []
@@ -132,40 +144,45 @@ class StreamingUtilities(unittest.TestCase):
         self.assertEqual(result["rows_scanned"], 2)
         self.assertFalse(result["numpy"])
 
-    def test_storage_fixture_populates_only_bounded_linear_records(self):
+    def test_storage_fixture_populates_format4_generation(self):
         config = self.config(fixture="storage-linear", count=5, dim=3, batch_size=2)
         connection = sqlite3.connect(":memory:", isolation_level=None)
         try:
             connection.executescript(
-                f"CREATE TABLE {bench.TABLE}(rowid INTEGER PRIMARY KEY,embedding BLOB);"
-                f"CREATE TABLE {bench.TABLE}_diskann_nodes(node_id INTEGER PRIMARY KEY,"
-                "public_rowid INTEGER,state INTEGER,vector BLOB,neighbors BLOB);"
-                f"CREATE TABLE {bench.TABLE}_diskann_meta(singleton INTEGER,format_version INTEGER,descriptor BLOB,"
-                "live_count INTEGER,next_node_id INTEGER,deleted_count INTEGER,entrypoints BLOB,revision INTEGER);"
+                f"CREATE TABLE {bench.TABLE}_diskann_current(public_rowid INTEGER,entry_id INTEGER);"
+                f"CREATE TABLE {bench.TABLE}_diskann_meta(singleton INTEGER,format_version INTEGER,descriptor BLOB,revision INTEGER,next_generation_id INTEGER,next_job_id INTEGER,published_generation INTEGER);"
+                f"CREATE TABLE {bench.TABLE}_diskann_generations(generation_id INTEGER,job_id INTEGER,state INTEGER,source_revision INTEGER,source_hash BLOB,config_hash BLOB,total_count INTEGER,eligible_count INTEGER,root_local_id INTEGER);"
+                f"CREATE TABLE {bench.TABLE}_diskann_graph_nodes(generation_id INTEGER,native_local_id INTEGER,entry_id INTEGER,state INTEGER,frozen_vector BLOB,neighbors BLOB);"
                 f"CREATE TABLE {bench.TABLE}_diskann_txn(singleton INTEGER,value INTEGER);"
                 f"INSERT INTO {bench.TABLE}_diskann_txn VALUES(1,0),(2,0);")
-            descriptor = json.dumps({"format_version": 3, "metric": "l2_squared",
-                                     "atomic_write_protocol": "guard-two-row-v1"})
-            connection.execute(f"INSERT INTO {bench.TABLE}_diskann_meta VALUES(1,3,?,1,2,0,?,1)",
-                               (descriptor, struct.pack("<Q", 0)))
-            for node in [0, 1]:
-                connection.execute(f"INSERT INTO {bench.TABLE}_diskann_nodes VALUES(?,?,?, ?,?)",
-                                   (node, 1 if node else None, 0 if node else 2,
-                                    bench.linear_vector(1, 3), b""))
+            connection.execute(f"INSERT INTO {bench.TABLE}_diskann_meta VALUES(1,4,?,5,1,1,NULL)", (json.dumps(self.format4_descriptor(3)),))
+            connection.executemany(f"INSERT INTO {bench.TABLE}_diskann_current VALUES(?,?)", [(i, i + 10) for i in range(1, 6)])
             bench.build_storage_fixture(connection, config)
-            nodes = connection.execute(f"SELECT node_id,public_rowid,state,vector,neighbors "
-                                       f"FROM {bench.TABLE}_diskann_nodes ORDER BY node_id").fetchall()
+            nodes = connection.execute(f"SELECT native_local_id,entry_id,state,frozen_vector,neighbors FROM {bench.TABLE}_diskann_graph_nodes ORDER BY native_local_id").fetchall()
             self.assertEqual(len(nodes), 6)
-            self.assertEqual(nodes[0][:3], (0, None, 2))
-            self.assertEqual(nodes[0][4], struct.pack("<Q", 1))
-            for rowid, public, state, blob, adjacency in nodes[1:]:
-                self.assertEqual((public, state), (rowid, 0))
-                self.assertEqual(list(bench.unpack_vector(blob, 3)), [rowid, 0, 0])
-                self.assertEqual(adjacency, bench.linear_neighbors(rowid, 5))
-            self.assertEqual(connection.execute(f"SELECT live_count,next_node_id,deleted_count "
-                                                f"FROM {bench.TABLE}_diskann_meta").fetchone(), (5, 6, 0))
+            for i, entry, state, vector, adjacency in nodes[:5]:
+                self.assertEqual((entry, state, vector), (i + 11, 0, None))
+                self.assertEqual(adjacency, bench.linear_neighbors(i + 1, 5))
+            self.assertEqual(nodes[5], (5, None, 2, bench.linear_vector(0, 3), struct.pack("<Q", 0)))
+            self.assertEqual(connection.execute(f"SELECT state,total_count,eligible_count,root_local_id FROM {bench.TABLE}_diskann_generations").fetchone(), (1, 5, 5, 5))
+            self.assertEqual(connection.execute(f"SELECT next_generation_id,next_job_id,published_generation FROM {bench.TABLE}_diskann_meta").fetchone(), (2, 2, 1))
         finally:
             connection.close()
+
+    def test_descriptor_rejects_mismatched_manifest(self):
+        db = sqlite3.connect(":memory:")
+        try:
+            db.execute(f"CREATE TABLE {bench.TABLE}_diskann_meta(singleton INTEGER,format_version INTEGER,descriptor BLOB)")
+            value = self.format4_descriptor(2)
+            db.execute(f"INSERT INTO {bench.TABLE}_diskann_meta VALUES(1,4,?)", (json.dumps(value),))
+            config = self.config(dim=2, storage_format_version=4, storage_descriptor=value)
+            self.assertEqual(bench.descriptor(db, config), (4, value))
+            with self.assertRaisesRegex(ValueError, "manifest"):
+                bench.descriptor(db, {**config, "storage_format_version": 3})
+            with self.assertRaisesRegex(ValueError, "option mismatch"):
+                bench.descriptor(db, {**config, "degree": 32})
+        finally:
+            db.close()
 
     def test_worker_launch_executes_fresh_interpreter_and_checks_exit(self):
         with mock.patch.object(bench.subprocess, "run") as run:

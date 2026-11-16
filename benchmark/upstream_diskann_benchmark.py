@@ -23,10 +23,16 @@ import time
 
 import numpy as np
 
-from diskann_identity_benchmark import graph_snapshot, oracle
+from diskann_identity_benchmark import oracle
 
 CASES = {"3000x128": (3000, 128), "10000x128": (10000, 128), "10000x768": (10000, 768)}
-BACKENDS = ("memory", "ssd", "sqlite-memory", "sqlite-file")
+# The SQLite backends compared a Format 3 synchronous graph build. The deferred
+# backend now ingests canonically and publishes only through an explicit maintenance
+# job, so this harness cannot honestly attribute a SQLite "index build" time.
+# Use build/benchmarks/diskann-deferred-*/t8-* for deferred measurements.
+NATIVE_BACKENDS = ("memory", "ssd")
+RETIRED_SQLITE_BACKENDS = ("sqlite-memory", "sqlite-file")
+BACKENDS = NATIVE_BACKENDS + RETIRED_SQLITE_BACKENDS
 REVISION = "97a828a500848018d8be28c3ea6d5a585b07362f"
 
 
@@ -285,7 +291,14 @@ def main() -> None:
         shutil.copyfile(source, destination)
         destination.chmod(0o555 if name in ("upstream", "sqlite-host") else 0o444)
         frozen_paths.append(destination)
-    backends = list(dict.fromkeys(args.backend or BACKENDS))
+    backends = list(dict.fromkeys(args.backend or NATIVE_BACKENDS))
+    retired = [name for name in backends if name in RETIRED_SQLITE_BACKENDS]
+    if retired:
+        raise SystemExit(
+            "SQLite comparison backends are retired for the Format 4 deferred backend: "
+            f"{', '.join(retired)}. Upstream RAM/SSD backends still work; deferred "
+            "ingestion/publication measurements live under build/benchmarks/diskann-deferred-*."
+        )
     report = {"schema_version": 1, "status": "running", "created_utc": datetime.now(timezone.utc).isoformat(),
               "platform": platform.platform(), "revision": REVISION, "repeats": args.repeats,
               "warmups": args.warmups, "queries": args.queries, "count_override": args.count,

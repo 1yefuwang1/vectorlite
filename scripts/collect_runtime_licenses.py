@@ -43,8 +43,9 @@ def selected(data):
         for dependency in nodes[package_id]["deps"]:
             if any(kind["kind"] is None for kind in dependency["dep_kinds"]):
                 pending.append(dependency["pkg"])
-    # A registry patch changes Cargo's source to None, but the vendored crate is
-    # still an external runtime component with upstream redistribution notices.
+    # Every runtime dependency must resolve to a published registry source. A
+    # path/patched source would mean vendored code that this inventory cannot
+    # describe, so surface it as an unresolved gap instead of silently bundling it.
     return {key: value for key, value in found.items()
             if value["source"] is not None or value["name"] == "diskann"}, nodes
 
@@ -70,10 +71,6 @@ def collect(metadata, output):
         package = entry["package"]
         crate = f"{package['name']}-{package['version']}"
         source = Path(package["manifest_path"]).parent
-        patched = package["source"] is None and package["name"] == "diskann"
-        patch = None
-        if patched:
-            patch = json.loads((ROOT / "third_party/diskann-0.60.0/PROVENANCE.json").read_text(encoding="utf-8"))["local_patch"]
         destination = output / "crates" / crate
         files = []
         def store(name, payload, provenance):
@@ -85,7 +82,7 @@ def collect(metadata, output):
         for path in sorted(discovered):
             relative = path.relative_to(source).as_posix()
             store(relative, path.read_bytes(), {
-                "origin": "vendored pinned crate with recorded local patch" if patched else "published crate archive",
+                "origin": "published crate archive",
                 "source_path": relative})
         if package["name"].startswith("diskann"):
             for name in ("LICENSE.txt", "NOTICE.txt"):
@@ -126,8 +123,7 @@ def collect(metadata, output):
             "declared_spdx": package["license"], "declared_license_file": package["license_file"],
             "repository": package["repository"], "registry_source": package["source"],
             "registry_archive_url": f"https://static.crates.io/crates/{package['name']}/{crate}.crate",
-            "registry_archive_sha256": patch["upstream_registry_archive_sha256"] if patched else checksums[(package["name"], package["version"])],
-            **({"local_patch": patch} if patched else {}),
+            "registry_archive_sha256": checksums[(package["name"], package["version"])],
             "vcs": vcs, "targets": sorted(entry["targets"]), "resolved_features": entry["features"], "files": files,
             "notes": ["All included license alternatives are retained; no SPDX OR alternative is selected.",
                       "Leading per-file license/copyright comment excerpts are retained conservatively, without claiming every function survives linking."],

@@ -2,10 +2,8 @@
 //!
 //! Run with the path to the already built loadable extension. This independent
 //! executable links host SQLite, not the extension crate. The dynamically loaded
-//! extension may have separate Tokio TLS: acceptance in an entered host runtime
-//! does not prove that the extension can see the host's ambient runtime. Both
-//! successful insertion and clean explicit ambient-runtime rejection are valid
-//! probe results; outside Tokio, the insertion must succeed.
+//! Canonical ingestion must succeed in all contexts. Deferred native construction
+//! uses a second connection and must also succeed; no SQLite handle is sent to a task.
 //!
 //! Every connection and statement stays on its original thread. Runtime::block_on
 //! polls its top-level future there, even with the multi-thread runtime flavor.
@@ -73,6 +71,7 @@ extern "C" {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> c_int;
     fn sqlite3_column_int64(statement: *mut SqliteStatement, column: c_int) -> i64;
+    fn sqlite3_column_text(statement: *mut SqliteStatement, column: c_int) -> *const u8;
 }
 
 #[repr(C)]
@@ -92,13 +91,14 @@ struct Connection {
 }
 
 impl Connection {
-    fn open(extension: &Path) -> Result<Self> {
+    fn open(extension: &Path, database: &Path) -> Result<Self> {
         // SAFETY: this no-argument routine reads the linked host's SQLite version.
         let version = unsafe { sqlite3_libversion_number() };
         if version < 3_038_000 {
             return Err(format!("native host requires SQLite >=3.38, got {version}"));
         }
-        let filename = CString::new(":memory:").unwrap();
+        let filename = CString::new(database.to_str().ok_or("database path must be UTF-8")?)
+            .map_err(|e| e.to_string())?;
         let mut pointer = ptr::null_mut();
         // SAFETY: filename is NUL-terminated; output is a live writable slot.
         let status = unsafe { sqlite3_open(filename.as_ptr(), &mut pointer) };
@@ -219,6 +219,32 @@ impl Connection {
         statement.finish()?;
         Ok(value)
     }
+    fn text(&self, sql: &str) -> Result<String> {
+        let statement = self.prepare(sql)?;
+        let status = statement.step();
+        if status != SQLITE_ROW {
+            return Err(format!(
+                "expected text row ({status}): {}: {sql}",
+                self.message()
+            ));
+        }
+        // SAFETY: a live ROW exposes the SQLite-owned text until the next step;
+        // copy it while the statement and connection remain on their owner thread.
+        let value = unsafe {
+            let pointer = sqlite3_column_text(statement.pointer, 0);
+            if pointer.is_null() {
+                return Err("unexpected NULL text".to_string());
+            }
+            CStr::from_ptr(pointer.cast())
+                .to_string_lossy()
+                .into_owned()
+        };
+        if statement.step() != SQLITE_DONE {
+            return Err("expected one text row".to_string());
+        }
+        statement.finish()?;
+        Ok(value)
+    }
 }
 
 impl Drop for Connection {
@@ -263,30 +289,6 @@ impl Drop for Statement<'_> {
             unsafe { sqlite3_finalize(self.pointer) };
         }
     }
-}
-
-fn save_snapshot(connection: &Connection) -> Result<()> {
-    for suffix in ["meta", "nodes", "txn", "rebuild"] {
-        connection.execute(&format!(
-            "CREATE TABLE snap_{suffix} AS SELECT * FROM v_diskann_{suffix}"
-        ))?;
-    }
-    Ok(())
-}
-
-fn verify_snapshot(connection: &Connection) -> Result<()> {
-    for suffix in ["meta", "nodes", "txn", "rebuild"] {
-        let differences = connection.integer(&format!(
-            "SELECT (SELECT count(*) FROM (SELECT * FROM v_diskann_{suffix} EXCEPT SELECT * FROM snap_{suffix})) \
-             +(SELECT count(*) FROM (SELECT * FROM snap_{suffix} EXCEPT SELECT * FROM v_diskann_{suffix}))"
-        ))?;
-        if differences != 0 {
-            return Err(format!(
-                "rejected batch changed {suffix}: {differences} rows"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn batch_insert(connection: &Connection) -> Result<Option<(c_int, String)>> {
@@ -343,46 +345,97 @@ fn batch_insert(connection: &Connection) -> Result<Option<(c_int, String)>> {
     }
 }
 
-fn run_case(extension: &Path, mode: &str, ambient: bool) -> Result<()> {
+fn run_case(extension: &Path, directory: &Path, mode: &str) -> Result<()> {
     println!(
         "START {mode}; host_tokio_entered={}",
         tokio::runtime::Handle::try_current().is_ok()
     );
-    let connection = Connection::open(extension)?;
-    connection.execute(
-        "CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[2] l2,\
-         diskann(degree=8,build_list_size=32,search_list_size=32,max_visits=65536))",
-    )?;
+    let database = directory.join(format!("tokio-{mode}.db"));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&database)
+        .map_err(|error| format!("reserve {}: {error}", database.display()))?;
+    let connection = Connection::open(extension, &database)?;
+    connection.execute("CREATE VIRTUAL TABLE v USING vectorlite(embedding float32[2] l2,diskann(degree=8,build_list_size=32,search_list_size=32,max_visits=65536))")?;
     connection.execute("INSERT INTO v(rowid,embedding) VALUES(10000,vector_from_json('[0,0]'))")?;
-    save_snapshot(&connection)?;
-    match batch_insert(&connection)? {
-        None => {
-            let live = connection.integer("SELECT live_count FROM v_diskann_meta")?;
-            let nodes = connection.integer("SELECT count(*) FROM v_diskann_nodes WHERE state=0")?;
-            let ids = connection.integer(
-                "SELECT count(*) FROM v_diskann_nodes WHERE state=0 AND public_rowid BETWEEN 1 AND 32",
-            )?;
-            let deleted = connection.integer("SELECT deleted_count FROM v_diskann_meta")?;
-            if (live, nodes, ids, deleted) != (33, 33, 32, 0) {
-                return Err(format!(
-                    "{mode}: wrong successful counts: {live}/{nodes}/{ids}/{deleted}"
-                ));
-            }
-            println!(
-                "PASS {mode}: accepted; live=33, inserted_ids=32; owner_thread={:?}",
-                connection.owner
-            );
+    if let Some((status, message)) = batch_insert(&connection)? {
+        return Err(format!(
+            "{mode}: canonical batch rejected ({status}): {message}"
+        ));
+    }
+    let canonical = connection.integer("SELECT canonical_count FROM v_diskann_meta")?;
+    let entries = connection.integer("SELECT count(*) FROM v_diskann_entries")?;
+    let current = connection.integer("SELECT count(*) FROM v_diskann_current")?;
+    if (canonical, entries, current) != (33, 33, 33) {
+        return Err(format!(
+            "{mode}: wrong counts {canonical}/{entries}/{current}"
+        ));
+    }
+    let search = "SELECT count(*) FROM v WHERE knn_search(embedding,knn_param(vector_from_json('[0,0]'),33))";
+    if connection.integer(search)? != 0 {
+        return Err("pending rows visible before publication".into());
+    }
+    // The second connection owns the entire fenced maintenance session. It and all
+    // statements stay on this thread; the extension's native worker gets no SQLite.
+    let worker = Connection::open(extension, &database)?;
+    worker.execute("INSERT INTO v(operation,path) VALUES('index_prepare','{}')")?;
+    let status = |key: &str| {
+        format!("SELECT json_extract(vectorlite_index_status('main','v'),'$.current_job.{key}')")
+    };
+    let id = worker.integer(&status("job_id"))?;
+    let fence = worker.integer(&status("fence"))?;
+    let ids = format!("\"job_id\":{id},\"fence\":{fence}");
+    let control = |op: &str, options: &str| {
+        worker.execute(&format!(
+            "INSERT INTO v(operation,path) VALUES('{op}','{{{options}}}')"
+        ))
+    };
+    for _ in 0..100 {
+        if worker.integer(&status("phase"))? != 0 {
+            break;
         }
-        Some((status, message)) => {
-            if !ambient || !message.to_ascii_lowercase().contains("ambient") {
-                return Err(format!(
-                    "{mode}: unexpected rejection ({status}): {message}"
-                ));
+        control("index_snapshot_step", &format!("{ids},\"max_records\":8"))?;
+    }
+    if worker.integer(&status("phase"))? != 1 {
+        return Err("snapshot did not finish".into());
+    }
+    control("index_claim_build", &ids)?;
+    let token = worker.text(&format!("SELECT json_extract(vectorlite_index_build('main','v','{{{ids},\"memory_budget_bytes\":268435456}}'),'$.candidate_token')"))?;
+    if !token.starts_with("cand:")
+        || !token
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b":._-".contains(&c))
+    {
+        return Err("invalid candidate token".into());
+    }
+    let options = format!("{ids},\"candidate_token\":\"{token}\",\"max_records\":8");
+    for (phase, op) in [(2, "index_import_step"), (3, "index_validate_step")] {
+        for _ in 0..100 {
+            if worker.integer(&status("phase"))? != phase {
+                break;
             }
-            verify_snapshot(&connection)?;
-            println!("PASS {mode}: rejected cleanly ({status}): {message}; graph unchanged");
+            control(op, &options)?;
+        }
+        if worker.integer(&status("phase"))? == phase {
+            return Err(format!("{op} did not finish"));
         }
     }
+    if worker.integer(&status("phase"))? != 4 {
+        return Err("candidate not ready to publish".into());
+    }
+    control(
+        "index_publish",
+        &format!("{ids},\"candidate_token\":\"{token}\""),
+    )?;
+    control("index_cleanup_step", "")?;
+    if connection.integer(search)? != 33 {
+        return Err("published population mismatch after cleanup".into());
+    }
+    println!(
+        "PASS {mode}: 33 canonical and published rows; owner_thread={:?}",
+        connection.owner
+    );
     Ok(())
 }
 
@@ -407,30 +460,34 @@ fn run() -> Result<()> {
     let executable = arguments.next().unwrap_or_default();
     let extension = arguments.next().ok_or_else(|| {
         format!(
-            "usage: {} /absolute/path/to/vectorlite.extension",
+            "usage: {} /absolute/path/to/vectorlite.extension artifact-directory",
             Path::new(&executable).display()
         )
     })?;
+    let directory = arguments
+        .next()
+        .ok_or("expected artifact directory argument")?;
     if arguments.next().is_some() {
-        return Err("expected exactly one extension path argument".to_string());
+        return Err("expected extension and artifact directory".to_string());
     }
+    let directory = Path::new(&directory);
     let extension = Path::new(&extension)
         .canonicalize()
         .map_err(|error| error.to_string())?;
     println!("Native host Tokio=1.53.2; shared-extension TLS visibility is not assumed.");
-    run_case(&extension, "outside_runtime", false)?;
+    run_case(&extension, directory, "outside_runtime")?;
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .map_err(|error| error.to_string())?;
         let _entered = runtime.enter();
-        run_case(&extension, "entered_current_thread", true)?;
+        run_case(&extension, directory, "entered_current_thread")?;
     }
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .map_err(|error| error.to_string())?;
-        runtime.block_on(async { run_case(&extension, "block_on_current_thread", true) })?;
+        runtime.block_on(async { run_case(&extension, directory, "block_on_current_thread") })?;
     }
     {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -438,7 +495,7 @@ fn run() -> Result<()> {
             .build()
             .map_err(|error| error.to_string())?;
         // Top-level future polling remains on this caller, not on worker tasks.
-        runtime.block_on(async { run_case(&extension, "block_on_multi_thread", true) })?;
+        runtime.block_on(async { run_case(&extension, directory, "block_on_multi_thread") })?;
     }
     println!("PASS: all four native host contexts returned without abort or partial mutation");
     Ok(())

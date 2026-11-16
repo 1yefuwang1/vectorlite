@@ -1,4 +1,4 @@
-"""DiskANN SQL/storage regressions against the shared freshly built extension.
+"""Format 4 deferred DiskANN SQL/storage regressions against the selected extension.
 
 Small deterministic graphs test semantics, not beyond-RAM performance or RSS.
 Shadow-table writes below are deliberate fault injection, not supported user API.
@@ -27,6 +27,12 @@ def extension_path():
     if not library.is_file():
         pytest.fail(f"Vectorlite extension is not built or installed: {library}")
     return library.resolve()
+
+
+SUFFIXES = tuple("_diskann_" + suffix for suffix in (
+    "meta", "entries", "current", "generations", "graph_nodes", "jobs", "snapshot_map", "txn",
+))
+BUILD_BUDGET = 128 * 1024 * 1024
 
 
 BASE_ROWS = [(1, [1.0, 0.0]), (7, [0.0, 2.0]), (19, [3.0, 4.0])]
@@ -71,12 +77,14 @@ def _insert(connection, rowid, vector, name="v", schema="main"):
     connection.execute(
         f"INSERT INTO {_table(name, schema)}(rowid,embedding) VALUES(?,?)",
         (rowid, _blob(vector)),
-    )
+    ).fetchall()
 
 
 def _seed(connection, name="v", schema="main"):
+    """Seed and explicitly publish the standard searchable fixture, outside BEGIN."""
     for rowid, vector in BASE_ROWS:
         _insert(connection, rowid, vector, name, schema)
+    _maintenance(connection, name=name, schema=schema)
 
 
 def _get(connection, rowid, name="v", schema="main"):
@@ -99,13 +107,84 @@ def _knn(connection, query=(1.0, 0.0), k=10, *, name="v", schema="main", options
     ).fetchall()
 
 
+def _status(connection, name="v", schema="main"):
+    return json.loads(connection.execute(
+        "SELECT vectorlite_index_status(?,?)", (schema, name),
+    ).fetchone()[0])
+
+
+def _control(connection, operation, options=None, name="v", schema="main"):
+    connection.execute(
+        f"INSERT INTO {_table(name, schema)}(operation,path) VALUES(?,?)",
+        (operation, json.dumps({} if options is None else options)),
+    ).fetchall()
+
+
+def _jf(job):
+    return {"job_id": job["job_id"], "fence": job["fence"]}
+
+
+def _capture(connection, name="v", schema="main", records=256):
+    for _ in range(10000):
+        job = _status(connection, name, schema)["current_job"]
+        if job["phase"] == 1:
+            return job
+        assert job["phase"] == 0
+        _control(connection, "index_snapshot_step",
+                 {**_jf(job), "max_records": records, "max_bytes": 65536}, name, schema)
+    pytest.fail("capture failed to make bounded progress")
+
+
+def _build(connection, job, name="v", schema="main", budget=BUILD_BUDGET):
+    return json.loads(connection.execute(
+        "SELECT vectorlite_index_build(?,?,?)",
+        (schema, name, json.dumps({**_jf(job), "memory_budget_bytes": budget, "workers": 1})),
+    ).fetchone()[0])
+
+
+def _candidate(connection, name="v", schema="main", records=256):
+    _control(connection, "index_prepare", name=name, schema=schema)
+    job = _capture(connection, name, schema, records)
+    _control(connection, "index_claim_build", _jf(job), name, schema)
+    return job, _build(connection, job, name, schema)
+
+
+def _finish(connection, job, candidate, name="v", schema="main", records=256, publish=True):
+    opts = {**_jf(job), "candidate_token": candidate["candidate_token"]}
+    for phase, operation, cursor in [(2, "index_import_step", "import_cursor"),
+                                     (3, "index_validate_step", "validation_cursor")]:
+        for _ in range(10000):
+            current = _status(connection, name, schema)["current_job"]
+            if current["phase"] != phase:
+                break
+            _control(connection, operation,
+                     {**opts, "max_records": records, "max_bytes": 65536}, name, schema)
+            after = _status(connection, name, schema)["current_job"]
+            assert 0 < after[cursor] - current[cursor] <= records or candidate["node_count"] == 0
+        else:
+            pytest.fail(f"{operation} did not progress")
+    assert _status(connection, name, schema)["current_job"]["phase"] == 4
+    if publish:
+        _control(connection, "index_publish", opts, name, schema)
+        assert _status(connection, name, schema)["current_job"] is None
+
+
+def _maintenance(connection, name="v", schema="main", records=256):
+    # Explicit application-owned maintenance, never an implicit query/ingest action.
+    assert not connection.in_transaction
+    job, candidate = _candidate(connection, name, schema, records)
+    _finish(connection, job, candidate, name, schema, records)
+    _control(connection, "index_cleanup_step", name=name, schema=schema)
+    return job
+
+
 def _snapshot(connection, name="v", schema="main"):
-    # Cover every descriptor/counter/entrypoint/edge, independent of meta names.
+    # Capture all eight Format 4 shadows, including compound generation/job keys.
     return tuple(
         tuple(connection.execute(
-            f"SELECT * FROM {_table(name + suffix, schema)} ORDER BY 1"
+            f"SELECT * FROM {_table(name + suffix, schema)} ORDER BY 1,2"
         ).fetchall())
-        for suffix in ("_diskann_meta", "_diskann_nodes", "_diskann_txn", "_diskann_rebuild")
+        for suffix in SUFFIXES
     )
 
 
@@ -117,7 +196,7 @@ def _schema_names(connection, schema="main"):
 
 def _live_id(connection, rowid):
     return connection.execute(
-        "SELECT node_id FROM v_diskann_nodes WHERE public_rowid=? AND state=0", (rowid,)
+        "SELECT entry_id FROM v_diskann_current WHERE public_rowid=?", (rowid,)
     ).fetchone()[0]
 
 
@@ -130,8 +209,8 @@ def _observe_allocations(connection):
 
     connection.create_function("record_diskann_allocation", 1, record)
     connection.execute(
-        "CREATE TRIGGER record_alloc AFTER INSERT ON v_diskann_nodes "
-        "WHEN NEW.state=0 AND NEW.public_rowid IS NOT NULL BEGIN "
+        "CREATE TRIGGER record_alloc AFTER INSERT ON v_diskann_entries "
+        "BEGIN "
         "SELECT record_diskann_allocation(NEW.public_rowid); END"
     )
     return observed
@@ -180,7 +259,7 @@ def test_diskann_defaults_readback_distances_and_named_search(extension_path, me
 def test_diskann_rejects_unsupported_space_without_shadow_leaks(conn, declaration):
     with pytest.raises(sqlite3.DatabaseError):
         conn.execute(f"CREATE VIRTUAL TABLE bad USING vectorlite(embedding {declaration},diskann())")
-    assert not {"bad", "bad_diskann_meta", "bad_diskann_nodes"} & _schema_names(conn)
+    assert not {"bad", "bad_diskann_meta", "bad_diskann_entries"} & _schema_names(conn)
     _insert(conn, 1, [1, 0])
     assert _get(conn, 1) == (1.0, 0.0)
 
@@ -195,170 +274,7 @@ def test_diskann_rejects_unsupported_space_without_shadow_leaks(conn, declaratio
 def test_diskann_invalid_budgets_and_options_fail_before_creation(conn, options):
     with pytest.raises(sqlite3.DatabaseError):
         _create(conn, name="bad", options=f"diskann({options})")
-    assert not {"bad", "bad_diskann_meta", "bad_diskann_nodes"} & _schema_names(conn)
-
-
-def _trace_identity_reads(events):
-    def trace(statement):
-        text = statement.lstrip()
-        while text.startswith("-- "):
-            text = text[3:]
-        if text.startswith("SELECT state,public_rowid FROM "):
-            events.append("identity")
-        elif text.startswith("SELECT state,public_rowid,"):
-            events.append("payload")
-    return trace
-
-
-@pytest.mark.parametrize("metric", ["l2", "cosine"])
-@pytest.mark.parametrize("fault", ["node", "metadata"])
-def test_diskann_identity_cache_rechecks_after_shadow_write(extension_path, metric, fault):
-    connection = _open(extension_path)
-    try:
-        _create(connection, metric=metric)
-        _seed(connection)
-        observed = _observe_allocations(connection)
-        events = []
-        connection.create_function("record_identity_cache_fault", 0,
-                                   lambda: events.append("write") or 0)
-        connection.execute("PRAGMA ignore_check_constraints=ON")
-        when = ("AFTER INSERT ON v_diskann_nodes WHEN NEW.state=0" if fault == "node"
-                else "AFTER UPDATE OF live_count ON v_diskann_meta WHEN NEW.live_count=4")
-        connection.execute(
-            f"CREATE TRIGGER damage_cached_identity {when} BEGIN "
-            "UPDATE v_diskann_nodes SET public_rowid=999 WHERE node_id=0; "
-            "SELECT record_identity_cache_fault(); END"
-        )
-        connection.execute("CREATE TABLE app_metadata(value)")
-        connection.execute("BEGIN")
-        connection.execute("INSERT INTO app_metadata VALUES('prior')")
-        before = _snapshot(connection)
-        connection.set_trace_callback(_trace_identity_reads(events))
-        try:
-            with pytest.raises(sqlite3.DatabaseError, match="state/public rowid") as error:
-                _insert(connection, 100, [2, 1])
-        finally:
-            connection.set_trace_callback(None)
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
-        # Root identity was already read before allocation. After the trigger,
-        # the same root must be queried again, not trusted until a later payload
-        # read happens to rediscover the corruption.
-        changed = events.index("write")
-        assert "identity" in events[:changed]
-        assert events[changed + 1] == "identity"
-        assert observed == [100]
-        assert _snapshot(connection) == before
-        assert connection.in_transaction
-        assert connection.execute("SELECT * FROM app_metadata").fetchall() == [("prior",)]
-        connection.execute("ROLLBACK")
-        connection.execute("DROP TRIGGER damage_cached_identity")
-        connection.execute("PRAGMA ignore_check_constraints=OFF")
-        _insert(connection, 100, [1, 0])
-        assert _get(connection, 100) == (1.0, 0.0)
-    finally:
-        connection.close()
-
-
-@pytest.mark.parametrize("metric", ["l2", "cosine"])
-@pytest.mark.parametrize("fault", ["retire", "adjacency", "metadata"])
-def test_diskann_identity_cache_rechecks_consolidation_bypass_writes(extension_path, metric, fault):
-    connection = _open(extension_path)
-    try:
-        _create(connection, metric=metric)
-        _seed(connection)
-        connection.execute("DELETE FROM v WHERE rowid=7")
-        observed = _observe_allocations(connection)
-        events = []
-        connection.create_function("record_identity_cache_fault", 0,
-                                   lambda: events.append("write") or 0)
-        connection.execute("PRAGMA ignore_check_constraints=ON")
-        clauses = {
-            "retire": ("AFTER UPDATE OF state ON v_diskann_nodes "
-                       "WHEN NEW.node_id>0 AND OLD.state=0 AND NEW.state=1"),
-            "adjacency": ("AFTER UPDATE OF neighbors ON v_diskann_nodes "
-                          "WHEN NEW.node_id=0 AND length(NEW.neighbors)=0"),
-            "metadata": "AFTER UPDATE OF live_count ON v_diskann_meta WHEN NEW.live_count=0",
-        }
-        connection.execute(
-            f"CREATE TRIGGER damage_cached_identity {clauses[fault]} BEGIN "
-            "UPDATE v_diskann_nodes SET public_rowid=999 WHERE node_id=0; "
-            "SELECT record_identity_cache_fault(); END"
-        )
-        connection.execute("CREATE TABLE app_metadata(value)")
-        connection.execute("BEGIN")
-        connection.execute("INSERT INTO app_metadata VALUES('prior')")
-        before = _snapshot(connection)
-        connection.set_trace_callback(_trace_identity_reads(events))
-        try:
-            with pytest.raises(sqlite3.DatabaseError, match="state/public rowid") as error:
-                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
-        finally:
-            connection.set_trace_callback(None)
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
-        assert "identity" in events[:events.index("write")]
-        # The root was warmed before the direct maintenance writes. A stale hit
-        # would permit a new allocation and fail only after an ordinary DML
-        # invalidation; correct bypass bracketing rejects before that allocation.
-        assert observed == []
-        assert _snapshot(connection) == before
-        assert connection.in_transaction
-        assert connection.execute("SELECT * FROM app_metadata").fetchall() == [("prior",)]
-        connection.execute("ROLLBACK")
-        connection.execute("DROP TRIGGER damage_cached_identity")
-        connection.execute("PRAGMA ignore_check_constraints=OFF")
-        connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
-        assert connection.execute("SELECT live_count,deleted_count FROM v_diskann_meta").fetchone() == (2, 0)
-        assert _get(connection, 7) is None
-        assert _get(connection, 1) == (1.0, 0.0)
-        assert _get(connection, 19) is not None
-    finally:
-        connection.close()
-
-
-def test_diskann_identity_cache_charge_rejects_near_boundary_before_ddl(extension_path):
-    connection = _open(extension_path)
-    try:
-        # The old fixed workspace admitted this CREATE. The complete checked-
-        # identity cache does not fit too, and must be charged before any DDL.
-        shadow_names = {"v_diskann_meta", "v_diskann_nodes", "v_diskann_txn", "v_diskann_rebuild"}
-        attempted_shadows = []
-
-        def authorize(operation, name, _column, _database, _source):
-            if operation == sqlite3.SQLITE_CREATE_TABLE and name in shadow_names:
-                attempted_shadows.append(name)
-            return sqlite3.SQLITE_OK
-
-        connection.set_authorizer(authorize)
-        with pytest.raises(sqlite3.DatabaseError) as error:
-            _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=24576,max_visits=128)")
-        connection.set_authorizer(None)
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_TOOBIG
-        assert attempted_shadows == []  # Not merely DDL later rolled back.
-        assert not ({"v"} | shadow_names) & _schema_names(connection)
-    finally:
-        connection.close()
-
-
-def test_diskann_tiny_cache_rejects_before_frozen_or_user_allocation(extension_path):
-    connection = _open(extension_path)
-    try:
-        # The syntactic minimum cannot admit even the fixed SQL plan workspace.
-        with pytest.raises(sqlite3.DatabaseError) as error:
-            _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=4096,max_visits=128)")
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_TOOBIG
-        assert not {"v", "v_diskann_meta", "v_diskann_nodes", "v_diskann_txn", "v_diskann_rebuild"} & _schema_names(connection)
-        # Enough for the fixed plans, but not the admitted algorithm scratch.
-        _create(connection, options="diskann(degree=4,build_list_size=8,search_list_size=8,alpha=1,cache_bytes=32768,max_visits=128)")
-        before = _snapshot(connection)
-        observed = _observe_allocations(connection)
-        with pytest.raises(sqlite3.DatabaseError) as error:
-            _insert(connection, 1, [1, 0])
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_TOOBIG
-        assert observed == []
-        assert _snapshot(connection) == before
-        assert connection.execute("SELECT count(*) FROM v_diskann_nodes").fetchone() == (0,)
-    finally:
-        connection.close()
+    assert not {"bad", "bad_diskann_meta", "bad_diskann_entries"} & _schema_names(conn)
 
 
 def test_diskann_small_cache_and_bounded_named_search(extension_path):
@@ -405,6 +321,7 @@ def test_diskann_zero_vector_is_finite_and_roundtrips(extension_path, metric):
         _create(connection, metric=metric)
         _insert(connection, 0, [0, 0])
         assert _get(connection, 0) == (0.0, 0.0)
+        _maintenance(connection)
         rows = _knn(connection, query=[0, 0])
         assert rows and all(math.isfinite(distance) for _, distance in rows)
     finally:
@@ -441,6 +358,7 @@ def test_diskann_numeric_headroom_and_extreme_normalization(extension_path, metr
         assert all(math.isfinite(value) for value in _get(connection, 1))
         if metric == "cosine":
             assert _get(connection, 1) == pytest.approx([1, 0], abs=1e-6)
+        _maintenance(connection)
         assert all(math.isfinite(distance) for _, distance in _knn(connection, query=valid))
     finally:
         connection.close()
@@ -451,14 +369,15 @@ def test_diskann_sparse_rowids_filter_and_internal_ids(conn):
     for i, label in enumerate(labels):
         _insert(conn, label, [i + 1, 0])
     assert _get(conn, labels[-1]) == (3.0, 0.0)
+    _maintenance(conn)
     assert {row[0] for row in _knn(conn, k=10)} == set(labels)
     rows = conn.execute(
         "SELECT rowid,distance FROM v WHERE knn_search(embedding,knn_param(?,1)) "
         "AND rowid IN (?,?)", (_blob([1, 0]), labels[1], labels[2])
     ).fetchall()
     assert rows == [(labels[1], 1.0)]
-    ids = [row[0] for row in conn.execute("SELECT node_id FROM v_diskann_nodes WHERE state=0")]
-    assert all(1 <= node_id <= len(labels) for node_id in ids)
+    ids = [row[0] for row in conn.execute("SELECT entry_id FROM v_diskann_current")]
+    assert all(1 <= entry_id <= len(labels) for entry_id in ids)
     with pytest.raises(sqlite3.DatabaseError):
         _insert(conn, -1, [1, 0])
     with pytest.raises(sqlite3.DatabaseError):
@@ -489,29 +408,9 @@ def test_diskann_recreate_same_name_does_not_reuse_identity_or_cached_rows(conn)
     assert _knn(conn) == []
     _insert(conn, 1, [8, 1])
     assert _get(conn, 1) == (8.0, 1.0)
+    assert _knn(conn) == []
+    _maintenance(conn)
     assert _knn(conn, query=[8, 1], k=1) == [(1, 0.0)]
-
-
-def test_diskann_retired_one_way_bridge_keeps_live_results_reachable(conn):
-    _seed(conn)
-    bridge = _live_id(conn, 1)
-    target = _live_id(conn, 7)
-    spare = _live_id(conn, 19)
-    # Controlled legal directed topology. The bridge has an incoming frozen
-    # edge but no reverse edge to the frozen node, the case OneHop can miss.
-    for node, neighbors in [(0, [bridge]), (bridge, [target]),
-                            (target, [bridge, spare]), (spare, [target])]:
-        conn.execute("UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=?",
-                     (struct.pack(f"<{len(neighbors)}Q", *neighbors), node))
-    conn.execute("DELETE FROM v WHERE rowid=1")
-    assert conn.execute("SELECT neighbors FROM v_diskann_nodes WHERE node_id=?",
-                        (bridge,)).fetchone()[0] == struct.pack("<Q", target)
-    assert _knn(conn, query=[0, 2], k=1) == [(7, 0.0)]
-    conn.execute("INSERT INTO v(operation) VALUES('consolidate')")
-    assert _knn(conn, query=[0, 2], k=1) == [(7, 0.0)]
-    assert conn.execute("SELECT count(*) FROM v_diskann_rebuild").fetchone() == (0,)
-    assert conn.execute("SELECT count(*) FROM v_diskann_nodes WHERE state=1").fetchone() == (0,)
-    assert _live_id(conn, 7) > spare
 
 
 @pytest.mark.parametrize("metric", ["l2", "cosine"])
@@ -534,6 +433,7 @@ def test_diskann_repeated_updates_preserve_live_readback_through_rebuild(extensi
         for rowid in range(49, 65):
             connection.execute("DELETE FROM v WHERE rowid=?", (rowid,))
             del data[rowid]
+        _maintenance(connection)
         ids_before = {rowid: _live_id(connection, rowid) for rowid in data}
         # High L on this bounded dataset exercises graph traversal, not the
         # k>=population exact path, even with many retained retired vectors.
@@ -543,39 +443,17 @@ def test_diskann_repeated_updates_preserve_live_readback_through_rebuild(extensi
             assert found and found[0][0] == rowid
         expected = {rowid: connection.execute("SELECT embedding FROM v WHERE rowid=?",
                                               (rowid,)).fetchone()[0] for rowid in data}
-        connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
-        assert connection.execute("SELECT count(*) FROM v_diskann_rebuild").fetchone() == (0,)
+        _maintenance(connection)
+        assert _status(connection)["current_job"] is None
         for rowid, blob in expected.items():
             assert connection.execute("SELECT embedding FROM v WHERE rowid=?",
                                       (rowid,)).fetchone()[0] == blob
-            assert _live_id(connection, rowid) > max(ids_before.values())
+            assert _live_id(connection, rowid) == ids_before[rowid]
         for rowid in (1, 16, 32, 48):
             assert _knn(connection, query=data[rowid], k=1,
                         options={"search_list_size": 512})[0][0] == rowid
     finally:
         connection.close()
-
-
-def test_diskann_failed_rebuild_restores_entire_old_graph_and_empty_staging(conn):
-    _seed(conn)
-    conn.execute("DELETE FROM v WHERE rowid=7")
-    conn.execute(
-        "CREATE TRIGGER fail_rebuild BEFORE INSERT ON v_diskann_nodes "
-        "WHEN NEW.state=0 BEGIN SELECT RAISE(ABORT,'rebuild insertion failure'); END"
-    )
-    conn.execute("BEGIN")
-    before = _snapshot(conn)
-    with pytest.raises(sqlite3.DatabaseError, match="rebuild insertion failure"):
-        conn.execute("INSERT INTO v(operation) VALUES('consolidate')")
-    assert _snapshot(conn) == before
-    assert connection_is_staging_empty(conn)
-    conn.execute("ROLLBACK")
-    conn.execute("DROP TRIGGER fail_rebuild")
-    assert _knn(conn, k=1)[0][0] == 1
-
-
-def connection_is_staging_empty(connection):
-    return connection.execute("SELECT count(*) FROM v_diskann_rebuild").fetchone() == (0,)
 
 
 def test_diskann_updates_allocate_new_ids_and_delete_is_logical(conn):
@@ -584,34 +462,14 @@ def test_diskann_updates_allocate_new_ids_and_delete_is_logical(conn):
     conn.execute("UPDATE v SET embedding=? WHERE rowid=1", (_blob([8, 1]),))
     new = _live_id(conn, 1)
     assert new > old
-    assert conn.execute("SELECT public_rowid,state FROM v_diskann_nodes WHERE node_id=?", (old,)).fetchone() == (None, 1)
+    assert conn.execute("SELECT public_rowid,retired_revision IS NOT NULL FROM v_diskann_entries WHERE entry_id=?", (old,)).fetchone() == (1, 1)
     assert _get(conn, 1) == (8.0, 1.0)
     conn.execute("DELETE FROM v WHERE rowid=1")
     assert _get(conn, 1) is None
     assert 1 not in {row[0] for row in _knn(conn)}
-    assert conn.execute("SELECT public_rowid,state FROM v_diskann_nodes WHERE node_id=?", (new,)).fetchone() == (None, 1)
+    assert conn.execute("SELECT public_rowid,retired_revision IS NOT NULL FROM v_diskann_entries WHERE entry_id=?", (new,)).fetchone() == (1, 1)
     _insert(conn, 1, [9, 1])
     assert _live_id(conn, 1) > new
-
-
-def test_diskann_consolidation_is_transactional_and_removes_tombstone_references(conn):
-    _seed(conn)
-    conn.execute("DELETE FROM v WHERE rowid=7")
-    conn.execute("UPDATE v SET embedding=? WHERE rowid=1", (_blob([2, 1]),))
-    before = _snapshot(conn)
-    conn.execute("BEGIN")
-    conn.execute("INSERT INTO v(operation) VALUES('consolidate')")
-    assert conn.execute("SELECT count(*) FROM v_diskann_nodes WHERE state=1").fetchone() == (0,)
-    conn.execute("ROLLBACK")
-    assert _snapshot(conn) == before
-    conn.execute("INSERT INTO v(operation) VALUES('consolidate')")
-    assert conn.execute("SELECT count(*) FROM v_diskann_nodes WHERE state=1").fetchone() == (0,)
-    nodes = conn.execute("SELECT node_id,neighbors FROM v_diskann_nodes").fetchall()
-    present = {node_id for node_id, _ in nodes}
-    for _, neighbors in nodes:
-        assert len(neighbors) % 8 == 0
-        assert set(struct.unpack(f"<{len(neighbors) // 8}Q", neighbors)) <= present
-    assert {row[0] for row in _knn(conn)} == {1, 19}
 
 
 def test_diskann_metadata_and_graph_share_commit_and_rollback(conn):
@@ -691,7 +549,7 @@ def test_diskann_neighbor_write_failure_after_allocation_is_atomic(conn):
     _seed(conn)
     observed = _observe_allocations(conn)
     conn.execute(
-        "CREATE TRIGGER fail_neighbors BEFORE UPDATE OF neighbors ON v_diskann_nodes "
+        "CREATE TRIGGER fail_neighbors BEFORE INSERT ON v_diskann_current "
         "BEGIN SELECT RAISE(ABORT,'injected neighbor failure'); END"
     )
     conn.execute("BEGIN")
@@ -763,8 +621,8 @@ def test_diskann_progress_interrupt_restores_statement_state(conn):
 
     conn.create_function("arm_diskann_interrupt", 1, record)
     conn.execute(
-        "CREATE TRIGGER arm_interrupt AFTER INSERT ON v_diskann_nodes "
-        "WHEN NEW.state=0 BEGIN SELECT arm_diskann_interrupt(NEW.public_rowid); END"
+        "CREATE TRIGGER arm_interrupt AFTER INSERT ON v_diskann_entries "
+        "BEGIN SELECT arm_diskann_interrupt(NEW.public_rowid); END"
     )
     conn.set_progress_handler(lambda: int(armed), 1)
     try:
@@ -790,7 +648,7 @@ def test_diskann_create_drop_and_rename_rollbacks_restore_durable_identity(conn)
     _create(conn, name="fresh")
     _insert(conn, 42, [4, 2], name="fresh")
     conn.execute("ROLLBACK")
-    assert not {"fresh", "fresh_diskann_meta", "fresh_diskann_nodes"} & _schema_names(conn)
+    assert not {"fresh", "fresh_diskann_meta", "fresh_diskann_entries"} & _schema_names(conn)
     assert _snapshot(conn) == before
     conn.execute("BEGIN")
     conn.execute("DROP TABLE v")
@@ -807,7 +665,7 @@ def test_diskann_create_drop_and_rename_rollbacks_restore_durable_identity(conn)
     assert _knn(conn, k=1)[0][0] == 1
 
 
-@pytest.mark.parametrize("suffix", ["_diskann_meta", "_diskann_nodes", "_diskann_txn", "_diskann_rebuild"])
+@pytest.mark.parametrize("suffix", [*SUFFIXES])
 def test_diskann_create_shadow_collision_does_not_replace_ordinary_table(conn, suffix):
     collision = "bad" + suffix
     conn.execute(f"CREATE TABLE {_q(collision)}(value)")
@@ -818,7 +676,7 @@ def test_diskann_create_shadow_collision_does_not_replace_ordinary_table(conn, s
     assert {name for name in _schema_names(conn) if name.startswith("bad")} == {collision}
 
 
-@pytest.mark.parametrize("suffix", ["_diskann_nodes", "_diskann_txn", "_diskann_rebuild"])
+@pytest.mark.parametrize("suffix", [*SUFFIXES[1:]])
 def test_diskann_partial_rename_failure_restores_all_shadows(conn, suffix):
     _seed(conn)
     collision = "renamed" + suffix
@@ -915,6 +773,9 @@ os._exit(73)
     try:
         assert _get(reopened, 100) == (2.0, 1.0)
         assert _get(reopened, 101) is None
+        assert {row[0] for row in _knn(reopened)} == {1, 7, 19}
+        assert _status(reopened)["pending_count"] == 1
+        _maintenance(reopened)
         assert {row[0] for row in _knn(reopened)} == {1, 7, 19, 100}
         assert reopened.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     finally:
@@ -937,6 +798,8 @@ def test_diskann_wal_snapshot_old_reader_new_reader_and_cache_refresh(extension_
         writer.execute("DELETE FROM v WHERE rowid=7")
         _insert(writer, 42, [4, 2])
         writer.execute("COMMIT")
+        assert {row[0] for row in _knn(writer)} == {19}
+        _maintenance(writer)
         assert _snapshot(reader) == before
         assert _knn(reader) == old
         assert _get(reader, 1) == (1.0, 0.0)
@@ -1026,37 +889,35 @@ def test_diskann_corrupt_shadow_nodes_raise_errors_not_false_absence(extension_p
     _seed(connection)
     live = _live_id(connection, 1)
     connection.close()
-    # Corrupt with an ordinary SQLite connection, then force a fresh xConnect.
     raw = sqlite3.connect(path, isolation_level=None)
     try:
         raw.execute("PRAGMA ignore_check_constraints=ON")
-        if kind == "short-vector":
-            raw.execute("UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (b"\0", live))
-        elif kind == "nan-vector":
-            raw.execute("UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (_blob([math.nan, 0]), live))
-        elif kind == "short-neighbors":
-            raw.execute("UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=0", (b"\0",))
-        elif kind == "oversized-neighbors":
-            raw.execute("UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=0", (struct.pack("<512Q", *([live] * 512)),))
-        elif kind == "missing-reference":
-            raw.execute("UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=0", (struct.pack("<Q", 999999),))
+        if kind in {"short-vector", "nan-vector"}:
+            raw.execute("UPDATE v_diskann_entries SET vector=? WHERE entry_id=?",
+                        (b"\0" if kind == "short-vector" else _blob([math.nan, 0]), live))
+        elif kind == "missing-frozen":
+            raw.execute("DELETE FROM v_diskann_graph_nodes WHERE state=2")
         else:
-            raw.execute("DELETE FROM v_diskann_nodes WHERE node_id=0")
+            payload = {"short-neighbors": b"\0",
+                       "oversized-neighbors": struct.pack("<512Q", *([0] * 512)),
+                       "missing-reference": struct.pack("<Q", 999999)}[kind]
+            raw.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE state=2", (payload,))
     finally:
         raw.close()
     reopened = _open(extension_path, path)
     try:
-        with pytest.raises(sqlite3.DatabaseError):
+        with pytest.raises(sqlite3.DatabaseError) as error:
             if kind in {"short-vector", "nan-vector"}:
                 _get(reopened, 1)
             else:
-                _knn(reopened)
+                _knn(reopened, k=1)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
     finally:
         reopened.close()
 
 
 @pytest.mark.parametrize("metric", ["l2", "cosine"])
-@pytest.mark.parametrize("access", ["point", "search", "filtered", "insert", "consolidate"])
+@pytest.mark.parametrize("access", ["point", "search", "filtered", "update", "snapshot"])
 @pytest.mark.parametrize("payload", [
     pytest.param(b"\0", id="misaligned-length"),
     pytest.param(_blob([1.0]), id="short-dimension"),
@@ -1074,27 +935,18 @@ def test_diskann_stored_vector_validation_keeps_error_codes_and_atomicity(
     try:
         _create(connection, metric=metric)
         _seed(connection)
-        if access == "consolidate":
-            connection.execute("DELETE FROM v WHERE rowid=7")
+        if access == "snapshot":
+            _control(connection, "index_prepare")
         live = _live_id(connection, 1)
         original = connection.execute(
-            "SELECT vector FROM v_diskann_nodes WHERE node_id=?", (live,),
+            "SELECT vector FROM v_diskann_entries WHERE entry_id=?", (live,),
         ).fetchone()[0]
-        # Ensure graph traversal visits the damaged node rather than depending
-        # on a particular small-graph edge chosen by construction.
-        neighbors = [row[0] for row in connection.execute(
-            "SELECT node_id FROM v_diskann_nodes WHERE state=0 ORDER BY node_id",
-        )]
-        connection.execute(
-            "UPDATE v_diskann_nodes SET neighbors=? WHERE node_id=0",
-            (struct.pack(f"<{len(neighbors)}Q", *neighbors),),
-        )
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
-            "UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (payload, live),
+            "UPDATE v_diskann_entries SET vector=? WHERE entry_id=?", (payload, live),
         )
         assert connection.execute(
-            "SELECT vector FROM v_diskann_nodes WHERE node_id=?", (live,),
+            "SELECT vector FROM v_diskann_entries WHERE entry_id=?", (live,),
         ).fetchone()[0] == payload, "the corruption injection must actually persist"
         before = _snapshot(connection)
         with pytest.raises(sqlite3.DatabaseError) as error:
@@ -1108,22 +960,18 @@ def test_diskann_stored_vector_validation_keeps_error_codes_and_atomicity(
                     "knn_search(embedding,knn_param(?,2)) AND rowid IN (1,19)",
                     (_blob([1.0, 0.0]),),
                 ).fetchall()
-            elif access == "insert":
-                _insert(connection, 99, [2.0, 1.0])
+            elif access == "update":
+                connection.execute("UPDATE v SET embedding=? WHERE rowid=1", (_blob([2, 1]),))
             else:
-                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
-        if access == "consolidate" and (not isinstance(payload, bytes) or len(payload) != 8):
-            # Preserve the baseline staging CASE->NULL/NOT NULL SQL error,
-            # including its extended status; do not replace it with decoder CORRUPT.
-            expected_primary = sqlite3.SQLITE_CONSTRAINT
-            expected_extended = sqlite3.SQLITE_CONSTRAINT_NOTNULL
-        else:
-            expected_primary = expected_extended = sqlite3.SQLITE_CORRUPT
+                _control(connection, "index_snapshot_step", _jf(_status(connection)["current_job"]))
+        # Format 4 validates capture input before writing the snapshot map;
+        # the removed Format 3 staging CASE/NOT NULL path no longer runs.
+        expected_primary = expected_extended = sqlite3.SQLITE_CORRUPT
         assert error.value.sqlite_errorcode & 0xff == expected_primary
         assert error.value.sqlite_errorcode == expected_extended
         assert _snapshot(connection) == before
         connection.execute(
-            "UPDATE v_diskann_nodes SET vector=? WHERE node_id=?", (original, live),
+            "UPDATE v_diskann_entries SET vector=? WHERE entry_id=?", (original, live),
         )
         _insert(connection, 99, [2.0, 1.0])
         assert _knn(connection, k=1)[0][0] == 1
@@ -1142,7 +990,7 @@ def test_diskann_stored_vector_not_null_guard_rejects_injection(extension_path, 
         before = _snapshot(connection)
         with pytest.raises(sqlite3.IntegrityError) as error:
             connection.execute(
-                "UPDATE v_diskann_nodes SET vector=NULL WHERE node_id=?", (live,),
+                "UPDATE v_diskann_entries SET vector=NULL WHERE entry_id=?", (live,),
             )
         # Unlike CHECK, NOT NULL cannot be bypassed by the injection PRAGMA.
         # This is schema-level rejection, not a successfully injected bad vector.
@@ -1156,8 +1004,8 @@ def test_diskann_stored_vector_not_null_guard_rejects_injection(extension_path, 
 
 
 @pytest.mark.parametrize("column,value", [
-    ("revision", -1), ("next_node_id", 0), ("live_count", -1),
-    ("deleted_count", -1), ("entrypoints", b"\x01"),
+    ("revision", -1), ("next_entry_id", 0), ("canonical_count", -1),
+    ("retired_count", -1), ("next_fence", 0), ("cleanup_entry_id", 2**63 - 1),
 ])
 def test_diskann_corrupt_meta_counters_and_entrypoints_raise_errors(extension_path, tmp_path, column, value):
     path = tmp_path / f"meta-{column}.db"
@@ -1181,7 +1029,8 @@ def test_diskann_corrupt_meta_counters_and_entrypoints_raise_errors(extension_pa
         reopened.close()
 
 
-def test_diskann_missing_shadow_table_is_not_recreated_on_connect(extension_path, tmp_path):
+@pytest.mark.parametrize("suffix", SUFFIXES)
+def test_diskann_missing_shadow_table_is_not_recreated_on_connect(extension_path, tmp_path, suffix):
     path = tmp_path / "missing-shadow.db"
     connection = _open(extension_path, path)
     try:
@@ -1191,14 +1040,14 @@ def test_diskann_missing_shadow_table_is_not_recreated_on_connect(extension_path
         connection.close()
     raw = sqlite3.connect(path, isolation_level=None)
     try:
-        raw.execute("DROP TABLE v_diskann_nodes")
+        raw.execute(f"DROP TABLE {_q('v' + suffix)}")
     finally:
         raw.close()
     reopened = _open(extension_path, path)
     try:
         with pytest.raises(sqlite3.DatabaseError):
             _knn(reopened)
-        assert "v_diskann_nodes" not in _schema_names(reopened)
+        assert "v" + suffix not in _schema_names(reopened)
     finally:
         reopened.close()
 
@@ -1231,7 +1080,7 @@ def test_diskann_single_callback_late_errors_are_atomic(conn, outer_policy, rais
     _seed(conn)
     conn.execute("CREATE TABLE metadata(value)")
     conn.execute(
-        "CREATE TRIGGER late_error BEFORE UPDATE OF neighbors ON v_diskann_nodes "
+        "CREATE TRIGGER late_error BEFORE INSERT ON v_diskann_current "
         f"BEGIN SELECT RAISE({raise_mode},'late callback failure'); END"
     )
     conn.execute("BEGIN")
@@ -1248,21 +1097,17 @@ def test_diskann_single_callback_late_errors_are_atomic(conn, outer_policy, rais
     conn.execute("ROLLBACK")
 
 
-@pytest.mark.parametrize("target_state", [0, 2])
-def test_diskann_ignored_allocation_cannot_commit_partial_graph(conn, target_state):
-    if target_state == 0:
-        _seed(conn)
-    conn.execute(
-        "CREATE TRIGGER ignore_allocation BEFORE INSERT ON v_diskann_nodes "
-        f"WHEN NEW.state={target_state} BEGIN SELECT RAISE(IGNORE); END"
-    )
+@pytest.mark.parametrize("target", ["entries", "current"])
+def test_diskann_ignored_allocation_cannot_commit_partial_graph(conn, target):
+    _seed(conn)
+    conn.execute(f"CREATE TRIGGER ignore_allocation BEFORE INSERT ON v_diskann_{target} "
+                 "BEGIN SELECT RAISE(IGNORE); END")
     conn.execute("BEGIN")
     before = _snapshot(conn)
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(sqlite3.DatabaseError) as error:
         _insert(conn, 100, [2, 1])
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
     assert _snapshot(conn) == before
-    # SQLite may mark the transaction corruption-readonly after CORRUPT; end it
-    # rather than demanding recovery writes inside that same failed transaction.
     conn.execute("ROLLBACK")
 
 
@@ -1299,8 +1144,8 @@ def test_diskann_rejects_corrupt_carrier_before_allocation(conn, damage):
 def test_diskann_carrier_damage_during_graph_action_rolls_back(conn):
     _seed(conn)
     conn.execute(
-        "CREATE TRIGGER damage_guard AFTER INSERT ON v_diskann_nodes "
-        "WHEN NEW.state=0 BEGIN DELETE FROM v_diskann_txn WHERE singleton=2; END"
+        "CREATE TRIGGER damage_guard AFTER INSERT ON v_diskann_entries "
+        "BEGIN DELETE FROM v_diskann_txn WHERE singleton=2; END"
     )
     conn.execute("BEGIN")
     before = _snapshot(conn)
@@ -1328,7 +1173,7 @@ def test_diskann_count_changes_rows_do_not_break_atomic_writes(conn):
     _seed(conn)
     assert _get(conn, 1) == (1.0, 0.0)
     conn.execute(
-        "CREATE TRIGGER late_count_error BEFORE UPDATE OF neighbors ON v_diskann_nodes "
+        "CREATE TRIGGER late_count_error BEFORE INSERT ON v_diskann_current "
         "BEGIN SELECT RAISE(ABORT,'count changes failure'); END"
     )
     conn.execute("BEGIN")
@@ -1381,50 +1226,19 @@ def test_diskann_private_atomic_function_cannot_be_called_from_sql(conn):
     assert _snapshot(conn) == before
 
 
-@pytest.mark.parametrize("qualifier", ["", "TEMP "])
-def test_diskann_shadow_trigger_mutating_vector_payload_is_not_masked_by_callback_cache(extension_path, qualifier):
-    connection = _open(extension_path)
-    try:
-        _create(connection)
-        _seed(connection)
-        connection.execute("DELETE FROM v WHERE rowid=7")
-        connection.execute("PRAGMA ignore_check_constraints=ON")
-        # During multi-node consolidation, node 0's vector is read on the first
-        # rebuilt node; an AFTER UPDATE OF neighbors trigger then poisons node 0
-        # so the next rebuilt node MUST re-read SQLite rather than hit a stale
-        # callback vector cache.
-        poisoned = []
-        connection.create_function("record_vector_poison", 0, lambda: poisoned.append(True))
-        connection.execute(
-            f"CREATE {qualifier}TRIGGER poison_vector_on_edge_write "
-            "AFTER UPDATE OF neighbors ON v_diskann_nodes "
-            "BEGIN SELECT record_vector_poison(); "
-            "UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
-        )
-        connection.execute("BEGIN")
-        before = _snapshot(connection)
-        with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
-            connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
-        assert poisoned, "the corruption trigger must actually execute"
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
-        assert _snapshot(connection) == before
-        connection.execute("ROLLBACK")
-    finally:
-        connection.close()
-
-
 def test_diskann_batch_read_detects_missing_dangling_neighbor_fail_closed(extension_path):
     connection = _open(extension_path)
     try:
         _create(connection)
         for rowid in range(1, 25):
             _insert(connection, rowid, [float(rowid), 0.5])
-        # Inject a dangling neighbor ID among multiple valid neighbors on root 0
-        # so multi-row `IN (...)` validation exercises partial-row detection.
-        connection.execute("DELETE FROM v_diskann_nodes WHERE node_id=5")
+        _maintenance(connection)
+        connection.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE state=2",
+                           (struct.pack("<3Q", 0, 4, 23),))
+        connection.execute("DELETE FROM v_diskann_graph_nodes WHERE native_local_id=4")
         with pytest.raises(sqlite3.DatabaseError) as error:
             _knn(connection, k=3, query=[5.0, 0.5])
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
     finally:
         connection.close()
 
@@ -1436,95 +1250,44 @@ def test_diskann_reentrant_trace_callbacks_and_cross_table_triggers_invalidate_c
         _create(connection)
         for rowid in range(1, 9):
             _insert(connection, rowid, [float(rowid), 0.0])
-        connection.execute("DELETE FROM v WHERE rowid=7")
-        if mode != "incremental-blob":
-            connection.execute("PRAGMA ignore_check_constraints=ON")
-
-        if mode == "cross-table":
-            connection.execute("CREATE TABLE app(event TEXT)")
-            connection.execute(
-                "CREATE TEMP TRIGGER app_poison AFTER INSERT ON app "
-                "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
-            )
-        elif mode == "attached-aux":
-            connection.execute("ATTACH ':memory:' AS aux")
-            connection.execute("CREATE TABLE aux.app(event TEXT)")
-            connection.execute(
-                "CREATE TEMP TRIGGER aux_poison AFTER INSERT ON aux.app "
-                "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
-            )
-
+        _maintenance(connection)
+        _control(connection, "index_prepare")
+        if mode in ("cross-table", "attached-aux"):
+            if mode == "attached-aux":
+                connection.execute("ATTACH ':memory:' AS aux")
+            target = "aux.app" if mode == "attached-aux" else "app"
+            connection.execute(f"CREATE TABLE {target}(event TEXT)")
+            connection.execute(f"CREATE TEMP TRIGGER app_poison AFTER INSERT ON {target} "
+                               "BEGIN UPDATE v_diskann_entries SET vector=X'0000c07f00000000' WHERE entry_id=2; END")
         fired = False
         unchanged_total_changes = False
-
         def trace_hook(sql):
             nonlocal fired, unchanged_total_changes
-            if fired:
+            if fired or 'INSERT INTO "main"."v_diskann_snapshot_map"' not in sql:
                 return
-            if mode == "dynamic-ddl" and "SELECT state,public_rowid,CASE WHEN typeof(vector)" in sql:
-                fired = True
-                connection.execute(
-                    "CREATE TRIGGER dynamic_poison AFTER UPDATE OF neighbors ON v_diskann_nodes "
-                    "BEGIN UPDATE v_diskann_nodes SET vector=X'0000c07f00000000' WHERE node_id=0; END"
-                )
-            elif mode in ("cross-table", "attached-aux") and "SET neighbors=?1" in sql:
-                fired = True
-                target = "aux.app" if mode == "attached-aux" else "app"
-                connection.execute(f"INSERT INTO {target} VALUES('edge')")
-            elif mode == "incremental-blob" and "SET neighbors=?1" in sql:
-                fired = True
-                changes_before = connection.total_changes
-                with connection.blobopen("v_diskann_nodes", "vector", 0) as blob:
+            fired = True
+            if mode == "dynamic-ddl":
+                connection.execute("CREATE TRIGGER dynamic_poison AFTER INSERT ON v_diskann_snapshot_map "
+                                   "BEGIN UPDATE v_diskann_entries SET vector=X'0000c07f00000000' WHERE entry_id=2; END")
+            elif mode in ("cross-table", "attached-aux"):
+                connection.execute(f"INSERT INTO {target} VALUES('capture')")
+            else:
+                before_changes = connection.total_changes
+                with connection.blobopen("v_diskann_entries", "vector", 2) as blob:
                     blob.write(bytes.fromhex("0000c07f00000000"))
-                unchanged_total_changes = connection.total_changes == changes_before
-
+                unchanged_total_changes = connection.total_changes == before_changes
         connection.execute("BEGIN")
         before = _snapshot(connection)
         connection.set_trace_callback(trace_hook)
         try:
             with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
-                connection.execute("INSERT INTO v(operation) VALUES('consolidate')")
+                _control(connection, "index_snapshot_step", _jf(_status(connection)["current_job"]))
         finally:
             connection.set_trace_callback(None)
         assert fired
         if mode == "incremental-blob":
             assert unchanged_total_changes
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
-        assert _snapshot(connection) == before
-        connection.execute("ROLLBACK")
-    finally:
-        connection.close()
-
-
-def test_diskann_read_trace_incremental_blob_poison_is_not_masked_by_store_cache(extension_path):
-    connection = _open(extension_path)
-    try:
-        _create(connection)
-        for rowid in range(1, 9):
-            _insert(connection, rowid, [float(rowid), 0.0])
-        fired = False
-        unchanged_total_changes = False
-
-        def trace_hook(sql):
-            nonlocal fired, unchanged_total_changes
-            if not fired and "SELECT state,public_rowid,CASE WHEN typeof(neighbors)" in sql:
-                fired = True
-                changes_before = connection.total_changes
-                with connection.blobopen("v_diskann_nodes", "vector", 0) as blob:
-                    blob.write(bytes.fromhex("0000c07f00000000"))
-                unchanged_total_changes = connection.total_changes == changes_before
-
-        connection.execute("BEGIN")
-        before = _snapshot(connection)
-        connection.set_trace_callback(trace_hook)
-        try:
-            with pytest.raises(sqlite3.DatabaseError, match="non-finite") as error:
-                _insert(connection, 9, [9.0, 0.0])
-        finally:
-            connection.set_trace_callback(None)
-        assert fired
-        assert unchanged_total_changes
-        assert error.value.sqlite_errorcode & 0xff == sqlite3.SQLITE_CORRUPT
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
         assert _snapshot(connection) == before
         connection.execute("ROLLBACK")
     finally:
@@ -1536,12 +1299,15 @@ def test_diskann_large_k_effective_beam_preserves_scratch_headroom(extension_pat
     try:
         _create(
             connection,
-            options="diskann(degree=4,build_list_size=8,search_list_size=8,cache_bytes=4200000,max_visits=8192)",
+            options="diskann(degree=4,build_list_size=8,search_list_size=8,cache_bytes=8400000,max_visits=32768)",
         )
         connection.execute("BEGIN")
         for i in range(1, 2401):
             _insert(connection, i, [i / 2400.0, (i % 31) / 31.0])
         connection.execute("COMMIT")
+        _maintenance(connection)
+        # Format 4 additionally charges current-version and entry/graph reads.
+        # Double the old 4.2 MB bound for this larger work allowance.
         # Both omitted override and explicit override below `k` expand to
         # effective beam `l = 2000` in core search and must not fail `TOOBIG`
         # due to optional cache carving.
@@ -1551,3 +1317,519 @@ def test_diskann_large_k_effective_beam_preserves_scratch_headroom(extension_pat
         assert below_k == omitted
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("journal", ["WAL", "DELETE"])
+def test_diskann_public_deferred_lifecycle_and_current_version_visibility(extension_path, tmp_path, journal):
+    path = tmp_path / f"lifecycle-{journal}.db"
+    application = _open(extension_path, path)
+    worker = _open(extension_path, path)
+    try:
+        assert application.execute(f"PRAGMA journal_mode={journal}").fetchone()[0] == journal.lower()
+        _create(application)
+        for rowid, vector in BASE_ROWS:
+            _insert(application, rowid, vector)
+        s = _status(application)
+        assert (s["canonical_count"], s["eligible_count"], s["pending_count"]) == (3, 0, 3)
+        assert _knn(application) == []
+        assert application.execute("SELECT rowid FROM v WHERE knn_search(embedding,knn_param(?,99)) AND rowid IN (1,7)", (_blob([1, 0]),)).fetchall() == []
+        job, candidate = _candidate(worker, records=1)
+        assert _status(application)["current_job"]["phase"] == 2
+        assert _knn(application) == []
+        _finish(worker, job, candidate, records=1, publish=False)
+        assert _status(application)["current_job"]["phase"] == 4
+        assert _knn(application) == []
+        _control(worker, "index_publish", {**_jf(job), "candidate_token": candidate["candidate_token"]})
+        assert {r[0] for r in _knn(application)} == {1, 7, 19}
+        assert _status(application)["pending_count"] == 0
+        application.execute("UPDATE v SET embedding=? WHERE rowid=1", (_blob([8, 1]),))
+        assert _get(application, 1) == (8.0, 1.0)
+        assert {r[0] for r in _knn(application)} == {7, 19}
+        assert application.execute("SELECT rowid FROM v WHERE knn_search(embedding,knn_param(?,99)) AND rowid=1", (_blob([8, 1]),)).fetchall() == []
+        application.execute("DELETE FROM v WHERE rowid=7")
+        assert _get(application, 7) is None
+        assert {r[0] for r in _knn(application)} == {19}
+        assert _status(application)["pending_count"] == 1
+        _maintenance(worker, records=1)
+        assert {r[0] for r in _knn(application)} == {1, 19}
+        assert _knn(application, query=[8, 1], k=1) == [(1, 0.0)]
+        assert _status(application)["pending_count"] == 0
+        assert application.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        worker.close()
+        application.close()
+
+
+@pytest.mark.parametrize("journal", ["WAL", "DELETE"])
+def test_diskann_build_limit_keeps_published_generation_and_pending_rows(extension_path, tmp_path, journal):
+    path = tmp_path / f"limit-{journal}.db"
+    application = _open(extension_path, path)
+    worker = _open(extension_path, path)
+    try:
+        application.execute(f"PRAGMA journal_mode={journal}")
+        _create(application)
+        _seed(application)
+        old = _status(application)["published_generation"]
+        _insert(application, 42, [4, 2])
+        _control(worker, "index_prepare")
+        job = _capture(worker, records=1)
+        _control(worker, "index_claim_build", _jf(job))
+        before = _snapshot(worker)
+        with pytest.raises(sqlite3.Error) as error:
+            _build(worker, job, budget=1)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_TOOBIG
+        assert _snapshot(worker) == before
+        s = _status(application)
+        assert s["published_generation"] == old and s["pending_count"] == 1
+        assert s["current_job"]["import_cursor"] == 0
+        assert {r[0] for r in _knn(application)} == {1, 7, 19}
+        assert _get(application, 42) == (4.0, 2.0)
+    finally:
+        worker.close()
+        application.close()
+    # A fixed connection-total admission budget is not enlarged in place.
+    worker = _open(extension_path, path)
+    try:
+        _control(worker, "index_restart", {**_jf(job), "force": True})
+        new = _capture(worker)
+        assert new["fence"] > job["fence"]
+        _control(worker, "index_claim_build", _jf(new))
+        _finish(worker, new, _build(worker, new))
+        assert _status(worker)["pending_count"] == 0
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("recovery", ["cancel", "restart"])
+def test_diskann_lost_ram_competing_workers_and_stale_fence(extension_path, tmp_path, recovery):
+    path = tmp_path / f"fence-{recovery}.db"
+    first = _open(extension_path, path)
+    second = _open(extension_path, path)
+    try:
+        _create(first)
+        _seed(first)
+        _insert(first, 42, [4, 2])
+        old, candidate = _candidate(first)
+        _control(first, "index_import_step", {**_jf(old), "candidate_token": candidate["candidate_token"], "max_records": 1})
+        before = _snapshot(first)
+        for operation in ("index_claim_build", "index_restart"):
+            with pytest.raises(sqlite3.Error) as error:
+                _control(second, operation, _jf(old))
+            assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        with pytest.raises(sqlite3.Error) as error:
+            _build(second, old)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        assert _snapshot(first) == before
+        first.close()  # SQL survives; the partial native candidate does not.
+        with pytest.raises(sqlite3.Error) as error:
+            _control(second, "index_import_step", {**_jf(old), "candidate_token": candidate["candidate_token"]})
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        _control(second, "index_" + recovery, {**_jf(old), "force": True})
+        if recovery == "cancel":
+            assert _status(second)["current_job"] is None
+            _control(second, "index_prepare")
+        new = _capture(second)
+        assert new["job_id"] > old["job_id"] and new["fence"] > old["fence"]
+        assert new["generation_id"] > old["generation_id"]
+        with pytest.raises(sqlite3.Error) as error:
+            _control(second, "index_claim_build", _jf(old))
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        _control(second, "index_claim_build", _jf(new))
+        _finish(second, new, _build(second, new), records=1)
+        assert {r[0] for r in _knn(second)} == {1, 7, 19, 42}
+    finally:
+        first.close()
+        second.close()
+
+
+def test_diskann_readonly_cannot_build_and_repeated_load_preserves_ready_candidate(extension_path, tmp_path):
+    path = tmp_path / "readonly-build.db"
+    worker = _open(extension_path, path)
+    try:
+        _create(worker)
+        _seed(worker)
+        _insert(worker, 42, [4, 2])
+        job, candidate = _candidate(worker)
+        before = _snapshot(worker)
+        with pytest.raises(sqlite3.Error, match="load.once|fresh.connection") as error:
+            worker.load_extension(str(extension_path))
+        # sqlite3.load_extension raises a wrapper OperationalError without code attributes.
+        assert isinstance(error.value, sqlite3.OperationalError)
+        assert _snapshot(worker) == before
+        assert _build(worker, job)["candidate_token"] == candidate["candidate_token"]
+        readonly = _open(extension_path, path, readonly=True)
+        try:
+            assert _status(readonly)["current_job"]["phase"] == 2
+            with pytest.raises(sqlite3.Error) as error:
+                _build(readonly, job)
+            assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            assert _snapshot(readonly) == before
+        finally:
+            readonly.close()
+        _finish(worker, job, candidate)
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("stage", ["snapshot", "import", "validate", "publish"])
+def test_diskann_maintenance_savepoint_release_and_outer_rollback(conn, stage):
+    _seed(conn)
+    _insert(conn, 42, [4, 2])
+    if stage == "snapshot":
+        _control(conn, "index_prepare")
+        job = _status(conn)["current_job"]
+        operation, opts = "index_snapshot_step", _jf(job)
+    else:
+        job, candidate = _candidate(conn)
+        opts = {**_jf(job), "candidate_token": candidate["candidate_token"]}
+        operation = "index_" + ("validate_step" if stage == "validate" else "import_step" if stage == "import" else "publish")
+        if stage == "validate":
+            _control(conn, "index_import_step", opts)
+        elif stage == "publish":
+            _finish(conn, job, candidate, publish=False)
+    before = _snapshot(conn)
+    old_results = _knn(conn)
+    conn.execute("BEGIN")
+    conn.execute("SAVEPOINT maintenance")
+    _control(conn, operation, opts)
+    assert _snapshot(conn) != before
+    conn.execute("RELEASE maintenance")
+    conn.execute("ROLLBACK")
+    assert _snapshot(conn) == before and _knn(conn) == old_results
+    _control(conn, operation, opts)  # RAM is immutable; rolled-back SQL cursor is authoritative.
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+@pytest.mark.parametrize("fault", ["entry", "counter"])
+def test_diskann_canonical_checkpoint_corruption_after_write_rolls_back(extension_path, metric, fault):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        observed = _observe_allocations(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        when = "AFTER INSERT ON v_diskann_entries" if fault == "entry" else "AFTER UPDATE OF canonical_count ON v_diskann_meta"
+        connection.execute(f"CREATE TRIGGER damage_checkpoint {when} "
+                           "BEGIN UPDATE v_diskann_meta SET next_fence=0; END")
+        connection.execute("CREATE TABLE metadata(value)")
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO metadata VALUES('prior')")
+        before = _snapshot(connection)
+        with pytest.raises(sqlite3.Error) as error:
+            _insert(connection, 100, [2, 1])
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+        assert observed == [100]
+        assert _snapshot(connection) == before
+        assert connection.execute("SELECT * FROM metadata").fetchall() == [("prior",)]
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("fault", ["map-rowid", "map-entry", "map-missing", "chain"])
+def test_diskann_snapshot_map_corruption_fails_before_native_or_import(conn, fault):
+    _seed(conn)
+    _control(conn, "index_prepare")
+    job = _capture(conn)
+    _control(conn, "index_claim_build", _jf(job))
+    if fault == "map-rowid":
+        conn.execute("UPDATE v_diskann_snapshot_map SET public_rowid=99 WHERE ordinal=0")
+    elif fault == "map-entry":
+        conn.execute("UPDATE v_diskann_snapshot_map SET entry_id=99 WHERE ordinal=0")
+    elif fault == "map-missing":
+        conn.execute("DELETE FROM v_diskann_snapshot_map WHERE ordinal=0")
+    else:
+        conn.execute("UPDATE v_diskann_jobs SET snapshot_chain=zeroblob(32)")
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error) as error:
+        _build(conn, job)
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+    assert _snapshot(conn) == before
+    assert _status(conn)["current_job"]["import_cursor"] == 0
+
+
+@pytest.mark.parametrize("column,value", [("state", 99), ("root_local_id", 99999),
+    ("eligible_count", -1), ("total_count", 1)])
+def test_diskann_generation_state_and_entrypoint_corruption_fail_closed(conn, column, value):
+    _seed(conn)
+    conn.execute("PRAGMA ignore_check_constraints=ON")
+    conn.execute(f"UPDATE v_diskann_generations SET {_q(column)}=?", (value,))
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error) as error:
+        _knn(conn, k=1)
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+    assert _snapshot(conn) == before
+
+
+@pytest.mark.parametrize("raise_mode", ["ABORT", "FAIL", "IGNORE"])
+def test_diskann_import_failure_keeps_old_generation_and_chunk_atomic(conn, raise_mode):
+    _seed(conn)
+    old_results = _knn(conn)
+    _insert(conn, 42, [4, 2])
+    job, candidate = _candidate(conn)
+    observed = []
+    conn.create_function("observe_import", 0, lambda: observed.append(True) or 0)
+    conn.execute("CREATE TRIGGER observe_graph AFTER INSERT ON v_diskann_graph_nodes "
+                 "BEGIN SELECT observe_import(); END")
+    message = "" if raise_mode == "IGNORE" else ",'late import failure'"
+    conn.execute("CREATE TRIGGER fail_import BEFORE INSERT ON v_diskann_graph_nodes "
+                 f"WHEN NEW.native_local_id=1 BEGIN SELECT RAISE({raise_mode}{message}); END")
+    conn.execute("BEGIN")
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error) as error:
+        _control(conn, "index_import_step", {**_jf(job), "candidate_token": candidate["candidate_token"]})
+    assert error.value.sqlite_errorcode & 0xff == (sqlite3.SQLITE_BUSY if raise_mode == "IGNORE" else sqlite3.SQLITE_CONSTRAINT)
+    assert observed
+    assert _snapshot(conn) == before and _knn(conn) == old_results
+    conn.execute("ROLLBACK")
+    conn.execute("DROP TRIGGER fail_import")
+    _finish(conn, job, candidate)
+
+
+@pytest.mark.parametrize("qualifier", ["", "TEMP "])
+def test_diskann_capture_trigger_payload_poison_is_not_cached(conn, qualifier):
+    _seed(conn)
+    _control(conn, "index_prepare")
+    poisoned = []
+    conn.create_function("record_poison", 0, lambda: poisoned.append(True) or 0)
+    conn.execute(f"CREATE {qualifier}TRIGGER poison_capture AFTER INSERT ON v_diskann_snapshot_map "
+                 "BEGIN SELECT record_poison(); UPDATE v_diskann_entries SET vector=X'0000c07f00000000' WHERE entry_id=2; END")
+    conn.execute("BEGIN")
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error, match="non-finite") as error:
+        _control(conn, "index_snapshot_step", _jf(_status(conn)["current_job"]))
+    assert poisoned and error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+    assert _snapshot(conn) == before
+    conn.execute("ROLLBACK")
+
+
+@pytest.mark.parametrize("journal", ["WAL", "DELETE"])
+@pytest.mark.parametrize("stage", ["capture", "compute", "mid-import", "validated", "publish", "gc"])
+def test_diskann_process_exit_maintenance_recovery(extension_path, tmp_path, journal, stage):
+    path = tmp_path / f"maintenance-crash-{journal}-{stage}.db"
+    connection = _open(extension_path, path)
+    connection.execute(f"PRAGMA journal_mode={journal}")
+    _create(connection)
+    _seed(connection)
+    old_generation = _status(connection)["published_generation"]
+    _insert(connection, 100, [2, 1])
+    connection.close()
+    script = r'''
+import os, runpy, sys
+h = runpy.run_path(sys.argv[3])
+db = h["_open"](sys.argv[1], sys.argv[2])
+control, status, jf = h["_control"], h["_status"], h["_jf"]
+stage = sys.argv[4]
+control(db, "index_prepare")
+job = status(db)["current_job"]
+if stage == "capture":
+    control(db, "index_snapshot_step", {**jf(job), "max_records": 1})
+    db.execute("BEGIN IMMEDIATE")
+    control(db, "index_snapshot_step", {**jf(job), "max_records": 1})
+    os._exit(73)
+job = h["_capture"](db, records=1)
+control(db, "index_claim_build", jf(job))
+candidate = h["_build"](db, job)
+opts = {**jf(job), "candidate_token": candidate["candidate_token"]}
+if stage == "compute":
+    os._exit(73)
+if stage == "mid-import":
+    control(db, "index_import_step", {**opts, "max_records": 1})
+    db.execute("BEGIN IMMEDIATE")
+    control(db, "index_import_step", {**opts, "max_records": 1})
+    os._exit(73)
+h["_finish"](db, job, candidate, records=1, publish=False)
+if stage == "validated":
+    os._exit(73)
+if stage == "publish":
+    db.execute("BEGIN IMMEDIATE")
+    control(db, "index_publish", opts)
+    os._exit(73)
+control(db, "index_publish", opts)
+control(db, "index_cleanup_step", {"max_records": 1})
+db.execute("BEGIN IMMEDIATE")
+control(db, "index_cleanup_step", {"max_records": 1})
+os._exit(73)
+'''
+    process = subprocess.run([sys.executable, "-c", script, str(extension_path), str(path),
+                              str(Path(__file__).resolve()), stage], capture_output=True, timeout=30)
+    assert process.returncode == 73, process.stderr.decode(errors="replace")
+    readonly = _open(extension_path, path, readonly=True)
+    try:
+        assert readonly.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        s = _status(readonly)
+        assert s["canonical_count"] == 4
+        if stage == "gc":
+            assert s["current_job"] is None and s["pending_count"] == 0
+            assert s["published_generation"] > old_generation
+            assert {r[0] for r in _knn(readonly)} == {1, 7, 19, 100}
+        else:
+            assert s["published_generation"] == old_generation and s["pending_count"] == 1
+            assert {r[0] for r in _knn(readonly)} == {1, 7, 19}
+            job = s["current_job"]
+            assert job["phase"] == {"capture": 0, "compute": 2, "mid-import": 2,
+                                     "validated": 4, "publish": 4}[stage]
+            if stage == "capture":
+                assert job["captured_count"] == 1
+            if stage == "mid-import":
+                assert job["import_cursor"] == 1
+    finally:
+        readonly.close()
+    reopened = _open(extension_path, path)
+    try:
+        if stage != "gc":
+            if stage == "capture":
+                new = _capture(reopened, records=1)  # Unclaimed durable capture is directly resumable.
+            else:
+                with pytest.raises(sqlite3.Error):
+                    _build(reopened, job)  # Never stitch fresh RAM into partially imported SQL.
+                _control(reopened, "index_restart", {**_jf(job), "force": True})
+                new = _capture(reopened, records=1)
+                assert new["fence"] > job["fence"] and new["generation_id"] > job["generation_id"]
+            _control(reopened, "index_claim_build", _jf(new))
+            _finish(reopened, new, _build(reopened, new), records=1)
+        for _ in range(30):
+            _control(reopened, "index_cleanup_step", {"max_records": 1})
+        assert _status(reopened)["pending_count"] == 0
+        assert {r[0] for r in _knn(reopened)} == {1, 7, 19, 100}
+        assert reopened.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("cache_bytes", [4096, 24576])
+def test_diskann_canonical_workspace_rejects_before_shadow_ddl(extension_path, cache_bytes):
+    connection = _open(extension_path)
+    try:
+        attempted = []
+        def authorize(operation, name, _column, _schema, _source):
+            if operation == sqlite3.SQLITE_CREATE_TABLE and name in {"v" + s for s in SUFFIXES}:
+                attempted.append(name)
+            return sqlite3.SQLITE_OK
+        connection.set_authorizer(authorize)
+        with pytest.raises(sqlite3.Error) as error:
+            _create(connection, options=f"diskann(degree=4,build_list_size=8,cache_bytes={cache_bytes},max_visits=128)")
+        connection.set_authorizer(None)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_TOOBIG
+        assert attempted == []
+        assert not ({"v"} | {"v" + s for s in SUFFIXES}) & _schema_names(connection)
+        # This budget formerly rejected INSERT graph scratch. Canonical ingestion
+        # now succeeds without allocating a frozen/user graph node or native RAM.
+        _create(connection, options="diskann(degree=4,build_list_size=8,cache_bytes=32768,max_visits=128)")
+        _insert(connection, 1, [1, 0])
+        assert _get(connection, 1) == (1.0, 0.0)
+        before = _snapshot(connection)
+        with pytest.raises(sqlite3.Error, match="query workspace") as error:
+            _knn(connection)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_TOOBIG
+        assert _snapshot(connection) == before
+        assert connection.execute("SELECT count(*) FROM v_diskann_graph_nodes").fetchone() == (0,)
+    finally:
+        connection.close()
+
+
+def test_diskann_retired_navigation_bridge_is_immutable_and_gc_pinned(conn):
+    for rowid in range(32):
+        _insert(conn, rowid, [float(rowid), 0])
+    _maintenance(conn)
+    # Deliberately controlled valid directed topology, not a user import API.
+    # Native frozen root N has a one-way incoming edge to soon-retired node0.
+    for local in range(33):
+        neighbors = [0] if local == 32 else [1] if local == 0 else [local - 1, local + 1] if local < 31 else [30]
+        conn.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE native_local_id=?",
+                     (struct.pack(f"<{len(neighbors)}Q", *neighbors), local))
+    graph_before = conn.execute("SELECT * FROM v_diskann_graph_nodes ORDER BY native_local_id").fetchall()
+    retired_entry = _live_id(conn, 0)
+    conn.execute("DELETE FROM v WHERE rowid=0")
+    assert conn.execute("SELECT * FROM v_diskann_graph_nodes ORDER BY native_local_id").fetchall() == graph_before
+    assert _knn(conn, query=[1, 0], k=1, options={"search_list_size": 64}) == [(1, 0.0)]
+    for _ in range(10):
+        _control(conn, "index_cleanup_step", {"max_records": 1})
+    assert conn.execute("SELECT count(*) FROM v_diskann_entries WHERE entry_id=?", (retired_entry,)).fetchone() == (1,)
+    _maintenance(conn)
+    for _ in range(200):
+        _control(conn, "index_cleanup_step", {"max_records": 1})
+    assert conn.execute("SELECT count(*) FROM v_diskann_entries WHERE entry_id=?", (retired_entry,)).fetchone() == (0,)
+    assert _knn(conn, query=[1, 0], k=1) == [(1, 0.0)]
+
+
+def test_diskann_read_trace_incremental_blob_poison_is_not_masked_by_store_cache(conn):
+    _seed(conn)
+    _control(conn, "index_prepare")
+    fired = False
+    unchanged_total_changes = False
+    def trace_hook(sql):
+        nonlocal fired, unchanged_total_changes
+        if not fired and 'SELECT public_rowid,created_revision,retired_revision,' in sql:
+            fired = True
+            before_changes = conn.total_changes
+            with conn.blobopen("v_diskann_entries", "vector", 1) as blob:
+                blob.write(bytes.fromhex("0000c07f00000000"))
+            unchanged_total_changes = conn.total_changes == before_changes
+    conn.execute("BEGIN")
+    before = _snapshot(conn)
+    job = _status(conn)["current_job"]
+    conn.set_trace_callback(trace_hook)
+    try:
+        with pytest.raises(sqlite3.Error, match="non-finite") as error:
+            _control(conn, "index_snapshot_step", _jf(job))
+    finally:
+        conn.set_trace_callback(None)
+    assert fired and unchanged_total_changes
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+    assert _snapshot(conn) == before
+    conn.execute("ROLLBACK")
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+@pytest.mark.parametrize("fault", ["job-counter", "generation-state", "carrier"])
+def test_diskann_capture_checkpoint_corruption_rolls_back_map_and_progress(extension_path, metric, fault):
+    connection = _open(extension_path)
+    try:
+        _create(connection, metric=metric)
+        _seed(connection)
+        _control(connection, "index_prepare")
+        damage = {"job-counter": "UPDATE v_diskann_jobs SET captured_count=-1",
+                  "generation-state": "UPDATE v_diskann_generations SET state=99 WHERE state=0",
+                  "carrier": "DELETE FROM v_diskann_txn WHERE singleton=2"}[fault]
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("CREATE TRIGGER damage_capture AFTER INSERT ON v_diskann_snapshot_map "
+                           f"BEGIN {damage}; END")
+        connection.execute("CREATE TABLE metadata(value)")
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO metadata VALUES('prior')")
+        before = _snapshot(connection)
+        job = _status(connection)["current_job"]
+        with pytest.raises(sqlite3.Error) as error:
+            _control(connection, "index_snapshot_step", {**_jf(job), "max_records": 1})
+        expected = sqlite3.SQLITE_BUSY if fault == "job-counter" else sqlite3.SQLITE_CORRUPT
+        assert error.value.sqlite_errorcode == expected
+        assert _snapshot(connection) == before
+        assert connection.execute("SELECT * FROM metadata").fetchall() == [("prior",)]
+        connection.execute("ROLLBACK")
+    finally:
+        connection.close()
+
+
+def test_diskann_validation_rejects_imported_order_corruption_without_progress(conn):
+    _seed(conn)
+    _insert(conn, 42, [4, 2])
+    job, candidate = _candidate(conn)
+    opts = {**_jf(job), "candidate_token": candidate["candidate_token"]}
+    _control(conn, "index_import_step", opts)
+    generation = job["generation_id"]
+    rows = conn.execute("SELECT native_local_id,neighbors FROM v_diskann_graph_nodes WHERE generation_id=? ORDER BY native_local_id", (generation,)).fetchall()
+    local, original = next((local, neighbors) for local, neighbors in rows if len(neighbors) >= 16)
+    ids = struct.unpack(f"<{len(original) // 8}Q", original)
+    changed = struct.pack(f"<{len(ids)}Q", *reversed(ids))
+    assert changed != original
+    conn.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE generation_id=? AND native_local_id=?", (changed, generation, local))
+    before = _snapshot(conn)
+    with pytest.raises(sqlite3.Error) as error:
+        _control(conn, "index_validate_step", opts)
+    assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+    assert _snapshot(conn) == before
+    assert _status(conn)["current_job"]["validation_cursor"] == 0
+    assert {r[0] for r in _knn(conn)} == {1, 7, 19}
+    conn.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE generation_id=? AND native_local_id=?", (original, generation, local))
+    _finish(conn, job, candidate)

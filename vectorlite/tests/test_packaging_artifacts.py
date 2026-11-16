@@ -192,7 +192,23 @@ def test_upstream_provenance_and_own_npm_license_remain_distinct():
     for name, expected in provenance["source_git_blobs"].items():
         payload = (ROOT / "third_party/diskann-0.60.0" / name).read_bytes()
         assert hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest() == expected
-    assert set(provenance["crates"]) == {"diskann", "diskann-utils", "diskann-vector", "diskann-wide"}
+    assert set(provenance["crates"]) == {
+        "diskann", "diskann-providers", "diskann-quantization",
+        "diskann-utils", "diskann-vector", "diskann-wide",
+    }
+    assert "No algorithm/provider source vendoring" in provenance["distribution"]
+    assert "local_patch" not in provenance
+    cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    assert "patch" not in cargo
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    diskann_lock = {package["name"]: package for package in lock["package"] if package["name"].startswith("diskann")}
+    assert set(diskann_lock) == set(provenance["crates"])
+    for package in diskann_lock.values():
+        assert package["source"] == "registry+https://github.com/rust-lang/crates.io-index"
+        assert package["checksum"]
+        if package["name"] == "diskann":
+            assert package["checksum"] == provenance["upstream_core_archive_sha256"]
+    assert not (ROOT / "third_party/diskann-0.60.0/vendor").exists()
     for package in ("vectorlite", "vectorlite-linux-x64", "vectorlite-win32-x64", "vectorlite-darwin-arm64"):
         directory = ROOT / "bindings/nodejs/packages" / package
         manifest = json.loads((directory / "package.json").read_text())
@@ -209,34 +225,67 @@ def test_upstream_provenance_and_own_npm_license_remain_distinct():
     assert "new sqlite3(databasePath)" in smoke
 
 
-def test_runtime_inventory_retains_expressions_targets_and_every_exact_notice():
-    manifest = json.loads((ROOT / "third_party/rust-runtime/MANIFEST.json").read_text())
+def test_runtime_inventory_is_registry_only_and_retains_every_exact_notice():
+    bundle = ROOT / "third_party/rust-runtime"
+    manifest = json.loads((bundle / "MANIFEST.json").read_text())
     assert manifest["cargo_lock_sha256"] == hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()
     assert manifest["unresolved_notice_gaps"] == []
-    packages = {p["name"]: p for p in manifest["packages"]}
-    assert len(packages) == 42
-    assert packages["diskann"]["registry_source"] is None
-    patch = packages["diskann"]["local_patch"]
-    assert patch == json.loads((ROOT / "third_party/diskann-0.60.0/PROVENANCE.json").read_text())["local_patch"]
-    assert {entry["path"] for entry in patch["modified_files"]} == {"src/graph/index.rs"}
-    for entry in patch["modified_files"]:
-        payload = (ROOT / patch["source_directory"] / entry["path"]).read_bytes()
-        assert hashlib.sha256(payload).hexdigest() == entry["local_sha256"]
+    assert set(manifest["target_triples"]) == {
+        "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin",
+    }
+    packages = {package["name"]: package for package in manifest["packages"]}
+    assert len(packages) == 66
+    assert len(manifest["excluded_packages"]) == 18
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    checksums = {(package["name"], package["version"]): package.get("checksum") for package in lock["package"]}
+    diskann_crates = {name for name in packages if name.startswith("diskann")}
+    assert diskann_crates == {
+        "diskann", "diskann-providers", "diskann-quantization",
+        "diskann-utils", "diskann-vector", "diskann-wide",
+    }
+    for package in manifest["packages"]:
+        assert package["registry_source"] is not None
+        assert package["registry_source"].startswith("registry+https://github.com/rust-lang/crates.io-index")
+        assert "local_patch" not in package
+        key = (package["name"], package["version"])
+        assert package["registry_archive_sha256"] == checksums[key]
+        assert package["vcs"] is not None
+        assert package["files"]
+        for file in package["files"]:
+            assert file["path"].startswith("crates/")
+            assert not file["path"].endswith((".rs", ".c", ".h"))
+    for name in diskann_crates:
+        package = packages[name]
+        assert package["version"] == "0.60.0"
+        assert package["registry_archive_sha256"]
+        assert package["vcs"]["git"]["sha1"] == "97a828a500848018d8be28c3ea6d5a585b07362f"
+        assert {"LICENSE.txt", "NOTICE.txt", "SOURCE_NOTICES.txt"} <= {
+            file["path"].rsplit("/", 1)[-1] for file in package["files"]
+        }
     assert "cc" not in packages and "bytemuck_derive" not in packages
-    assert "bindgen" not in packages and "rayon" not in packages
+    assert "proc-macro2" not in packages and "syn" not in packages
+    assert "rayon" in packages
     assert packages["zerocopy"]["declared_spdx"] == "BSD-2-Clause OR Apache-2.0 OR MIT"
     assert packages["rustix"]["declared_spdx"] == "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
     assert packages["memchr"]["declared_spdx"] == "Unlicense OR MIT"
     assert packages["windows_x86_64_msvc"]["targets"] == ["x86_64-pc-windows-msvc"]
     assert packages["linux-raw-sys"]["targets"] == ["x86_64-unknown-linux-gnu"]
     assert packages["libm"]["declared_spdx"] == "MIT"
-    libm_notice = (ROOT / "third_party/rust-runtime/crates/libm-0.2.16/SOURCE_NOTICES.txt").read_text()
+    libm_notice = (bundle / "crates/libm-0.2.16/SOURCE_NOTICES.txt").read_text()
     assert "Sun Microsystems" in libm_notice
     assert "David Schultz" in libm_notice
     assert "Alexei Sibidanov" in libm_notice
+    provenance = json.loads((ROOT / "third_party/diskann-0.60.0/PROVENANCE.json").read_text())
+    assert set(provenance["crates"]) == diskann_crates
+    assert "No algorithm/provider source vendoring" in provenance["distribution"]
+    assert "local_patch" not in provenance
+    cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    assert "patch" not in cargo
+    assert not (ROOT / "third_party/diskann-0.60.0/vendor").exists()
+    bundled = [path for path in bundle.rglob("*") if path.is_file()]
+    assert all(path.suffix not in {".rs", ".c", ".h"} for path in bundled)
     payloads = notices()
     for package in packages.values():
-        assert package["registry_archive_sha256"]
         assert package["files"]
         for file in package["files"]:
             payload = payloads[f"rust-runtime/{file['path']}"]

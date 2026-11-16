@@ -86,6 +86,7 @@ pub unsafe fn set_api(table: *const sqlite3_api_routines) -> Result<(), &'static
         bind_text,
         bind_pointer,
         context_db_handle,
+        user_data,
         result_error_code,
         step,
         column_count,
@@ -345,7 +346,9 @@ statement_api!(
     ) -> c_int
 );
 statement_api!(finalize(statement: *mut sqlite3_stmt) -> c_int);
+#[cfg(test)]
 statement_api!(reset(statement: *mut sqlite3_stmt) -> c_int);
+#[cfg(test)]
 statement_api!(clear_bindings(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(bind_int64(statement: *mut sqlite3_stmt, index: c_int, value: i64) -> c_int);
 statement_api!(
@@ -376,6 +379,7 @@ statement_api!(
     ) -> c_int
 );
 statement_api!(context_db_handle(context: *mut sqlite3_context) -> *mut sqlite3);
+statement_api!(user_data(context: *mut sqlite3_context) -> *mut c_void);
 statement_api!(result_error_code(context: *mut sqlite3_context, code: c_int) -> ());
 statement_api!(step(statement: *mut sqlite3_stmt) -> c_int);
 statement_api!(column_count(statement: *mut sqlite3_stmt) -> c_int);
@@ -388,8 +392,103 @@ statement_api!(errmsg(db: *mut sqlite3) -> *const c_char);
 statement_api!(extended_errcode(db: *mut sqlite3) -> c_int);
 statement_api!(randomness(length: c_int, output: *mut c_void) -> ());
 statement_api!(changes(db: *mut sqlite3) -> c_int);
-statement_api!(stmt_status(statement: *mut sqlite3_stmt, op: c_int, reset_flg: c_int) -> c_int);
-statement_api!(total_changes64(db: *mut sqlite3) -> sqlite3_int64);
+
+// --- optional transaction-free DiskANN build capabilities ---
+
+/// A validated capability set, not a borrow of the host's possibly short table.
+/// Keep this separate from set_api: missing build APIs must not raise the HNSW
+/// minimum or prevent HNSW from loading on SQLite 3.20.
+#[derive(Clone, Copy)]
+pub(crate) struct BuildStateApi {
+    get_autocommit: unsafe extern "C" fn(*mut sqlite3) -> c_int,
+    txn_state: unsafe extern "C" fn(*mut sqlite3, *const c_char) -> c_int,
+    next_stmt: unsafe extern "C" fn(*mut sqlite3, *mut sqlite3_stmt) -> *mut sqlite3_stmt,
+    stmt_busy: unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int,
+}
+
+impl BuildStateApi {
+    /// Validates only fields present in a DiskANN-supported host prefix.
+    ///
+    /// # Safety
+    /// table must be readable during validation, with the prefix appropriate
+    /// to its reported version. The function pointers and originating runtime
+    /// must remain live through all calls; the returned value does not borrow table.
+    pub(crate) unsafe fn from_table(
+        table: *const sqlite3_api_routines,
+    ) -> Result<Self, &'static str> {
+        if table.is_null() {
+            return Err("SQLite API table is null");
+        }
+        // SAFETY: libversion_number is in the original loadable-extension prefix;
+        // reading this field does not borrow or copy the newer whole table.
+        let version = unsafe { std::ptr::addr_of!((*table).libversion_number).read() }
+            .ok_or("SQLite version API is unavailable")?;
+        // SAFETY: this is the host's correctly typed, live version function.
+        if unsafe { version() } < 3_038_000 {
+            return Err("DiskANN build requires SQLite 3.38.0 or newer");
+        }
+        macro_rules! required {
+            ($field:ident) => {
+                // SAFETY: each field below belongs to the checked 3.38 prefix.
+                // In particular txn_state was added in 3.34; it is NEVER read
+                // from an older table, even if other older fields are present.
+                unsafe { std::ptr::addr_of!((*table).$field).read() }.ok_or(concat!(
+                    "SQLite build API is unavailable: ",
+                    stringify!($field)
+                ))?
+            };
+        }
+        Ok(Self {
+            get_autocommit: required!(get_autocommit),
+            txn_state: required!(txn_state),
+            next_stmt: required!(next_stmt),
+            stmt_busy: required!(stmt_busy),
+        })
+    }
+
+    /// # Safety
+    /// db must be live and accessed only in its serialized callback on this thread.
+    pub(crate) unsafe fn get_autocommit(self, db: *mut sqlite3) -> c_int {
+        // SAFETY: caller supplies the live callback-confined connection.
+        unsafe { (self.get_autocommit)(db) }
+    }
+
+    /// Returns the maximum transaction state across ALL schemas, including TEMP
+    /// and attached databases. Unknown/negative results must not be treated as NONE.
+    ///
+    /// # Safety
+    /// db must be live and accessed only in its serialized callback on this thread.
+    pub(crate) unsafe fn txn_state(self, db: *mut sqlite3) -> c_int {
+        // SAFETY: NULL is SQLite's documented all-schemas selector.
+        unsafe { (self.txn_state)(db, std::ptr::null()) }
+    }
+
+    /// # Safety
+    /// db must be a live callback-confined connection. previous is NULL or a
+    /// live statement of db; no statement may be finalized during enumeration.
+    pub(crate) unsafe fn next_stmt(
+        self,
+        db: *mut sqlite3,
+        previous: *mut sqlite3_stmt,
+    ) -> *mut sqlite3_stmt {
+        // SAFETY: the caller maintains the enumeration's connection/statement lease.
+        unsafe { (self.next_stmt)(db, previous) }
+    }
+
+    /// # Safety
+    /// statement must be live on its connection's serialized callback thread.
+    pub(crate) unsafe fn stmt_busy(self, statement: *mut sqlite3_stmt) -> c_int {
+        // SAFETY: the caller maintains the statement lease through this call.
+        unsafe { (self.stmt_busy)(statement) }
+    }
+}
+
+pub(crate) fn build_state_api() -> Result<BuildStateApi, &'static str> {
+    let table = API.load(Ordering::Acquire);
+    // SAFETY: set_api stores only a live host table whose lifetime covers every
+    // callback; from_table also rejects NULL before inspecting any field.
+    unsafe { BuildStateApi::from_table(table) }
+}
 
 // --- schema / module / functions ---
 
@@ -457,6 +556,28 @@ pub unsafe fn create_function(
     // callback lifetime; set_api validated the dispatched function pointers.
     unsafe {
         (api_field!(create_function_v2))(db, name, n_arg, flags, p_app, x_func, None, None, None)
+    }
+}
+
+/// Registers owned scalar userdata. SQLite invokes destroy on replacement, close,
+/// and registration failure; callers transfer one unique allocation even on error.
+///
+/// # Safety
+/// The live database/name/callback/pApp and destructor must satisfy SQLite's
+/// create_function_v2 lifetime and single-destruction contract.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn create_owned_function(
+    db: *mut sqlite3,
+    name: *const c_char,
+    n_arg: c_int,
+    flags: c_int,
+    p_app: *mut c_void,
+    x_func: Option<unsafe extern "C" fn(*mut sqlite3_context, c_int, *mut *mut sqlite3_value)>,
+    destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+) -> c_int {
+    // SAFETY: caller transfers owned pApp with its matching destructor and valid callback.
+    unsafe {
+        (api_field!(create_function_v2))(db, name, n_arg, flags, p_app, x_func, None, None, destroy)
     }
 }
 
@@ -627,6 +748,16 @@ mod tests {
             .starts_with("338")
         {
             3_038_000
+        } else if std::env::var(CASE_ENV)
+            .unwrap_or_default()
+            .starts_with("334")
+        {
+            3_034_000
+        } else if std::env::var(CASE_ENV)
+            .unwrap_or_default()
+            .starts_with("337")
+        {
+            3_037_000
         } else {
             3_020_000
         }
@@ -682,6 +813,7 @@ mod tests {
             bind_text,
             bind_pointer,
             context_db_handle,
+            user_data,
             result_error_code,
             step,
             column_count,
@@ -696,6 +828,10 @@ mod tests {
             changes,
             stmt_status,
             total_changes64,
+            get_autocommit,
+            txn_state,
+            next_stmt,
+            stmt_busy,
             vtab_in,
             vtab_in_first,
             vtab_in_next,
@@ -713,6 +849,10 @@ mod tests {
             "320-missing-stmt-status" => table.stmt_status = None,
             "338-missing-total-changes64" => table.total_changes64 = None,
             "338-missing-in" => table.vtab_in_next = None,
+            "338-missing-build-autocommit" => table.get_autocommit = None,
+            "338-missing-build-txn-state" => table.txn_state = None,
+            "338-missing-build-next-stmt" => table.next_stmt = None,
+            "338-missing-build-stmt-busy" => table.stmt_busy = None,
             _ => {}
         }
         table
@@ -852,11 +992,27 @@ mod tests {
     }
 
     #[test]
+    fn build_capability_null_and_missing_version_fail_closed() {
+        // SAFETY: the validator rejects NULL before any field access.
+        let null = unsafe { BuildStateApi::from_table(std::ptr::null()) };
+        assert!(null.err().unwrap().contains("table is null"));
+        // SAFETY: all fields are optional function pointers, so zero means None.
+        let missing: sqlite3_api_routines = unsafe { std::mem::zeroed() };
+        // SAFETY: this fully initialized table is readable during validation.
+        let version = unsafe { BuildStateApi::from_table(&missing) };
+        assert!(version.err().unwrap().contains("version API"));
+    }
+
+    #[test]
     fn host_api_prefix_subprocess() {
         if let Ok(case) = std::env::var(CASE_ENV) {
             let source = fixture(&case);
             let prefix = if case.starts_with("338") {
                 std::mem::offset_of!(sqlite3_api_routines, deserialize)
+            } else if case.starts_with("334") {
+                std::mem::offset_of!(sqlite3_api_routines, changes64)
+            } else if case.starts_with("337") {
+                std::mem::offset_of!(sqlite3_api_routines, error_offset)
             } else {
                 std::mem::offset_of!(sqlite3_api_routines, vtab_nochange)
             };
@@ -884,6 +1040,27 @@ mod tests {
                 assert!(result.unwrap_err().contains(expected));
             } else {
                 assert_eq!(result, Ok(()));
+                // SAFETY: the mapping owns exactly the reported host prefix. The
+                // validator must reject older hosts BEFORE reading txn_state.
+                let build = unsafe { BuildStateApi::from_table(memory.table) };
+                if !case.starts_with("338") {
+                    assert!(build.err().unwrap().contains("3.38.0"));
+                } else {
+                    let missing = match case.as_str() {
+                        "338-missing-build-autocommit" => Some("get_autocommit"),
+                        "338-missing-build-txn-state" => Some("txn_state"),
+                        "338-missing-build-next-stmt" => Some("next_stmt"),
+                        "338-missing-build-stmt-busy" => Some("stmt_busy"),
+                        _ => None,
+                    };
+                    if let Some(missing) = missing {
+                        assert!(build.err().unwrap().contains(missing));
+                        assert!(build_state_api().err().unwrap().contains(missing));
+                    } else {
+                        assert!(build.is_ok());
+                        assert!(build_state_api().is_ok());
+                    }
+                }
                 // The global API keeps this borrowed prefix; preserve it for
                 // this isolated subprocess's lifetime, without invoking stubs.
                 std::mem::forget(memory);
@@ -892,7 +1069,13 @@ mod tests {
         }
         for case in [
             "320",
+            "334",
+            "337",
             "338",
+            "338-missing-build-autocommit",
+            "338-missing-build-txn-state",
+            "338-missing-build-next-stmt",
+            "338-missing-build-stmt-busy",
             "320-missing-prepare",
             "320-missing-reset",
             "320-missing-clear-bindings",

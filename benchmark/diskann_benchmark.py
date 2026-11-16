@@ -195,6 +195,9 @@ def read_manifest(connection: sqlite3.Connection) -> dict:
 
 def dataset_config(connection: sqlite3.Connection, runtime: dict) -> dict:
     saved = read_manifest(connection)
+    if "storage_descriptor" not in saved or saved.get("storage_format_version") != 4:
+        raise ValueError("benchmark manifest lacks a Format 4 descriptor")
+    descriptor(connection, saved)
     # An explicit extension can be changed to compare compatible implementations.
     return {**saved, **{key: runtime[key] for key in (
         "database", "extension", "queries", "k", "warm_runs", "query_memory_limit_mib",
@@ -217,44 +220,127 @@ def linear_vector(coordinate: float, dimension: int) -> bytes:
 
 
 def linear_neighbors(rowid: int, count: int) -> bytes:
-    neighbors = [rowid - 1]
+    # Native IDs are dense 0..count-1, with frozen root at count.
+    node = rowid - 1
+    neighbors = [count if node == 0 else node - 1]
     if rowid < count:
-        neighbors.append(rowid + 1)
+        neighbors.append(node + 1)
     return struct.pack("<" + "Q" * len(neighbors), *neighbors)
 
 
+def descriptor(connection: sqlite3.Connection, config: dict) -> tuple[int, dict]:
+    version, raw = connection.execute(
+        f"SELECT format_version,descriptor FROM {TABLE}_diskann_meta WHERE singleton=1").fetchone()
+    value = json.loads(raw)
+    if (version != 4 or value.get("format_version") != 4
+            or value.get("backend") != "diskann" or value.get("dimension") != config["dim"]
+            or value.get("metric") != ("l2_squared" if config["metric"] == "l2" else "cosine")
+            or value.get("maintenance") != "deferred-oneshot-v1"):
+        raise ValueError("unsupported or mismatched Format 4 storage descriptor")
+    options = value.get("options", {})
+    for key in ("degree", "build_list_size", "search_list_size", "cache_bytes", "max_visits"):
+        if options.get(key) != config[key]:
+            raise ValueError(f"storage descriptor option mismatch: {key}")
+    if options.get("alpha") != struct.unpack("<f", struct.pack("<f", config["alpha"]))[0]:
+        raise ValueError("storage descriptor option mismatch: alpha")
+    if "storage_descriptor" in config and (config.get("storage_format_version") != version
+                                             or config["storage_descriptor"] != value):
+        raise ValueError("benchmark manifest and storage descriptor differ")
+    return version, value
+
+
+def eligible_rows_sql() -> str:
+    return (f"FROM {TABLE}_diskann_meta m JOIN {TABLE}_diskann_graph_nodes g "
+            "ON g.generation_id=m.published_generation AND g.state=0 "
+            f"JOIN {TABLE}_diskann_current c ON c.entry_id=g.entry_id "
+            f"JOIN {TABLE}_diskann_entries e ON e.entry_id=c.entry_id AND e.public_rowid=c.public_rowid ")
+
+
+def eligible_count(connection: sqlite3.Connection) -> int:
+    return connection.execute("SELECT count(*) " + eligible_rows_sql()).fetchone()[0]
+
+
+def maintenance(config: dict, started_at: float | None = None) -> dict:
+    # A separate file-backed worker owns the fenced candidate throughout the cycle.
+    worker = connect(config)
+    timings = {}
+    def status():
+        return json.loads(worker.execute("SELECT vectorlite_index_status(?,?)", ("main", TABLE)).fetchone()[0])
+    def control(operation, options):
+        worker.execute(f"INSERT INTO {TABLE}(operation,path) VALUES(?,?)", (operation, json.dumps(options)))
+    def timed(name, action):
+        start = time.perf_counter()
+        value = action()
+        timings[name] = time.perf_counter() - start
+        return value
+    try:
+        timed("prepare_seconds", lambda: control("index_prepare", {}))
+        job = status()["current_job"]
+        key = {"job_id": job["job_id"], "fence": job["fence"]}
+        # Every step is bounded; a nonprogressing or unexpected phase fails closed.
+        # Each successful step can be byte-limited to a single record; include
+        # the frozen root and final phase transition in the worst-case bound.
+        limit = job["cutoff_entry_id"] + 4
+        def steps(operation, phase):
+            for _ in range(limit):
+                current = status()["current_job"]
+                if current is None or current["phase"] != phase:
+                    return
+                control(operation, {**key, **token, "max_records": 256,
+                                    "max_bytes": min(1024 * 1024, config["cache_bytes"])})
+            raise RuntimeError(f"{operation} failed to complete within bounded steps")
+        token = {}
+        timed("snapshot_seconds", lambda: steps("index_snapshot_step", 0))
+        if status()["current_job"]["phase"] != 1:
+            raise RuntimeError("snapshot did not reach build phase")
+        timed("claim_seconds", lambda: control("index_claim_build", key))
+        candidate = timed("build_seconds", lambda: json.loads(worker.execute(
+            "SELECT vectorlite_index_build(?,?,?)", ("main", TABLE,
+            json.dumps({**key, "memory_budget_bytes": max(128 * 1024 * 1024, config["cache_bytes"])}))).fetchone()[0]))
+        token = {"candidate_token": candidate["candidate_token"]}
+        timed("import_seconds", lambda: steps("index_import_step", 2))
+        timed("validate_seconds", lambda: steps("index_validate_step", 3))
+        if status()["current_job"]["phase"] != 4:
+            raise RuntimeError("candidate validation did not reach publication")
+        timed("publish_seconds", lambda: control("index_publish", {**key, **token}))
+        elapsed_to_publication = time.perf_counter() - started_at if started_at is not None else None
+        result = status()
+        if result["current_job"] is not None or result["published_generation"] is None:
+            raise RuntimeError("maintenance did not publish")
+        timed("cleanup_seconds", lambda: control(
+            "index_cleanup_step", {"max_bytes": min(1024 * 1024, config["cache_bytes"])}))
+        return {"phase_seconds": timings, "published_generation": result["published_generation"],
+                "eligible_count": result["eligible_count"], "candidate_population": candidate["population"],
+                "elapsed_to_publication_seconds": elapsed_to_publication}
+    finally:
+        worker.close()
+
+
 def build_storage_fixture(connection: sqlite3.Connection, config: dict) -> None:
-    """UNSUPPORTED shadow writes: synthetic storage/traversal fixture ONLY."""
+    """Unsupported synthetic Format 4 generation, exclusively for storage tests."""
     count, dimension = config["count"], config["dim"]
-    # Public bootstrap creates a current descriptor, instance ID, and carrier.
-    connection.execute(f"INSERT INTO {TABLE}(rowid,embedding) VALUES(1,?)",
-                       (linear_vector(1, dimension),))
-    format_version, descriptor = connection.execute(
-        f"SELECT format_version,descriptor FROM {TABLE}_diskann_meta").fetchone()
-    description = json.loads(descriptor)
-    if (format_version not in (2, 3) or description.get("format_version") != format_version
-            or description.get("atomic_write_protocol") != "guard-two-row-v1"
-            or description.get("metric") != "l2_squared"):
-        raise ValueError("storage-linear fixture requires a matching format 2/3 descriptor, two-row carrier, and L2")
-    if connection.execute(f"SELECT * FROM {TABLE}_diskann_txn ORDER BY singleton").fetchall() != [
-            (1, 0), (2, 0)]:
+    descriptor(connection, config)
+    if connection.execute(f"SELECT singleton,value FROM {TABLE}_diskann_txn ORDER BY singleton").fetchall() != [(1, 0), (2, 0)]:
         raise ValueError("bootstrap carrier is not canonical")
-    connection.execute(f"UPDATE {TABLE}_diskann_nodes SET vector=?,neighbors=? WHERE node_id=0",
-                       (linear_vector(0, dimension), struct.pack("<Q", 1)))
-    connection.execute(f"UPDATE {TABLE}_diskann_nodes SET neighbors=? WHERE node_id=1",
-                       (linear_neighbors(1, count),))
-    rows = ((rowid, rowid, linear_vector(rowid, dimension), linear_neighbors(rowid, count))
-            for rowid in range(2, count + 1))
-    for batch in batches(rows, config["batch_size"]):
-        write_batch(connection,
-                    f"INSERT INTO {TABLE}_diskann_nodes"
-                    "(node_id,public_rowid,state,vector,neighbors) VALUES(?,?,0,?,?)", batch)
-    connection.execute(f"UPDATE {TABLE}_diskann_meta SET live_count=?,next_node_id=?,"
-                       "deleted_count=0,entrypoints=?,revision=revision+1 WHERE singleton=1",
-                       (count, count + 1, struct.pack("<Q", 0)))
-    actual = connection.execute(f"SELECT count(*) FROM {TABLE}_diskann_nodes WHERE state=0").fetchone()[0]
-    if actual != count:
-        raise ValueError("storage fixture live population does not match its manifest")
+    revision = connection.execute(f"SELECT revision FROM {TABLE}_diskann_meta").fetchone()[0]
+    digest = bytes(range(32))  # Fixture hashes are opaque, not validation evidence.
+    connection.execute(f"INSERT INTO {TABLE}_diskann_generations VALUES(1,1,1,?,?,?,?,?,?)",
+                       (revision, digest, digest[::-1], count, count, count))
+    cursor = connection.execute(f"SELECT entry_id,public_rowid FROM {TABLE}_diskann_current ORDER BY public_rowid")
+    seen = 0
+    while rows := cursor.fetchmany(config["batch_size"]):
+        graph = []
+        for entry, rowid in rows:
+            seen += 1
+            if rowid != seen:
+                raise ValueError("fixture requires contiguous canonical rowids")
+            graph.append((1, rowid - 1, entry, 0, None, linear_neighbors(rowid, count)))
+        write_batch(connection, f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(?,?,?,?,?,?)", graph)
+    if seen != count:
+        raise ValueError("fixture canonical population does not match manifest")
+    connection.execute(f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(1,?,NULL,2,?,?)",
+                       (count, linear_vector(0, dimension), struct.pack("<Q", 0)))
+    connection.execute(f"UPDATE {TABLE}_diskann_meta SET next_generation_id=2,next_job_id=2,published_generation=1")
 
 
 def build_worker(config: dict) -> dict:
@@ -262,39 +348,44 @@ def build_worker(config: dict) -> dict:
     try:
         mode = connection.execute("PRAGMA journal_mode=" + config["journal_mode"]).fetchone()[0]
         connection.execute("PRAGMA wal_autocheckpoint=1000")
-        begin = time.perf_counter()
         options = ",".join(f"{name}={config[name]}" for name in (
             "degree", "build_list_size", "search_list_size", "alpha", "cache_bytes", "max_visits"))
         connection.execute(f"CREATE VIRTUAL TABLE {TABLE} USING vectorlite("
                            f"embedding float32[{config['dim']}] {config['metric']},diskann({options}))")
+        vectors = ((linear_vector(i, config["dim"]) for i in range(1, config["count"] + 1))
+                   if config["fixture"] == "storage-linear" else
+                   random_vectors(config["count"], config["dim"], config["seed"]))
+        begin = time.perf_counter()
+        for batch in batches(enumerate(vectors, 1), config["batch_size"]):
+            write_batch(connection, f"INSERT INTO {TABLE}(rowid,embedding) VALUES(?,?)", batch)
+        ingest_seconds = time.perf_counter() - begin
         if config["fixture"] == "storage-linear":
+            begin_fixture = time.perf_counter()
             build_storage_fixture(connection, config)
+            publication = {"synthetic_fixture_seconds": time.perf_counter() - begin_fixture}
         else:
-            rows = enumerate(random_vectors(config["count"], config["dim"], config["seed"]), 1)
-            for batch in batches(rows, config["batch_size"]):
-                write_batch(connection, f"INSERT INTO {TABLE}(rowid,embedding) VALUES(?,?)", batch)
-        elapsed = time.perf_counter() - begin
-        connection.execute(f"CREATE TABLE {MANIFEST}(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
-                           "config TEXT NOT NULL)")
-        storage_format, storage_descriptor = connection.execute(
-            f"SELECT format_version,descriptor FROM {TABLE}_diskann_meta WHERE singleton=1").fetchone()
-        description = json.loads(storage_descriptor)
+            publication = maintenance(config, started_at=begin)
+        ingest_to_publication_seconds = (publication["elapsed_to_publication_seconds"]
+                                         if config["fixture"] == "none" else None)
+        storage_format, storage_descriptor = descriptor(connection, config)
+        connection.execute(f"CREATE TABLE {MANIFEST}(singleton INTEGER PRIMARY KEY CHECK(singleton=1),config TEXT NOT NULL)")
         saved = {**config, "manifest_version": 1, "storage_format_version": storage_format,
-                 "storage_descriptor": description,
+                 "storage_descriptor": storage_descriptor,
                  "generator": "python-random-uniform-float32-v1" if config["fixture"] == "none"
                  else "affine-first-coordinate-linear-storage-v1"}
         connection.execute(f"INSERT INTO {MANIFEST} VALUES(1,?)", (json.dumps(saved),))
-        result = {"process_id": os.getpid(), "seconds": elapsed,
-                  "seconds_per_vector": elapsed / config["count"],
-                  "rows": config["count"], "journal_mode": mode, "peak_rss": peak_rss(),
-                  "storage_format_version": storage_format, "storage_descriptor": description,
+        result = {"process_id": os.getpid(), "seconds": ingest_seconds,
+                  "seconds_per_vector": ingest_seconds / config["count"], "ingest_seconds": ingest_seconds,
+                  "maintenance": publication, "ingest_to_publication_seconds": ingest_to_publication_seconds,
+                  "rows": config["count"], "journal_mode": mode,
+                  "peak_rss": peak_rss(), "storage_format_version": storage_format,
+                  "storage_descriptor": storage_descriptor,
                   "sizes_connection_open": database_sizes(Path(config["database"])),
                   "production_ann_build": config["fixture"] == "none"}
     finally:
         connection.close()
     result["sizes_after_close"] = database_sizes(Path(config["database"]))
     return result
-
 
 def query_vectors(config: dict) -> Iterator[bytes]:
     if config["fixture"] == "storage-linear":
@@ -317,12 +408,12 @@ def query_worker(runtime: dict) -> dict:
     load_seconds = time.perf_counter() - load_begin
     try:
         config = dataset_config(connection, runtime)
-        live_count, storage_format, storage_descriptor = connection.execute(
-            f"SELECT live_count,format_version,descriptor FROM {TABLE}_diskann_meta WHERE singleton=1").fetchone()
-        description = json.loads(storage_descriptor)
-        k = min(config["k"], live_count)
-        if k < 1:
-            raise ValueError("benchmark requires at least one live vector")
+        storage_format, description = descriptor(connection, config)
+        status = json.loads(connection.execute("SELECT vectorlite_index_status(?,?)", ("main", TABLE)).fetchone()[0])
+        live_count = status["eligible_count"]
+        if config["fixture"] == "storage-linear" and live_count != config["count"]:
+            raise ValueError("linear fixture no longer has its original eligible population")
+        k = min(config["k"], max(1, live_count))
         sql = f"SELECT rowid,distance FROM {TABLE} WHERE knn_search(embedding,knn_param(?,?,?))"
         options = json.dumps({"search_list_size": config["search_list_size"]})
         first, warm, predictions, distances = [], [], [], []
@@ -348,7 +439,10 @@ def query_worker(runtime: dict) -> dict:
                 connection.execute(sql, (blob, k, options)).fetchall()
                 warm.append(time.perf_counter() - begin)
         return {"process_id": os.getpid(), "sqlite_version": sqlite3.sqlite_version,
-                "load_seconds": load_seconds, "effective_k": k, "live_count": live_count,
+                "load_seconds": load_seconds, "effective_k": min(k, live_count), "live_count": live_count,
+                "eligible_count": live_count, "canonical_count": status["canonical_count"],
+                "pending_count": status["pending_count"],
+                "eligible_coverage": live_count / status["canonical_count"] if status["canonical_count"] else None,
                 "storage_format_version": storage_format, "storage_descriptor": description,
                 "cache_label": "fresh-process first pass; NOT cold OS cache",
                 "first_query_ms": first[0] * 1000,
@@ -386,10 +480,12 @@ def truth_worker(runtime: dict) -> dict:
     begin = time.perf_counter()
     try:
         config = dataset_config(connection, runtime)
-        live_count = connection.execute(f"SELECT live_count FROM {TABLE}_diskann_meta").fetchone()[0]
+        live_count = eligible_count(connection)
         k = min(config["k"], live_count)
         queries = [unpack_vector(blob, config["dim"]) for blob in query_vectors(config)]
         if config["fixture"] == "storage-linear":
+            if live_count != config["count"]:
+                raise ValueError("linear fixture no longer has its original eligible population")
             return {"labels": [linear_truth(query[0], live_count, k) for query in queries],
                     "method": "analytic nearest-prefix affine fixture; NOT production ANN recall",
                     "seconds": time.perf_counter() - begin, "peak_rss": peak_rss()}
@@ -403,8 +499,7 @@ def truth_worker(runtime: dict) -> dict:
                                                 config["dim"]))
             queries = normalized
         heaps = [[] for _ in queries]
-        cursor = connection.execute(f"SELECT public_rowid,vector FROM {TABLE}_diskann_nodes "
-                                    "WHERE state=0 ORDER BY node_id")
+        cursor = connection.execute("SELECT c.public_rowid,e.vector " + eligible_rows_sql() + "ORDER BY c.public_rowid")
         numpy = None
         if config["numpy_ground_truth"]:
             import numpy
@@ -456,16 +551,14 @@ def mutation_worker(runtime: dict) -> dict:
                              config["batch_size"]):
             write_batch(connection, f"DELETE FROM {TABLE} WHERE rowid=?", batch)
         delete_seconds = time.perf_counter() - begin
-        consolidate_seconds = None
+        publication = None
         if not runtime["skip_consolidation"]:
-            begin = time.perf_counter()
-            connection.execute(f"INSERT INTO {TABLE}(operation) VALUES('consolidate')")
-            consolidate_seconds = time.perf_counter() - begin
+            publication = maintenance(config)
         return {"measured": True, "updates": updates, "update_seconds": update_seconds,
                 "seconds_per_update": update_seconds / updates if updates else None,
                 "deletes": deletes, "delete_seconds": delete_seconds,
                 "seconds_per_delete": delete_seconds / deletes if deletes else None,
-                "consolidation_seconds": consolidate_seconds, "peak_rss": peak_rss(),
+                "maintenance": publication, "peak_rss": peak_rss(),
                 "sizes_connection_open": database_sizes(Path(config["database"]))}
     finally:
         connection.close()
@@ -495,7 +588,7 @@ def measured_queries(config: dict) -> dict:
     predicted = result.pop("predictions")
     result.pop("distances")
     expected = truth.pop("labels")
-    coverage = recall(predicted, expected)
+    coverage = recall(predicted, expected) if all(expected) else None
     result["recall_at_k"] = coverage if config["fixture"] == "none" else None
     if config["fixture"] == "storage-linear":
         result["fixture_nearest_prefix_coverage_at_k"] = coverage
@@ -526,7 +619,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--journal-mode", choices=("wal", "delete"), default="wal")
     result.add_argument("--updates", type=int, default=16)
     result.add_argument("--deletes", type=int, default=16)
-    result.add_argument("--skip-consolidation", action="store_true")
+    result.add_argument("--skip-consolidation", action="store_true",
+                        help="skip post-mutation maintenance; updated rows remain pending and ineligible")
     result.add_argument("--numpy-ground-truth", action="store_true", help="optional bounded-batch NumPy acceleration in truth worker only")
     result.add_argument("--query-memory-limit-mib", type=int, help="Linux query-worker RLIMIT_AS only; virtual address space, not RSS")
     result.add_argument("--require-beyond-ram", action="store_true", help="fail unless DB file exceeds measured query peak RSS and configured working budgets")

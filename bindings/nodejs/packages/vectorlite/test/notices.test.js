@@ -46,6 +46,27 @@ test('native npm payload includes unchanged project and pinned component notices
     assert.deepEqual(new Set(runtime.target_triples), new Set([
         'x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin',
     ]));
+    assert.equal(runtime.packages.length, 66);
+    for (const crate of runtime.packages) {
+        assert.match(crate.registry_source, /^registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index$/);
+        assert.ok(!Object.hasOwn(crate, 'local_patch'));
+        assert.ok(crate.vcs, `missing Cargo VCS metadata for ${crate.name}`);
+        for (const file of crate.files) {
+            assert.ok(!/\\.(rs|c|h)$/.test(file.path), `source file bundled: ${file.path}`);
+        }
+    }
+    for (const name of ['diskann', 'diskann-providers', 'diskann-quantization', 'diskann-utils', 'diskann-vector', 'diskann-wide']) {
+        const crate = runtime.packages.find(packageEntry => packageEntry.name === name);
+        assert.ok(crate, `missing DiskANN crate ${name}`);
+        assert.equal(crate.version, '0.60.0');
+        assert.equal(crate.vcs.git.sha1, provenance.revision);
+    }
+    assert.match(provenance.distribution, /No algorithm\/provider source vendoring/);
+    assert.ok(!Object.hasOwn(provenance, 'local_patch'));
+    const runtimeReadme = fs.readFileSync(path.join(runtimeRoot, 'README.md'), 'utf8');
+    assert.match(runtimeReadme, /unmodified exact-version official crates\.io\s+dependency/);
+    assert.match(runtimeReadme, /No algorithm or provider source file is bundled/);
+    assert.doesNotMatch(runtimeReadme, /patched .diskann. crate is included|Cargo reports a local path source/);
     required.push('src/licenses/rust-runtime/MANIFEST.json', 'src/licenses/rust-runtime/README.md');
     for (const crate of runtime.packages) {
         assert.equal(typeof crate.declared_spdx, 'string');

@@ -20,6 +20,7 @@ struct FakeStore {
     calls: Vec<&'static str>,
     fail_at: Option<(&'static str, usize)>,
     owner_thread: Option<ThreadId>,
+    starts: Option<Vec<u64>>,
     // Deliberately !Send/!Sync, like a borrowed SQLite connection owner.
     _local: Rc<()>,
 }
@@ -146,6 +147,9 @@ impl GraphStore for FakeStore {
     }
     fn start_points(&mut self) -> StoreResult<Vec<u64>> {
         self.call("start_points")?;
+        if let Some(starts) = &self.starts {
+            return Ok(starts.clone());
+        }
         Ok(if self.nodes.is_empty() {
             vec![]
         } else {
@@ -562,351 +566,72 @@ fn input_validation_never_mutates_storage() {
     assert_eq!(config().core_config().unwrap().max_degree().get(), 10);
 }
 
-fn reachable(store: &FakeStore) -> HashSet<u64> {
-    let mut seen = HashSet::new();
-    let mut work = vec![0];
-    while let Some(id) = work.pop() {
-        if seen.insert(id) {
-            work.extend_from_slice(&store.nodes[&id].neighbors);
-        }
-    }
-    seen
-}
-
 #[test]
-fn bounded_batches_l2_cosine_reachability_and_canonical_input() {
-    for distance in [DistanceType::L2, DistanceType::Cosine] {
-        for width in [1usize, 8, 32] {
-            let mut cfg = config();
-            cfg.distance = distance;
-            cfg.search_l = 128;
-            let mut store = FakeStore::default();
-            insert(&mut store, &cfg, 1, &[1.0, 0.0]).unwrap();
-            for chunk in 0..2 {
-                let ids: Vec<u64> = (0..width).map(|i| 2 + (chunk * width + i) as u64).collect();
-                let encoded: Vec<f32> = ids
-                    .iter()
-                    .flat_map(|id| {
-                        if distance == DistanceType::Cosine {
-                            let angle = (*id as f32) * 0.04;
-                            [angle.cos(), angle.sin()]
-                        } else {
-                            [*id as f32, (*id % 3) as f32]
-                        }
-                    })
-                    .collect();
-                insert_batch(&mut store, &cfg, ids.clone(), encoded.clone()).unwrap();
-                let seen = reachable(&store);
-                for (i, id) in ids.iter().enumerate() {
-                    let internal = store.mapping[id];
-                    assert!(
-                        seen.contains(&internal),
-                        "{distance:?} width={width} chunk={chunk} id={id}"
-                    );
-                    assert_eq!(store.nodes[&internal].vector, encoded[i * 2..i * 2 + 2]);
-                    assert!(store.nodes[&internal].vector.iter().all(|x| x.is_finite()));
-                }
-                assert!(ACTIVE.with(|active| active.get().is_none()));
-            }
-            let query = store.nodes[&store.mapping[&2]].vector.clone();
-            assert_eq!(
-                search(&mut store, &cfg, &query, 1, None, None).unwrap()[0].rowid,
-                2
-            );
-        }
-    }
-}
-
-#[test]
-fn batch_input_and_workspace_admission_precede_store_callbacks() {
+fn explicit_nonzero_frozen_root_keeps_native_zero_live_and_filterable() {
     let mut store = FakeStore::default();
-    insert_batch(&mut store, &config(), vec![], vec![]).unwrap();
-    for (ids, values) in [
-        (vec![1], vec![f32::NAN, 0.0]),
-        (vec![1], vec![1.0]),
-        (vec![1, 1], vec![0.0; 4]),
-        (vec![u64::MAX], vec![0.0; 2]),
-        ((1..=33).collect(), vec![0.0; 66]),
-    ] {
-        assert!(insert_batch(&mut store, &config(), ids, values).is_err());
+    store.allocate(7, &[7.0, 0.0]).unwrap();
+    let live = store.nodes.remove(&1).unwrap();
+    let frozen = store.nodes.remove(&0).unwrap();
+    store.nodes.insert(0, live);
+    store.nodes.insert(9, frozen);
+    store.mapping.insert(7, 0);
+    store.starts = Some(vec![9]);
+    store.set_neighbors(9, &[0]).unwrap();
+    store.set_neighbors(0, &[9]).unwrap();
+    for filter in [None, Some(HashSet::from([7]))] {
+        assert_eq!(
+            search(&mut store, &config(), &[7.0, 0.0], 1, None, filter.as_ref()).unwrap(),
+            vec![SearchResult::new(0.0, 7)]
+        );
     }
-    let mut cfg = config();
-    cfg.limits.max_vector_bytes = 4096;
-    assert!(insert_batch(&mut store, &cfg, vec![1], vec![0.0; 2])
-        .unwrap_err()
-        .message
-        .contains("scratch"));
-    // Capacity, not just length, participates in admission.
-    let mut values = Vec::with_capacity(1024 * 1024);
-    values.extend_from_slice(&[0.0, 0.0]);
-    cfg.limits.max_vector_bytes = config().scratch_bytes(10).unwrap() + 2 * 1024 * 1024;
-    assert!(insert_batch(&mut store, &cfg, vec![1], values).is_err());
-    assert!(store.calls.is_empty());
-}
-
-#[test]
-fn visible_ambient_runtime_and_nested_scope_rejected_without_writes() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let mut store = FakeStore::default();
-    {
-        let _entered = runtime.enter();
-        assert!(check_batch_execution_context()
-            .unwrap_err()
-            .message
-            .contains("ambient"));
-        assert!(insert_batch(&mut store, &config(), vec![1], vec![0.0; 2]).is_err());
-    }
-    runtime.block_on(async {
-        assert!(check_batch_execution_context().is_err());
-        assert!(insert_batch(&mut store, &config(), vec![1], vec![0.0; 2]).is_err());
-    });
-    assert!(store.calls.is_empty());
-    operation(&mut store, &config(), |_, _| {
-        assert!(check_batch_execution_context()
-            .unwrap_err()
-            .message
-            .contains("nested"));
-        Ok(())
-    })
-    .unwrap();
-    assert!(check_batch_execution_context().is_ok());
-}
-
-#[test]
-fn batch_late_sql_failure_keeps_original_error_and_drains() {
-    let original = populated();
-    let mut success = original.clone();
-    insert_batch(
-        &mut success,
-        &config(),
-        vec![21, 22, 23],
-        vec![21.0, 0.0, 22.0, 0.0, 23.0, 0.0],
-    )
-    .unwrap();
-    for method in [
-        "allocate",
-        "start_points",
-        "vector",
-        "neighbors",
-        "set_neighbors",
-    ] {
-        let count = success.calls.iter().filter(|call| **call == method).count();
-        assert!(count > 0);
-        for nth in [1, count] {
-            let mut store = original.clone();
-            store.fail_at = Some((method, nth));
-            let error = insert_batch(
-                &mut store,
-                &config(),
-                vec![21, 22, 23],
-                vec![21.0, 0.0, 22.0, 0.0, 23.0, 0.0],
-            )
-            .unwrap_err();
-            assert_eq!(error.code, 778, "{method} nth={nth}: {error}");
-            assert!(error.message.contains(method));
-            assert!(ACTIVE.with(|active| active.get().is_none()));
-            // SQL owner, not guards, owns rollback; model restoration here.
-            store = original.clone();
-            insert_batch(&mut store, &config(), vec![24], vec![24.0, 0.0]).unwrap();
-        }
-    }
-}
-
-#[test]
-fn batch_visits_are_shared_and_failure_is_bounded() {
-    let mut store = populated();
-    let mut cfg = config();
-    cfg.limits.max_visits = 64;
-    let error = insert_batch(
+    assert!(search(
         &mut store,
-        &cfg,
-        (21..=52).collect(),
-        (21..=52).flat_map(|id| [id as f32, 0.0]).collect(),
+        &config(),
+        &[7.0, 0.0],
+        1,
+        None,
+        Some(&HashSet::from([8])),
     )
-    .unwrap_err();
-    assert_eq!(error.code, crate::ffi::SQLITE_TOOBIG as i32);
-    assert!(error.message.contains("visit"));
-    assert!(store.calls.len() < 1000);
-    assert!(ACTIVE.with(|active| active.get().is_none()));
+    .unwrap()
+    .is_empty());
+    assert_eq!(store.state(0).unwrap(), NodeState::Live);
 }
 
 #[test]
-fn private_runtime_destroys_unpolled_tasks_guards_and_vectors_inside_scope() {
-    use diskann::provider::ExecutionContext;
-    struct Capture(OperationContext);
-    impl Drop for Capture {
-        fn drop(&mut self) {
-            assert_eq!(thread::current().id(), self.0.thread);
-            assert!(ACTIVE.with(|active| active
-                .get()
-                .is_some_and(|frame| frame.token == self.0.token)));
-        }
-    }
-    let mut store = FakeStore::default();
-    operation(&mut store, &config(), |_, context| {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let guard = drive(Provider.set_element(context, &1, &[1.0, 0.0]))?.map_err(index_error)?;
-        let vector = context.copy_vector(&[1.0, 0.0])?;
-        let capture = Capture(context.clone());
-        let entered = runtime.enter();
-        let handle = tokio::spawn(context.wrap_spawn(async move {
-            let _owned = (guard, vector, capture);
-            std::future::pending::<()>().await;
-        }));
-        assert_eq!(context.lock().tasks, 1);
-        drop(handle); // detached but still owned by this private runtime
-        drop(entered);
-        drop(runtime); // cancels even unpolled task, while ACTIVE is live
-        assert_eq!(context.lock().tasks, 0);
-        assert_eq!(context.lock().guards, 0);
-        assert_eq!(context.lock().vectors, 0);
-        assert!(context.lock().incomplete_insertion);
-        Ok(())
-    })
-    .unwrap_err();
-    assert!(ACTIVE.with(|active| active.get().is_none()));
-}
-
-#[derive(Clone)]
-struct FailingBatchStrategy {
-    phase: &'static str,
-    seed_calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-impl glue::PruneStrategy<Provider> for FailingBatchStrategy {
-    type PruneAccessor<'a> = PruneAccessor;
-    type PruneAccessorError = ANNError;
-    fn prune_accessor<'a>(
-        &'a self,
-        provider: &'a Provider,
-        context: &'a OperationContext,
-        capacity: usize,
-    ) -> ANNResult<PruneAccessor> {
-        // Candidate uses seeded accessor; bootstrap uses unseeded capacity750,
-        // outgoing assignment uses capacity0.
-        if (self.phase == "bootstrap" && capacity != 0)
-            || (self.phase == "outgoing" && capacity == 0)
-        {
-            return Err(ANNError::message(format!("pure {} failure", self.phase)));
-        }
-        glue::PruneStrategy::prune_accessor(&Strategy, provider, context, capacity)
-    }
-}
-impl<'a> glue::InsertStrategy<'a, Provider, &'a [f32]> for FailingBatchStrategy {
-    type SearchAccessorError = ANNError;
-    type SearchAccessor = Accessor<'a>;
-    type PruneStrategy = Self;
-    fn insert_search_accessor(
-        &'a self,
-        _: &'a Provider,
-        context: &'a OperationContext,
-        query: &'a [f32],
-    ) -> ANNResult<Accessor<'a>> {
-        Accessor::new(context, query, None)
-    }
-    fn prune_strategy(&self) -> Self {
-        self.clone()
-    }
-}
-impl glue::MultiInsertStrategy<Provider, FlatBatch> for FailingBatchStrategy {
-    type Seed = ();
-    type FinishError = ANNError;
-    type PruneStrategy = Self;
-    type InsertStrategy = Self;
-    fn insert_strategy(&self) -> Self {
-        self.clone()
-    }
-    fn finish<Itr>(
-        &self,
-        _: &Provider,
-        _: &OperationContext,
-        _: &Arc<FlatBatch>,
-        _: Itr,
-    ) -> impl Future<Output = ANNResult<()>> + Send
-    where
-        Itr: ExactSizeIterator<Item = u64> + Send,
-    {
-        ready(if self.phase == "finish" {
-            Err(ANNError::message("pure finish failure"))
-        } else {
-            Ok(())
-        })
-    }
-    fn seeded_prune_accessor<'a>(
-        &'a self,
-        provider: &'a Provider,
-        context: &'a OperationContext,
-        _: &'a (),
-        capacity: usize,
-    ) -> ANNResult<PruneAccessor> {
-        let call = self.seed_calls.fetch_add(1, Ordering::Relaxed);
-        if (self.phase == "candidate" && call == 0) || (self.phase == "backedge" && call >= 4) {
-            return Err(ANNError::message(format!("pure {} failure", self.phase)));
-        }
-        glue::PruneStrategy::prune_accessor(&Strategy, provider, context, capacity)
-    }
-}
-
-#[test]
-fn upstream_pure_phase_errors_are_not_success_or_guard_fallback() {
-    for phase in ["finish", "candidate", "bootstrap", "outgoing", "backedge"] {
+fn entry_point_rejects_multiple_or_non_frozen_roots_before_vector_reads() {
+    for starts in [vec![0, 1], vec![1]] {
         let mut store = FakeStore::default();
-        insert(&mut store, &config(), 1, &[1.0, 0.0]).unwrap();
-        let cfg = config();
-        let core = Builder::new_with(
-            8,
-            MaxDegree::default_slack(),
-            32,
-            PruneKind::TriangleInequality,
-            |b| {
-                b.alpha(1.2)
-                    .max_minibatch_par(4)
-                    .intra_batch_candidates(IntraBatchCandidates::None);
-            },
-        )
-        .build()
-        .unwrap();
-        let mut slot = StoreSlot { store: &mut store };
-        let scope = StoreScope::enter(&mut slot, &cfg, 10).unwrap();
-        let context = scope.context.clone();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let index = Arc::new(DiskANNIndex::new(core, Provider, None));
-        let strategy = FailingBatchStrategy {
-            phase,
-            seed_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
-        let result = runtime.block_on(index.multi_insert::<FailingBatchStrategy, FlatBatch>(
-            strategy,
-            &context,
-            Arc::new(FlatBatch {
-                encoded: (2..=17).flat_map(|i| [i as f32, 0.0]).collect(),
-                dimension: 2,
-            }),
-            (2..=17).collect::<Vec<u64>>().into(),
-        ));
-        drop(runtime);
-        drop(index);
-        assert_eq!(context.lock().tasks, 0, "{phase}");
-        assert_eq!(context.lock().guards, 0, "{phase}");
-        assert_eq!(context.lock().vectors, 0, "{phase}");
-        assert!(context.lock().incomplete_insertion, "{phase}");
-        assert!(
-            context.lock().fatal.is_none(),
-            "{phase} is not a SQL/store failure"
-        );
-        let error = finish_operation(&context, result.map_err(index_error), true).unwrap_err();
-        assert!(
-            error.message.contains(&format!("pure {phase} failure")),
-            "{error}"
-        );
-        drop(scope);
+        store.allocate(1, &[1.0, 0.0]).unwrap();
+        store.starts = Some(starts);
+        store.calls.clear();
+        let error = search(&mut store, &config(), &[0.0, 0.0], 1, None, None).unwrap_err();
+        assert!(error.message.contains("invalid frozen"), "{error}");
+        assert!(!store.calls.contains(&"vector"));
         assert!(ACTIVE.with(|active| active.get().is_none()));
     }
+    for state in [NodeState::Live, NodeState::Deleted] {
+        let mut store = FakeStore::default();
+        store.allocate(1, &[1.0, 0.0]).unwrap();
+        store.nodes.get_mut(&0).unwrap().state = state;
+        store.calls.clear();
+        let error = search(&mut store, &config(), &[0.0, 0.0], 1, None, None).unwrap_err();
+        assert!(error.message.contains("invalid frozen"), "{error}");
+        assert!(!store.calls.contains(&"vector"));
+    }
+    let mut store = FakeStore::default();
+    store.allocate(1, &[1.0, 0.0]).unwrap();
+    store.fail = Some("state");
+    let error = search(&mut store, &config(), &[0.0, 0.0], 1, None, None).unwrap_err();
+    assert_eq!(error.code, 778);
+    assert!(error.message.contains("state"));
+}
+
+#[test]
+fn retained_prune_workspace_layout_reservation_is_unchanged() {
+    assert_eq!(
+        std::mem::size_of::<RecentNeighbors>(),
+        std::mem::size_of::<(u64, Option<u64>, Vec<u64>)>()
+    );
 }
 
 #[test]

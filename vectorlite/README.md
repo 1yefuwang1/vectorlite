@@ -71,25 +71,40 @@ minimal generic adapters needed to expose those two through a C ABI.
 
 ## SQLite-backed DiskANN
 
-The optional `diskann(...)` backend calls Microsoft DiskANN3's pinned Rust graph
-algorithms through a private `DataProvider`, while storing vectors, adjacency,
-labels, counters, and entrypoints in SQLite shadow tables. Initial support is
-float32 squared L2/cosine; HNSW options, types, files, and nontransactional behavior
-remain unchanged. See the [SQL/operational guide](<../doc/diskann.md>).
+The optional `diskann(...)` backend uses unmodified Microsoft DiskANN 0.60.0 Rust
+graph algorithms from crates.io, with every durable byte stored in SQLite shadow
+tables. It is **store-first**: INSERT/UPDATE/DELETE commit canonical immutable
+versions transactionally and never build a graph, and an explicit fenced SQL job
+builds one global graph from a frozen snapshot in owned worker RAM before staging
+and publishing it. Initial support is float32 squared L2/cosine; HNSW options,
+types, files, and nontransactional behavior remain unchanged. See the
+[SQL/operational guide](<../doc/diskann.md>).
 
-The new modules are [diskann_core.rs](<src/diskann_core.rs>),
-[diskann_store.rs](<src/diskann_store.rs>), [atomic_callback.rs](<src/atomic_callback.rs>),
-[sqlite.rs](<src/sqlite.rs>), [batch_input.rs](<src/batch_input.rs>), and
-[index_error.rs](<src/index_error.rs>). SQLite calls still use only the host API
-table; no separate connection or linked SQLite is used. Native pointer batch
-INSERT drives spawned DiskANN batch tasks on an operation-private current-thread
-Tokio runtime, fixed to one execution thread. The [pinned patch](<../third_party/diskann-0.60.0/vendor/VENDOR_PATCH.md>)
-propagates every batch failure and drains tasks before guard completion. Ordinary
-single operations retain their first-poll-ready executor. Connection-bound owners
-remain non-Send; private scoped tokens check thread, connection, generation, and
-reentrancy before accessing borrowed storage. All tasks/runtime and owned chunk
-inputs are destroyed before closing the callback scope; prepared plans are reused
-only within that operation and finalized before accepting success.
+Relevant modules: [diskann_store.rs](<src/diskann_store.rs>) and
+[diskann_deferred/](<src/diskann_deferred/>) for the Format 4 schema, canonical
+versions, fenced job helpers and published-generation query adapter;
+[diskann_build.rs](<src/diskann_build.rs>) for the pure owned-RAM OneShot builder;
+[diskann_worker.rs](<src/diskann_worker.rs>) for the connection/job/fence-bound
+candidate registry; [diskann_build_guard.rs](<src/diskann_build_guard.rs>) for the
+transaction-free admission check; [diskann_target.rs](<src/diskann_target.rs>) for
+the bounded declaration parser; [diskann_control.rs](<src/diskann_control.rs>) and
+[diskann_registration.rs](<src/diskann_registration.rs>) for the public SQL
+frontend; plus [diskann_core.rs](<src/diskann_core.rs>) (read-path provider glue),
+[atomic_callback.rs](<src/atomic_callback.rs>), [sqlite.rs](<src/sqlite.rs>),
+[batch_input.rs](<src/batch_input.rs>) and [index_error.rs](<src/index_error.rs>).
+SQLite calls still use only the host API table; no separate connection or linked
+SQLite is used.
+
+The native build runs on an owned coordinator thread with its own private
+current-thread Tokio runtime and joins every task before returning. It receives
+only owned `Send` data: no SQLite handle, statement, value, context or borrowed
+BLOB reaches a worker. The callback thread finalizes every materialization reader
+and verifies autocommit plus all-schema transaction state `NONE` before native
+construction starts. Canonical ingestion performs no graph work and needs no
+runtime. Connection-bound owners remain non-Send; private scoped tokens check
+thread, connection, generation, and reentrancy before accessing borrowed storage,
+and prepared plans are reused only within that operation and finalized before
+accepting success.
 
 A single virtual-table callback can make multiple successful nested SQL writes
 before a later error. SQLite does not necessarily allocate a statement journal
@@ -100,10 +115,13 @@ boundary. Do not replace this with bare write-through callbacks or a no-op
 trigger: trigger disabling and FAIL/IGNORE behavior can break atomicity.
 
 Authoritative state is SQLite-only; rollback needs no transaction-sized Rust
-graph snapshot. Query/prune workspaces are operation-local, records are read
-lazily, and projected cursor vectors are captured with their distances. Corrupt
-lengths must be gated in SQL before payload materialization, not just checked
-after copying a BLOB into Rust.
+graph snapshot. The only exception is the deliberately scoped, non-authoritative
+RAM candidate held between build and publication: it is bound to one connection,
+schema/table lifetime, job, fence and attempt, is never read by queries, and losing
+it simply requires a fresh fenced attempt. Query workspaces are operation-local,
+records are read lazily, and projected cursor vectors are captured with their
+distances. Corrupt lengths must be gated in SQL before payload materialization,
+not just checked after copying a BLOB into Rust.
 
 ## Building
 

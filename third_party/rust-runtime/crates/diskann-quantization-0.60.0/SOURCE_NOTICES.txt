@@ -1,0 +1,1708 @@
+===== Unmodified leading source comments: src/__codegen/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Intantiations for codegen inspection.
+//!
+//! These methods are **not** part of the public API.
+//!
+//! Note: when inspecting code generation, make sure the kernels are **also** inspected
+//! when compiling with `RUSTFLAGS="-Ctarget-arch=x86-64"` because that can change code
+//! generation signficantly and is necessary for multi-architecture compatible builds.
+
+
+===== Unmodified leading source comments: src/__codegen/x86_64.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The functions defined in this module are meant for the purposes of automated disassambly
+//! to inspect code generation.
+//!
+//! These functions should not be called as a replacement for their publically exposed
+//! alternatives.
+
+
+===== Unmodified leading source comments: src/algorithms/hadamard.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/heap.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/kmeans/common.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/kmeans/lloyds.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/kmeans/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/kmeans/plusplus.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/double_hadamard.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// imports
+
+===== Unmodified leading source comments: src/algorithms/transforms/null.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/padding_hadamard.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/random_rotation.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/test_utils.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/algorithms/transforms/utils.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/alloc/aligned.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/alloc/bump.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/alloc/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/alloc/poly.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/alloc/traits.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/binary/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Binary quantization compression and distance comparisions.
+//!
+//! Binary quantization works by compressing each dimension of a vector to just 1 bit,
+//! where that bit is "1" is that value is positive and "0" if negative.
+//!
+//! The main quantizer is [`BinaryQuantizer`].
+//!
+//! Distances are computed using the [`crate::distances::Hamming`] distance function where
+//! [`crate::bits::BitSlice::<1, crate::bits::Binary>`] is the compressed-representation
+//! for binary vectors.
+
+
+===== Unmodified leading source comments: src/binary/quantizer.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/bits/distances.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # Low-level functions
+//!
+//! The methods here are meant to be primitives used by the distance functions for the
+//! various scalar-quantized-like quantizers.
+//!
+//! As such, they typically return integer distance results since they largely operate over
+//! raw bit-slices.
+//!
+//! ## Micro-architecture Mapping
+//!
+//! There are two interfaces for interacting with the distance primitives:
+//!
+//! * [`diskann_wide::arch::Target2`]: A micro-architecture aware interface where the target
+//!   micro-architecture is provided as an explicit argument.
+//!
+//!   This can be used in conjunction with [`diskann_wide::Architecture::run2`] to apply the
+//!   necessary target-features to opt-into newer architecture code generation when
+//!   compiling the whole binary for an older architecture.
+//!
+//!   This interface is also composable with micro-architecture dispatching done higher in
+//!   the callstack, and so should be preferred when incorporating into quantizer distance
+//!   computations.
+//!
+//! * [`diskann_vector::PureDistanceFunction`]: If micro-architecture awareness is not needed,
+//!   this provides a simple interface targeting [`diskann_wide::ARCH`] (the current compilation
+//!   architecture).
+//!
+//!   This interface will always yield a binary compatible with the compilation architecture
+//!   target, but will not enable faster code-paths when compiling for older architectures.
+//!
+//! The following table summarizes the implementation status of kernels. All kernels have
+//! `diskann_wide::arch::Scalar` implementation fallbacks.
+//!
+//! Implementation Kind:
+//!
+//! * "Fallback": A fallback implementation using scalar indexing.
+//!
+//! * "Optimized": A better implementation than "fallback" that does not contain
+//!   target-depeendent code, instead relying on compiler optimizations.
+//!
+//!   Micro-architecture dispatch is still relevant as it allows the compiler to generate
+//!   better code for newer machines.
+//!
+//! * "Yes": Architecture specific SIMD implementation exists.
+//!
+//! * "No": Architecture specific implementation does not exist - the next most-specific
+//!   implementation is used. For example, if a `x86-64-v3` implementation does not exist,
+//!   then the "scalar" implementation will be used instead.
+//!
+//! Type Aliases
+//!
+//! * `USlice<N>`: `BitSlice<N, Unsigned, Dense>`
+//! * `TSlice<N>`: `BitSlice<N, Unsigned, BitTranspose>`
+//! * `BSlice`: `BitSlice<1, Binary, Dense>`
+//!
+//! * `MV<T>`: [`diskann_vector::MathematicalValue<T>`]
+//!
+//! ### Inner Product
+//!
+//! | LHS           | RHS           | Result    | Scalar    | x86-64-v3     | x86-64-v4 | Neon      |
+//! |---------------|---------------|-----------|-----------|---------------|-----------|-----------|
+//! | `USlice<1>`   | `USlice<1>`   | `MV<u32>` | Optimized | Optimized     | Uses V3   | Optimized |
+//! | `USlice<2>`   | `USlice<2>`   | `MV<u32>` | Fallback  | Yes           | Yes       | Optimized |
+//! | `USlice<3>`   | `USlice<3>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<4>`   | `USlice<4>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `USlice<5>`   | `USlice<5>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<6>`   | `USlice<6>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<7>`   | `USlice<7>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<8>`   | `USlice<8>`   | `MV<u32>` | Yes       | Yes           | Yes       | Fallback  |
+//! |               |               |           |           |               |           |           |
+//! | `USlice<8>`   | `USlice<4>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `USlice<8>`   | `USlice<2>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `USlice<8>`   | `USlice<1>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! |               |               | `       ` |           |               |           |           |
+//! | `TSlice<4>`   | `USlice<1>`   | `MV<u32>` | Optimized | Optimized     | Optimized | Optimized |
+//! |               |               | `       ` |           |               |           |           |
+//! | `&[f32]`      | `USlice<1>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<2>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<3>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<4>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<5>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<6>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<7>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<8>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
+//!
+//! ### Squared L2
+//!
+//! | LHS           | RHS           | Result    | Scalar    | x86-64-v3     | x86-64-v4 | Neon      |
+//! |---------------|---------------|-----------|-----------|---------------|-----------|-----------|
+//! | `USlice<1>`   | `USlice<1>`   | `MV<u32>` | Optimized | Optimized     | Uses V3   | Optimized |
+//! | `USlice<2>`   | `USlice<2>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `USlice<3>`   | `USlice<3>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<4>`   | `USlice<4>`   | `MV<u32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `USlice<5>`   | `USlice<5>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<6>`   | `USlice<6>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<7>`   | `USlice<7>`   | `MV<u32>` | Fallback  | No            | Uses V3   | Fallback  |
+//! | `USlice<8>`   | `USlice<8>`   | `MV<u32>` | Yes       | Yes           | Yes       | Fallback  |
+//!
+//! ### Hamming
+//!
+//! | LHS           | RHS           | Result    | Scalar    | x86-64-v3     | x86-64-v4 | Neon      |
+//! |---------------|---------------|-----------|-----------|---------------|-----------|-----------|
+//! | `BSlice`      | `BSlice`      | `MV<u32>` | Optimized | Optimized     | Uses V3   | Optimized |
+
+
+===== Unmodified leading source comments: src/bits/length.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/bits/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Utilities for working with packed 1-bit to 8-bit integers (inclusive).
+
+
+===== Unmodified leading source comments: src/bits/packing.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/bits/ptr.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/bits/slice.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/cancel.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Utilities to support cancelation of long-running operations.
+
+
+===== Unmodified leading source comments: src/distances.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Zero-sized types representing distance functions.
+//!
+//! The types defined here are zero-sized types that represent logical distance function
+//! operations.
+//!
+//! Some types like bit-vectors and [`crate::bits::BitSlice`]s can be efficiently
+//! implemented as pure functions and therefore can use [`PureDistanceFunction`] semantics
+//! for these types directly.
+//!
+//! Other quantization schemes such as scalar quantization (e.g.
+//! [`crate::scalar::CompensatedSquaredL2`]) need auxiliary state and therefore need
+//! customized, stateful distance function types.
+
+
+===== Unmodified leading source comments: src/error.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Formatting utilities for error chains.
+
+
+===== Unmodified leading source comments: src/flatbuffers/minmax/quantizer_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/spherical/quantizer_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/spherical/spherical_quantizer_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/spherical/supported_metric_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/double_hadamard_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/null_transform_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/padding_hadamard_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/random_rotation_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/transform_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers/transforms/transform_kind_generated.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// automatically generated by the FlatBuffers compiler, do not modify
+// @generated
+
+===== Unmodified leading source comments: src/flatbuffers.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Import the `flatbuffers` files generated by `tools/generate-flatbuffers.sh`.
+//!
+//! The generated module root does not support the lints applied to this crate, so this file
+//! maintains a custom import tree around the generated bindings.
+
+
+===== Unmodified leading source comments: src/lib.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/blocks/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/blocks/packed.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/blocks/unpacked.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/bounds.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// A debug-assisting wrapper for [`usize`] that only exists under tests or when debug
+/// assertions are enabled.
+///
+/// This is used as a means of tracking sizes and lengths of slices and matrices in memory
+/// to help matrix kernel implementations keep accesses in bounds.
+///
+/// On release builds, this becomes a zero-sized type to remove run-time overhead.
+///
+/// For purposes of documentation when writing kernels, a [`Bound`] is **always** the
+/// correct size or length of an object, whether or not tracking is enabled.
+///
+/// Unsafe code must **not** rely on [`Bound`]s being checked in order to uphold a safety
+/// contract unless such code is:
+///
+/// * Gated by `cfg(test)`.
+/// * The unsafety is exclusively due to relationships between [`Bound`].
+/// * The method being called is known to exhaustively check all [`Bound`]-based invariants.
+///
+/// In these cases, special `checked_*` methods can be introduced to reduce the number of
+/// `unsafe` blocks in tests.
+///
+/// # Checking Bounds
+///
+/// Users should use the macros [`check_eq`], [`check_lt`], [`check_le`], [`check_gt`] and
+/// [`check_ge`] to perform checks with a [`Bound`] on the left-hand side.
+
+===== Unmodified leading source comments: src/matrix_kernels/driver.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+/// Drive a top level matrix kernel.
+
+===== Unmodified leading source comments: src/matrix_kernels/maxsim/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Implementation of "maxsim" kernels.
+//!
+//! Let:
+//!
+//! * `A` be a `M x K` matrix.
+//! * `B` be a `K x N` matrix.
+//!
+//! The "maxsim" result `C` is a `M`-dimensional vector where
+//!
+//! ```text
+//! C[i] = max(j in 0..N, dot(A[i, :], B[:, j]))
+//! ```
+
+
+===== Unmodified leading source comments: src/matrix_kernels/maxsim/packed_f32_x_unpacked_f16.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! This closely follows the implementation in [`super::packed_f32_x_unpacked_f32`].
+//!
+//! The only addition is that the sub-views of `b` are converted from `f16` to `f32` when
+//! before any panel-kernel operation.
+
+
+===== Unmodified leading source comments: src/matrix_kernels/maxsim/packed_f32_x_unpacked_f32.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The lowering of operations mimics a GEMM style operation with inplace application of the
+//! max-sim reduction operation. Currently, blocking across the contraction dimension "k"
+//! is not implemented. As such, expect a performance penalty for large-dimensional vectors.
+//!
+//! The kernel is implemented as follows:
+//!
+//! * Partition `a` into sub-views `suba` that roughly occupy the L2 cache.
+//! * Partition `b` into sub-views `subb` that roughly occupy a portion of the L1 cache.
+//! * Partition `suba` into panels `pa`. We want `pa + subb` to fit in L1.
+//! * Perform micro-kernel operations on `pa + subb`. This computes the max-sim in-place.
+//!
+//! There is plenty of room for improvement. This is just a starting point.
+
+
+===== Unmodified leading source comments: src/matrix_kernels/maxsim/test.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # GEMM-lite Matrix Kernels
+//!
+//! This module is a work in progress. There are many pieces that are still needed:
+//!
+//! * Proper run time cache-size detection.
+//! * GEMM-like kernels beyond "maxsim".
+//! * Quantization support.
+//! * Blocking along the contraction dimension "k".
+//! * Comprehensive performance tuning.
+//!
+//! For consistency with GEMM terminology, the following conventions are used.
+//!
+//! A matrix-kernel has the general form
+//!
+//! ```text
+//! C[M x N] = A[M x K] . B[K x N]
+//! ```
+//! with internal dimensions as follows:
+//!
+//! * `M`: The number of rows of `A` and `C`.
+//! * `N`: The number of columns of `B` and `C`.
+//! * `K`: Contraction dimension. Columns of `A` and rows of `B`.
+//! * `MR`: Packing parameter for `A`. This is the number of rows processed in a micro-kernel.
+//! * `NR`: Packing parameter for `B`. This is the number of columns processed in a micro-kernel.
+
+
+===== Unmodified leading source comments: src/matrix_kernels/num.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/ptr.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/test_util.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/matrix_kernels/util.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/meta/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/meta/slice.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/meta/vector.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/minmax/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # MinMax Quantization
+//!
+//! MinMax quantization provides memory-efficient vector compression by converting
+//! floating-point values to small n-bit integers on a per-vector basis.
+//!
+//! ## Core Concept
+//!
+//! Each vector is independently quantized using the formula:
+//! ```math
+//! X' = round((X - s) * (2^n - 1) / c).clamp(0, 2^n - 1)
+//! ```
+//! where `s` is a shift value and `c` is a scaling parameter computed from the
+//! range of values.
+//!
+//! For most bit widths (>1), given a positive scaling parameter `grid_scale : f32`,
+//! these are computed as:
+//! ```math
+//! - m = (max_i X[i] + min_i X[i]) / 2.0
+//! - w = max_i X[i] - min_i X[i]
+//!
+//! - s = m - w * grid_scale
+//! - c = 2 * w * grid_scale
+//! ```
+//! For 1-bit quantization, to avoid outliers, `s` and `c` are derived differently:
+//!   i) Values are first split into two groups: those below and above the mean.
+//!  ii) `s` is the average of values below the mean.
+//! iii) `c` is the difference between the average of values above the mean and `s`.
+//!
+//! This encoding is similar to scalar quantization, but, since both 's' and 'c'
+//! are computed on a per-vector basis, this allows this quantization mechanism
+//! to be applied in a **streaming setting**; making it qualitatively different
+//! than scalar quantization.
+//!
+//! ## Module Components
+//!
+//! - [`MinMaxQuantizer`]: Handles vector encoding and decoding
+//! - [`Data`]: Stores quantized vectors with compensation parameters
+//! - Distance functions:
+//!   - [`MinMaxIP`]: Inner product distance for quantized vectors.
+//!   - [`MinMaxL2Squared`]: L2 (Euclidean) distance for quantized vectors.
+//!   - [`MinMaxCosine`]: Cosine similarity for quantized vectors.
+//!   - [`MinMaxCosineNormalized`]: Cosine similarity for quantized vectors assuming the
+//!     original full-precision vectors were normalized.
+//!
+//! To reconstruct the original vector, the inverse operation is applied:
+//! ```math
+//! X = X' * c / (2^n - 1) + s
+//! ```
+//!
+//! ## Multi-vector Support
+//!
+//! [`MinMaxMeta`] and [`MinMaxKernel`] support storing and computing distances between
+//! multi-vector representations that use MinMax quantization.
+//!
+//! ```rust
+//! use std::num::NonZeroUsize;
+//! use diskann_quantization::{
+//!     algorithms::{transforms::NullTransform, Transform},
+//!     minmax::{MinMaxMeta, MinMaxQuantizer},
+//!     multi_vector::{
+//!         distance::{Chamfer, MaxSim, QueryMatRef},
+//!         Defaulted, Mat, MatRef, Standard,
+//!     },
+//!     num::Positive,
+//!     CompressInto,
+//! };
+//! use diskann_utils::{Reborrow, ReborrowMut};
+//! use diskann_vector::{DistanceFunctionMut, PureDistanceFunction};
+//!
+//! const NBITS: usize = 8;
+//! let dim = 4;
+//! let num_query_vectors = 2;
+//! let num_doc_vectors = 3;
+//!
+//! // Create a MinMax quantizer (using NullTransform for simplicity)
+//! let quantizer = MinMaxQuantizer::new(
+//!     Transform::Null(NullTransform::new(NonZeroUsize::new(dim).unwrap())),
+//!     Positive::new(1.0).unwrap(),
+//! );
+//!
+//! // Full-precision query multi-vector (2 vectors × 4 dimensions)
+//! let query_data: Vec<f32> = vec![
+//!     1.0, 0.0, 0.0, 0.0,  // query vector 0
+//!     0.0, 1.0, 0.0, 0.0,  // query vector 1
+//! ];
+//! let query_input = MatRef::new(
+//!     Standard::new(num_query_vectors, dim).unwrap(), &query_data
+//! ).unwrap();
+//!
+//! // Full-precision document multi-vector (3 vectors × 4 dimensions)
+//! let doc_data: Vec<f32> = vec![
+//!     0.5, 0.5, 0.0, 0.0,  // doc vector 0
+//!     1.0, 0.0, 0.0, 0.0,  // doc vector 1
+//!     0.0, 0.0, 1.0, 0.0,  // doc vector 2
+//! ];
+//! let doc_input = MatRef::new(
+//!     Standard::new(num_doc_vectors, dim).unwrap(), &doc_data
+//! ).unwrap();
+//!
+//! // Create owned matrices for quantized output using Mat::new
+//! let mut query_out: Mat<MinMaxMeta<NBITS>> =
+//!     Mat::new(MinMaxMeta::new(num_query_vectors, dim), Defaulted).unwrap();
+//! let mut doc_out: Mat<MinMaxMeta<NBITS>> =
+//!     Mat::new(MinMaxMeta::new(num_doc_vectors, dim), Defaulted).unwrap();
+//!
+//! // Quantize both multi-vectors
+//! quantizer.compress_into(query_input, query_out.reborrow_mut()).unwrap();
+//! quantizer.compress_into(doc_input, doc_out.reborrow_mut()).unwrap();
+//!
+//! // Get immutable views via reborrow for distance computation
+//! let query_mv = query_out.reborrow();
+//! let doc_mv = doc_out.reborrow();
+//!
+//! // Compute MaxSim: per-query-vector max similarities
+//! let mut scores = vec![0.0f32; num_query_vectors];
+//! MaxSim::new(&mut scores).evaluate(query_mv.into(), doc_mv);
+//! // scores[i] = min over all doc vectors of distance(query[i], doc[j])
+//!
+//! // Compute Chamfer distance (sum of MaxSim scores)
+//! let chamfer = Chamfer::evaluate(query_mv.into(), doc_mv);
+//! ```
+
+===== Unmodified leading source comments: src/minmax/multi/max_sim.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Distance implementations for MinMax quantized multi-vectors.
+
+
+===== Unmodified leading source comments: src/minmax/multi/meta.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Meta types and compression for MinMax quantized multi-vectors.
+
+
+===== Unmodified leading source comments: src/minmax/multi/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Multi-vector support for MinMax quantized vectors.
+
+
+===== Unmodified leading source comments: src/minmax/quantizer.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/minmax/recompress.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/minmax/vectors.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/multi_vector/block_transposed.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Block-transposed matrix types with configurable packing.
+//!
+//! This module provides block-transposed matrix types — [`BlockTransposed`] (owned),
+//! [`BlockTransposedRef`] (shared view), and [`BlockTransposedMut`] (mutable view) —
+//! where groups of `GROUP` rows are stored in transposed form to enable efficient SIMD
+//! processing. An optional packing factor `PACK` interleaves adjacent columns within
+//! each group, which can be used to feed SIMD instructions that operate on packed pairs
+//! (e.g. `vpmaddwd` with `PACK = 2`).
+//!
+//! # Layout
+//!
+//! ## `PACK = 1` (standard block-transpose)
+//!
+//! Given a logical matrix with rows `a`, `b`, `c`, `d`, `e` (each with `K` columns)
+//! and `GROUP = 3`:
+//!
+//! ```text
+//!            Group Size (3)
+//!            <---------->
+//!
+//!            +----------+    ^
+//!            | a0 b0 c0 |    |
+//!            | a1 b1 c1 |    |
+//!            | a2 b2 c2 |    | Block Size (K)
+//!  Block 0   | ...      |    |
+//!  (Full)    | aK bK cK |    |
+//!            +----------+    v
+//!            +----------+
+//!            | d0 e0 XX |
+//!  Block 1   | d1 e1 XX |
+//!  (Partial) | ...      |
+//!            | dK eK XX |
+//!            +----------+
+//! ```
+//!
+//! ## `PACK = 2` (super-packed)
+//!
+//! With `GROUP = 4`, `PACK = 2`, and a logical matrix with rows `a`, `b`, `c`, `d`,
+//! `e`, `f` (each with **5** columns — odd, to show padding), adjacent column-pairs
+//! are interleaved per row within each group panel:
+//!
+//! ```text
+//!              GROUP × PACK (4 × 2 = 8)
+//!              <----------------------------->
+//!
+//!              +-----------------------------+    ^
+//!              | a0 a1  b0 b1  c0 c1  d0 d1  |    |  col-pair (0, 1)
+//!              | a2 a3  b2 b3  c2 c3  d2 d3  |    |  col-pair (2, 3)
+//!    Block 0   | a4 __  b4 __  c4 __  d4 __  |    |  col-pair (4, pad)
+//!    (Full)    +-----------------------------+    v
+//!              +-----------------------------+
+//!              | e0 e1  f0 f1  XX XX  XX XX  |       col-pair (0, 1)
+//!    Block 1   | e2 e3  f2 f3  XX XX  XX XX  |       col-pair (2, 3)
+//!    (Partial) | e4 __  f4 __  XX XX  XX XX  |       col-pair (4, pad)
+//!              +-----------------------------+
+//!
+//!    __ = zero (column padding)    XX = zero (row padding)
+//!    padded_ncols = 6  (5 rounded up to next multiple of PACK)
+//!    Block Size  = padded_ncols / PACK = 3 physical rows per block
+//! ```
+//!
+//! Each physical row of a block holds one column-pair across all `GROUP` rows.
+//! For example, the first physical row stores columns `(0, 1)` for rows
+//! `a, b, c, d` interleaved as `[a0, a1, b0, b1, c0, c1, d0, d1]`.
+//!
+//! Because `ncols = 5` is odd (not a multiple of `PACK = 2`), the last
+//! column-pair `(4, pad)` is zero-padded: `[a4, 0, b4, 0, c4, 0, d4, 0]`.
+//!
+//! # Constraints
+//!
+//! - `GROUP > 0`
+//! - `PACK > 0`
+//! - `GROUP % PACK == 0`
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/factory.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Factory + concrete `MaxSimKernel<T>` impls for the multi-vector distance
+//! API. BYOTE entry point — see [`build_max_sim`].
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/fallback.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Fallback kernel implementation of multi-vector distance computation.
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/isa.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Instruction Set Architecture (ISA) selector for the multi-vector MaxSim
+//! factory.
+
+/// Instruction Set Architecture (ISA) selector for which multi-vector MaxSim
+/// kernel to build.
+///
+/// `#[non_exhaustive]` so adding a variant (e.g. for a new in-tree kernel) is
+/// not a breaking change. Deliberately **not** `Serialize`/`Deserialize` —
+/// callers wanting JSON support maintain their own shadow enum and convert
+/// via `From` / `TryFrom`, so the library is not pinned to a particular
+/// serialization format.
+
+===== Unmodified leading source comments: src/multi_vector/distance/kernel.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Object-safe kernel boundary trait plus BYOTE visitor trait.
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/max_sim.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! MaxSim and Chamfer distance types for multi-vector representations.
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Distance computation for multi-vector representations.
+//!
+//! The fallback path uses a double-loop kernel over
+//! [`InnerProduct`](diskann_vector::distance::InnerProduct); the factory
+//! returns cache-tiled SIMD kernels selected by [`MaxSimIsa`].
+//!
+//! # Example
+//!
+//! ```
+//! use diskann_quantization::multi_vector::{
+//!     distance::{Chamfer, MaxSim, QueryMatRef},
+//!     MatRef, Standard,
+//! };
+//! use diskann_vector::{DistanceFunctionMut, PureDistanceFunction};
+//!
+//! // Query: 2 vectors of dim 3 (wrapped as QueryMatRef)
+//! let query_data = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0];
+//! let query: QueryMatRef<_> = MatRef::new(
+//!     Standard::new(2, 3).unwrap(),
+//!     &query_data,
+//! ).unwrap().into();
+//!
+//! // Doc: 2 vectors of dim 3
+//! let doc_data = [1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0];
+//! let doc = MatRef::new(
+//!     Standard::new(2, 3).unwrap(),
+//!     &doc_data,
+//! ).unwrap();
+//!
+//! // Chamfer distance (sum of max similarities)
+//! let chamfer_dist = Chamfer::evaluate(query, doc);
+//!
+//! // MaxSim (per-query-vector scores)
+//! let mut scores = vec![0.0f32; 2];
+//! let mut max_sim = MaxSim::new(&mut scores);
+//! max_sim.evaluate(query, doc);
+//! // scores[0] = -1.0 (query[0] matches doc[0]: negated max inner product)
+//! // scores[1] =  0.0 (query[1] has no good match: max IP was 0)
+//! ```
+
+
+===== Unmodified leading source comments: src/multi_vector/distance/projected_eigen.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Projected-eigen distance type for multi-vector representations.
+
+/////////////////////
+// ProjectedEigen //
+/////////////////////
+
+/// Projected-eigen distance for multi-vector similarity.
+///
+/// Computes the negated sum of squared inner products over *all*
+/// query/document vector pairs:
+///
+/// ```text
+/// ProjectedEigen(Q, D) = \sum_{i} \sum_{j} -IP(q_i, d_j)²
+/// ```
+///
+/// Unlike [`Chamfer`](super::Chamfer), which keeps only the best-matching
+/// document vector per query vector, this accumulates a contribution from
+/// every pair, so the score reflects the full query–document interaction. As
+/// with the other multi-vector distances, lower is better.
+///
+/// Implements [`PureDistanceFunction`](diskann_vector::PureDistanceFunction)
+/// for matrix view types.
+
+===== Unmodified leading source comments: src/multi_vector/matrix.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Row-major matrix types for multi-vector representations.
+//!
+//! This module provides flexible matrix abstractions that support different underlying
+//! storage formats through the [`Repr`] trait. The primary types are:
+//!
+//! - [`Mat`]: An owning matrix that manages its own memory.
+//! - [`MatRef`]: An immutable borrowed view of matrix data.
+//! - [`MatMut`]: A mutable borrowed view of matrix data.
+//!
+//! # Representations
+//!
+//! Representation types interact with the [`Mat`] family of types using the following traits:
+//!
+//! - [`Repr`]: Read-only matrix representation.
+//! - [`ReprMut`]: Mutable matrix representation.
+//! - [`ReprOwned`]: Owning matrix representation.
+//!
+//! Each trait refinement has a corresponding constructor:
+//!
+//! - [`NewRef`]: Construct a read-only [`MatRef`] view over a slice.
+//! - [`NewMut`]: Construct a mutable [`MatMut`] matrix view over a slice.
+//! - [`NewOwned`]: Construct a new owning [`Mat`].
+//!
+
+
+===== Unmodified leading source comments: src/multi_vector/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Multi-vector matrix types and distance functions.
+//!
+//! Row-major matrix abstractions for multi-vector representations, where each
+//! entity is encoded as multiple embedding vectors (e.g., per-token embeddings).
+//!
+//! # Example
+//!
+//! ```
+//! use diskann_quantization::multi_vector::{
+//!     distance::QueryMatRef,
+//!     Chamfer, Mat, MatMut, MatRef, MaxSim, Standard,
+//! };
+//! use diskann_utils::ReborrowMut;
+//! use diskann_vector::{DistanceFunctionMut, PureDistanceFunction};
+//!
+//! // Create an owned matrix (2 vectors, dim 3, initialized to 0.0)
+//! let mut owned = Mat::new(Standard::new(2, 3).unwrap(), 0.0f32).unwrap();
+//! assert_eq!(owned.num_vectors(), 2);
+//!
+//! // Modify via mutable view
+//! let mut view = owned.reborrow_mut();
+//! if let Some(row) = view.get_row_mut(0) {
+//!    row[0] = 1.0;
+//! }
+//!
+//! // Create views from slices
+//! let query_data = [1.0f32, 0.0, 0.0, 1.0];
+//! let doc_data = [1.0f32, 0.0, 0.0, 1.0];
+//!
+//! // Wrap query as QueryMatRef for type-safe asymmetric distance
+//! let query: QueryMatRef<_> = MatRef::new(
+//!     Standard::new(2, 2).unwrap(),
+//!     &query_data,
+//! ).unwrap().into();
+//! let doc = MatRef::new(Standard::new(2, 2).unwrap(), &doc_data).unwrap();
+//!
+//! // Chamfer distance (sum of max similarities)
+//! let distance = Chamfer::evaluate(query, doc);
+//! assert_eq!(distance, -2.0); // Perfect match: -1.0 per vector
+//!
+//! // MaxSim (per-query-vector scores)
+//! let mut scores = vec![0.0f32; 2];
+//! let mut max_sim = MaxSim::new(&mut scores);
+//! max_sim.evaluate(query, doc);
+//! assert_eq!(scores[0], -1.0);
+//! assert_eq!(scores[1], -1.0);
+//! ```
+
+
+===== Unmodified leading source comments: src/num.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Number types with limited dynamic range.
+
+
+===== Unmodified leading source comments: src/ownership.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Product quantization training and compression.
+
+
+===== Unmodified leading source comments: src/product/tables/basic.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/tables/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/tables/test.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+// A collection of test helpers to ensure uniformity across tables.
+
+===== Unmodified leading source comments: src/product/tables/transposed/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/tables/transposed/pivots.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/tables/transposed/table.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/product/train.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/random.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/scalar/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Scalar quantization training, compression data, and distance comparisons.
+//!
+//! Scalar quantization works by converting floating point values to small n-bit integers
+//! using the formula
+//! ```math
+//! X' = round((X - B) / a).clamp(0, 2^n - 1)
+//! ```
+//! where `B` is a shift vector and `a` is a scaling parameter. The training algorithm is this:
+//!
+//! 1. Find the mean vector M of the training data set.
+//! 2. Compute the standard deviation of each dimension and find `stdmax`: the maximum
+//!    standard deviation.
+//! 3. The parameter `a` is then `(2 * S * stdmax) / (2^n - 1)` where `S` is configurable
+//!    in [`train::ScalarQuantizationParameters`].
+//! 4. `B` is finally computed as `M - S * stdmax`.
+//!
+//! Compression then via [`ScalarQuantizer`] simply consists of applying the above formula
+//! to each vector.
+//!
+//! # Training
+//!
+//! Training is provided by the [`train::ScalarQuantizationParameters`] struct.
+//! See the struct level documentation for more details.
+//!
+//! # Compensated Vectors
+//!
+//! Scalar compression involves data shifts by both the dataset mean and to shift the
+//! representable range into a domain representable by an unsigned integer.
+//!
+//! This does not preserve inner-products at all and can result in a scaled value for
+//! L2 computations.
+//!
+//! To deal with this, we can use [`CompensatedVector`]s, which consist of both the scalar
+//! quantization integer codes and the scaled inner product of the compressed value with the
+//! data set mean. This enables inner-products to be computed efficiently and correctly, at
+//! the cost of some extra storage.
+//!
+//! See the struct-level documentation for more information as well as the documentation
+//! for distance function objects:
+//!
+//! * [`CompensatedSquaredL2`]
+//! * [`CompensatedIP`]
+//!
+//! # Example
+//!
+//! In this example, we will do the following:
+//!
+//! 1. Create a sample data set with normally distributed data using random offsets.
+//! 2. Train a 4-bit scalar quantizer on this data.
+//! 3. Compress elements of the dataset using the quantizer.
+//! 4. Perform distance computations using the compressed vectors.
+//!
+//! ```
+//! use diskann_quantization::{
+//!     AsFunctor, CompressInto,
+//!     distances,
+//!     scalar::{self, train, CompensatedVector, CompensatedIP, CompensatedSquaredL2},
+//!     num::Positive,
+//! };
+//! use diskann_utils::{
+//!     Reborrow, ReborrowMut,
+//!     views::rowmajor::{self, Matrix, MatrixMut},
+//! };
+//! use rand::{rngs::StdRng, SeedableRng, distr::Distribution};
+//! use rand_distr::StandardNormal;
+//! use diskann_vector::{PureDistanceFunction, DistanceFunction, distance};
+//!
+//! let dim = 20;
+//! let nvectors = 100;
+//! let distribution = StandardNormal;
+//! let mut rng = StdRng::seed_from_u64(0xc674c06f4f8013f7);
+//! // Construct a set of offsets for each dimension.
+//! let offset: Vec<f32> = (0..dim).map(|_| distribution.sample(&mut rng)).collect();
+//! // The output dataset.
+//! let mut data = rowmajor::Owned::<f32>::from_element(nvectors, dim, 0.0);
+//! for row in data.rows_mut() {
+//!     std::iter::zip(row.iter_mut(), offset.iter()).for_each(|(r, i)| {
+//!         let v: f32 = distribution.sample(&mut rng);
+//!         *r = i + v;
+//!     });
+//! }
+//!
+//! // Create parameters for 4-bit compression.
+//! // Here, we use 2.0 standard deviations are our cutoff.
+//! let p = train::ScalarQuantizationParameters::new(Positive::new(2.0).unwrap());
+//!
+//! // Train a quantizer.
+//! let quantizer: scalar::ScalarQuantizer = p.train(data.as_view());
+//!
+//! // Compress vectors 0 and 1 into their scalar quantized representation.
+//! let mut v0 = CompensatedVector::<4>::new_boxed(quantizer.dim());
+//! let mut v1 = CompensatedVector::<4>::new_boxed(quantizer.dim());
+//! quantizer.compress_into(data.row(0), v0.reborrow_mut()).unwrap();
+//! quantizer.compress_into(data.row(1), v1.reborrow_mut()).unwrap();
+//!
+//! // Compute inner product distances.
+//! let f: CompensatedIP = quantizer.as_functor();
+//! let distance_quantized: distances::Result<f32> = f.evaluate_similarity(
+//!     v0.reborrow(),
+//!     v1.reborrow()
+//! );
+//! let distance_full: f32 = distance::InnerProduct::evaluate(data.row(0), data.row(1));
+//! let relative_error = (distance_quantized.unwrap() - distance_full).abs() / distance_full.abs();
+//! assert!(relative_error < 0.02);
+//!
+//! // Compute squared l2 distances.
+//! let f: CompensatedSquaredL2 = quantizer.as_functor();
+//! let distance_quantized: distances::Result<f32> = f.evaluate_similarity(
+//!     v0.reborrow(),
+//!     v1.reborrow()
+//! );
+//! let distance_full: f32 = distance::SquaredL2::evaluate(data.row(0), data.row(1));
+//! let relative_error = (distance_quantized.unwrap() - distance_full).abs() / distance_full.abs();
+//! assert!(relative_error < 0.03);
+//! ```
+
+
+===== Unmodified leading source comments: src/scalar/quantizer.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/scalar/train.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/scalar/vectors.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/spherical/__codegen/aarch64.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Explicitly instantiate the AArch64 Neon spherical inner-product paths.
+
+===== Unmodified leading source comments: src/spherical/__codegen/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! Instantiations for codegen inspection.
+//!
+//! These methods are **not** part of the public API.
+
+
+===== Unmodified leading source comments: src/spherical/__codegen/x86_64.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The strategy here is to generate the concrete instantiations of [`DistanceComputer`]
+//! that we care about.
+//!
+//! This will ensure that the relevant `evaluate` methods get compiled.
+
+
+===== Unmodified leading source comments: src/spherical/iface.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! The main export of this module is the dyn compatible [`Quantizer`] trait, which provides
+//! a common interface for interacting with bit-width specific [`SphericalQuantizer`]s,
+//! compressing vectors, and computing distances between compressed vectors.
+//!
+//! This is offered as a convenience interface for interacting with the myriad of generics
+//! associated with the [`SphericalQuantizer`]. Better performance can be achieved by using
+//! the generic types directly if desired.
+//!
+//! The [`Quantizer`] uses the [`Opaque`] and [`OpaqueMut`] types for its compressed data
+//! representations. These are thin wrappers around raw byte slices.
+//!
+//! Distance computation is performed using [`DistanceComputer`] and [`QueryComputer`]
+//!
+//! Concrete implementations of [`Quantizer`] are available via the generic struct [`Impl`].
+//!
+//! ## Compatibility Table
+//!
+//! Multiple [`QueryLayout`]s are supported when constructing a [`QueryComputer`], but not
+//! all layouts are supported for each back end. This table lists the valid instantiations
+//! of [`Impl`] (parameterized by data vector bit-width) and their supported query layouts.
+//!
+//! | Bits | Same As Data | Full Precision | Four-Bit Transposed | Scalar Quantized |
+//! |------|--------------|----------------|---------------------|------------------|
+//! |    1 |     Yes      |      Yes       |         Yes         |       No         |
+//! |    2 |     Yes      |      Yes       |          No         |       Yes        |
+//! |    4 |     Yes      |      Yes       |          No         |       Yes        |
+//! |    8 |     Yes      |      Yes       |          No         |       Yes        |
+//!
+//! # Example
+//!
+//! ```
+//! use diskann_quantization::{
+//!     alloc::{Poly, ScopedAllocator, AlignedAllocator, GlobalAllocator},
+//!     algorithms::TransformKind,
+//!     spherical::{iface, SupportedMetric, SphericalQuantizer, PreScale},
+//!     num::PowerOfTwo,
+//! };
+//! use diskann_utils::views::rowmajor::{self, Matrix};
+//!
+//! // For illustration purposes, the dataset consists of just a single vector.
+//! let mut data = rowmajor::Owned::from_element(1, 4, 1.0);
+//! let quantizer = SphericalQuantizer::train(
+//!     data.as_view(),
+//!     TransformKind::Null,
+//!     SupportedMetric::SquaredL2,
+//!     PreScale::None,
+//!     &mut rand::rng(),
+//!     GlobalAllocator
+//! )
+//! .unwrap()
+//! .as_quantizer::<1>()
+//! .unwrap();
+//!
+//!
+//! let alloc = AlignedAllocator::new(PowerOfTwo::new(1).unwrap());
+//! let mut buf = Poly::broadcast(u8::default(), quantizer.bytes(), alloc).unwrap();
+//!
+//! quantizer.compress(
+//!     data.row(0),
+//!     iface::OpaqueMut::new(&mut buf),
+//!     ScopedAllocator::new(&alloc),
+//! ).unwrap();
+//!
+//! assert!(quantizer.is_supported(iface::QueryLayout::FullPrecision));
+//! assert!(!quantizer.is_supported(iface::QueryLayout::ScalarQuantized));
+//! ```
+
+/// # DevDocs
+///
+/// This section provides developer documentation for the structure of the structs and
+/// traits inside this file. The main goal of the [`DistanceComputer`] and [`QueryComputer`]
+/// implementations are to introduce just a single level of indirection.
+///
+/// ## Distance Computer Philosophy
+///
+/// The goal of this code (and in large part the reason for the somewhat spaghetti nature)
+/// is to do all the the dispatches:
+///
+/// * Number of bits.
+/// * Query layout.
+/// * Distance Type (L2, Inner Product, Cosine).
+/// * Micro-architecture specific code-generation
+///
+/// Behind a **single** level of dynamic dispatch. This means we need to bake all of this
+/// information into a single type, facilitated through a combination of the `Reify` and
+/// `Curried` private structs.
+///
+/// ## Anatomy of the [`DistanceComputer`]
+///
+/// To provide a single level of indirection for all distance function implementations,
+/// the [`DistanceComputer`] is a thin wrapper around the [`DynDistanceComputer`] trait.
+///
+/// Concrete implementations of this trait consist of a base distance function like
+/// [`CompensatedIP`] or [`CompensatedSquaredL2`]. Because the data is passed through the
+/// [`Opaque`] type, these distance functions are embedded inside a [`Reify`] which first
+/// converts the [`Opaque`] to the appropriate fully-typed object before calling the inner
+/// distance function.
+///
+/// This full typing is supplied by the private [`FromOpaque`] helper trait.
+///
+/// When returned from the [`Quantizer::distance_computer`] or
+/// [`Quantizer::distance_computer_ref`] traits, the resulting computer will be specialized
+/// to work solely on data vectors compressed through [`Quantizer::compress`].
+///
+/// When returned from [`Quantizer::query_computer`], the expected type of the query will
+/// depend on the [`QueryLayout`] supplied to that method.
+///
+/// The method [`QueryComputer::layout`] is provided to inspect at run time the query layout
+/// the object is meant for.
+///
+/// If at all possible, the [`QueryComputer`] should be preferred as it removes the
+/// possibility of providing an incorrect query layout and will be slightly faster since
+/// it does not require argument reification.
+///
+/// ## Anatomy of the [`QueryComputer`]
+///
+/// This is similar to the [`DistanceComputer`] but has the extra duty of supporting
+/// multiple different [`iface::QueryLayouts`] (compressions for the query). To that end,
+/// the stack of types used to implement the underlying [`DynDistanceComputer`] trait is:
+///
+/// * Base [`DistanceFunction`] (e.g. [`CompensatedIP`]).
+///
+/// * Embedded inside [`Curried`] - which also contains a heap-allocated representation of
+///   the query using the selected layout. For example, this could be one of.
+///
+///   - [`diskann_quantization::spherical::Query`]
+///   - [`diskann_quantization::spherical::FullQuery`]
+///   - [`diskann_quantization::sphericasl::Data`]
+///
+/// * Embedded inside [`Reify`] to convert [`Opaque`] to the correct type.
+
+===== Unmodified leading source comments: src/spherical/mod.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/spherical/quantizer.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/spherical/vectors.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+//! # Spherical Quantization Distance Functions
+//!
+//! ## Inner Product - 1-bit Symmetric
+//!
+//! Key:
+//! * `X'` (Upper case with "prime"): The original, full-precision vectors.
+//! * `C`: The dataset centroid.
+//! * `X` (Upper case, no "prime"): The result of `X' - C`. That is, the centered vectors.
+//! * `|X|`: The L2 norm of a vector.
+//! * `x` (Lower case): The normalized version of a vector `X` respectively.
+//! * `x'`: The quantized reconstruction of `x`, computed as `x = T(x!)` where
+//!
+//!   - `x!` is the binary encoded vector in `{-1/sqrt(dim), +1/sqrt(dim)}^dim`.
+//!   - `x -> T(x)` is the distance-preserving transformation.
+//!
+//! ```math
+//! <X', Y'> = <X + C, Y + C>
+//!          = <X, Y> + <X, C> + <Y, C> + <C, C>
+//!          = |X| |Y| <x, y> + <X, C> + <Y, C> + |C|^2
+//!                    ------
+//!                      |
+//!                 Normalized
+//!                 Components
+//! ```
+//!
+//! Now, working with the normalized components:
+//! ```math
+//! <x, y> \approx <x', y'> / (<x', x> * <y', y>)         [From the RabitQ Paper]
+//!                            -------   -------
+//!                               |         |
+//!                            Self Dot  Self Dot
+//!                            Product    Product
+//! ```
+//! Where `x'` and `y'` are transformed vectors in the domain `{-1/sqrt(D), 1/sqrt(D)}^D`.
+//!
+//! This is the result from the RabitQ paper (though modified to work on two symmetrically
+//! compressed vectors).
+//!
+//! NOTE: The symmetric correction factor gives incorrect estimates for estimating the
+//! distance between a vector and itself because the term `<x', x>` is strictly less
+//! than one, bringing the estimate for the inner product `<x, x>` to a value greater than 1.
+//! In practice, this still yields better recall (both exhaustive and via graph build) than
+//! no correction, so we keep it.
+//!
+//! Finally, to compute the inner product `<x', y'>` we use the following general approach:
+//! ```math
+//! <x', y'> = <a * (bx + b), c * (by + d)>
+//!          = (a * b) ( <bx, by> + b*sum(by) + d*sum(bx) + b*d )
+//!            -------   --------   - -------   - -------
+//!               |         |       |    |      |    |
+//!            Scaling      |       | Bit Sum   | Bit Sum
+//!             Terms       |       |           |
+//!                         |       |        y offset
+//!                    Bit Inner    |
+//!                     Product     |
+//!                              x offset
+//! ```
+//!
+//! When the vectors `x` and `y` use the same scaling or offset terms, some of this
+//! computation cam be simplified. However, spherical quantization allows queries to use
+//! a different compression (i.e., scalar quantization) and so this term reflects the
+//! general strategy.
+//!
+//! Thus, for each vector `X`, we need the following compensation values:
+//!
+//! 1. `|X| * a / <x', x>`: The norm of `X'` after it has been shifted by the centroid
+//!    multiplied by the quantization scaling parameter, divided by the correction term.
+//!    This whole expression is multiplied to the the result of the inner product term to
+//!    obtain the full-norm estimate of the shifted inner product.
+//!
+//! 2. `<X, C>`: The inner product between the shifted vector and the centroid.
+//!
+//! 3. `sum(bx)`: The sum of the bits in the binary vector representation of `x'`.
+//!
+//! 4. `|X|`: The norm of the shifted vector - used to computed L2 distances.
+//!
+//! ## Squared L2 - 1-bit Symmetric
+//!
+//! ```math
+//! |X' - Y'| = | (X' - C) - (Y' - C) |
+//!           = | X - Y |
+//!           = |X|^2 + |Y|^2 - 2 <X, Y>
+//!           = |X|^2 + |Y|^2 - 2 |X| |Y| <x, y>
+//!                                       ------
+//!                                         |
+//!                              Reuse from Inner Product
+//! ```
+//!
+//! The compensation terms used here are the same as the same.
+//!
+//! # Full Precision Queries
+//!
+//! When the vector `Y` is full-precision, the expression for the inner product becomes
+//! ```math
+//! <a(X + b), Y> = a (<X, Y> + b * sum(Y))
+//! ```
+//!
+//! # Dev Notes
+//!
+//! The functions implemented here use the [`diskann_wide::arch::Target2`] interface to
+//! propagate micro-architecture defails from the caller.
+//!
+//! When calling implementations in [`crate::bits::distances]`, be sure to use
+//! [`diskann_wide::Architecture::run2`] instead to invoke the distance functions. This will
+//! architecture specific
+//! [target features](https://rust-lang.github.io/rfcs/2045-target-feature.html) are
+//! inhereted properly, even if these functions are not inlined.
+
+
+===== Unmodified leading source comments: src/test_util.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/traits.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/utils.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+
+===== Unmodified leading source comments: src/views.rs =====
+/*
+ * Copyright (c) Microsoft Corporation.
+ * Licensed under the MIT license.
+ */
+
+

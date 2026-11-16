@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -48,7 +49,16 @@ def main() -> int:
     subprocess.run(command, env=environment, check=True)
     filename = "vectorlite-batch-tokio-host.exe" if sys.platform == "win32" else "vectorlite-batch-tokio-host"
     executable = target_dir / args.target / "debug" / filename
-    return subprocess.run([str(executable), str(extension)], check=False).returncode
+    # The host reserves each case database with exclusive creation, so it needs a
+    # directory with no leftovers from an earlier run. Keep everything under the
+    # isolated target dir rather than the source tree.
+    artifacts = target_dir / "artifacts"
+    if artifacts.exists():
+        shutil.rmtree(artifacts)
+    artifacts.mkdir(parents=True)
+    return subprocess.run(
+        [str(executable), str(extension), str(artifacts)], check=False
+    ).returncode
 
 
 if __name__ == "__main__":

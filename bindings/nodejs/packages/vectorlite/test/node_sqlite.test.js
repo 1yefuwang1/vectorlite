@@ -9,7 +9,7 @@ const vectorlite = require('../src/index.js');
 function open(database) {
     const connection = new DatabaseSync(database, { allowExtension: true });
     try {
-        connection.loadExtension(vectorlite.vectorlitePath());
+        connection.loadExtension(process.env.VECTORLITE_RUST_EXTENSION || vectorlite.vectorlitePath());
         return connection;
     } catch (error) {
         connection.close();
@@ -18,12 +18,35 @@ function open(database) {
 }
 
 function snapshot(connection) {
-    return ['meta', 'nodes', 'txn', 'rebuild'].map(suffix => connection.prepare(
+    return ['meta', 'entries', 'current', 'txn'].map(suffix => connection.prepare(
         `SELECT * FROM vectors_diskann_${suffix} ORDER BY 1`,
     ).all());
 }
 
-test('built-in SQLite loads the packaged HNSW backend', () => {
+function publish(db) {
+    const control = (operation, options) => db.prepare('INSERT INTO vectors(operation,path) VALUES(?,?)').run(operation, JSON.stringify(options));
+    const job = () => JSON.parse(db.prepare("SELECT vectorlite_index_status('main','vectors') AS value").get().value).current_job;
+    control('index_prepare', {});
+    let j = job();
+    const ids = { job_id: j.job_id, fence: j.fence };
+    for (let i = 0; j.phase === 0 && i < 100; ++i) {
+        control('index_snapshot_step', { ...ids, max_records: 2 });
+        j = job();
+    }
+    assert.equal(j.phase, 1);
+    control('index_claim_build', ids);
+    const candidate = JSON.parse(db.prepare("SELECT vectorlite_index_build('main','vectors',?) AS value").get(JSON.stringify({ ...ids, memory_budget_bytes: 268435456 })).value);
+    const options = { ...ids, candidate_token: candidate.candidate_token, max_records: 1 };
+    for (const [phase, operation] of [[2, 'index_import_step'], [3, 'index_validate_step']]) {
+        for (let i = 0; job().phase === phase && i < 100; ++i) control(operation, options);
+        assert.notEqual(job().phase, phase);
+    }
+    assert.equal(job().phase, 4);
+    control('index_publish', { ...ids, candidate_token: candidate.candidate_token });
+    assert.equal(job(), null);
+}
+
+test('built-in SQLite loads the selected HNSW extension', () => {
     const db = open(':memory:');
     try {
         db.exec('CREATE VIRTUAL TABLE h USING vectorlite(e float32[2],hnsw(max_elements=8))');
@@ -37,7 +60,7 @@ test('built-in SQLite loads the packaged HNSW backend', () => {
     }
 });
 
-test('built-in SQLite verifies packaged DiskANN rollback, rebuild and reopen', () => {
+test('built-in SQLite verifies deferred DiskANN rollback, publication and reopen', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vectorlite-node-sqlite-'));
     const database = path.join(directory, 'vectors.db');
     let db;
@@ -51,19 +74,24 @@ test('built-in SQLite verifies packaged DiskANN rollback, rebuild and reopen', (
         db.exec("INSERT INTO metadata VALUES(42,'pending')");
         db.exec("INSERT INTO vectors(rowid,embedding) VALUES(42,vector_from_json('[4,2]'))");
         db.exec("UPDATE vectors SET embedding=vector_from_json('[8,1]') WHERE rowid=1");
+        assert.deepEqual(JSON.parse(db.prepare('SELECT vector_to_json(embedding) AS v FROM vectors WHERE rowid=1').get().v), [8, 1]);
+        assert.equal(db.prepare('SELECT rowid FROM vectors WHERE rowid=42').get().rowid, 42);
         db.exec('DELETE FROM vectors WHERE rowid=7');
         db.exec('ROLLBACK');
         assert.deepEqual(snapshot(db), before);
         assert.equal(db.prepare('SELECT rowid FROM metadata WHERE rowid=42').get(), undefined);
-        db.exec("CREATE TRIGGER fail_neighbors BEFORE UPDATE OF neighbors ON vectors_diskann_nodes BEGIN SELECT RAISE(ABORT,'late node smoke'); END");
+        db.exec("CREATE TRIGGER fail_entry BEFORE INSERT ON vectors_diskann_entries BEGIN SELECT RAISE(ABORT,'late entry smoke'); END");
         db.exec('BEGIN');
-        assert.throws(() => db.exec("INSERT INTO vectors(rowid,embedding) VALUES(42,vector_from_json('[4,2]'))"), /late node smoke/);
+        assert.throws(() => db.exec("INSERT INTO vectors(rowid,embedding) VALUES(42,vector_from_json('[4,2]'))"), /late entry smoke/);
         assert.deepEqual(snapshot(db), before);
         db.exec('ROLLBACK');
-        db.exec('DROP TRIGGER fail_neighbors');
+        db.exec('DROP TRIGGER fail_entry');
         db.exec("BEGIN; INSERT INTO metadata VALUES(42,'committed'); INSERT INTO vectors(rowid,embedding) VALUES(42,vector_from_json('[4,2]')); COMMIT");
         const sql = "SELECT rowid,distance FROM vectors WHERE knn_search(embedding,knn_param(vector_from_json('[1,0]'),3,?))";
         const options = JSON.stringify({ search_list_size: 64 });
+        assert.deepEqual(JSON.parse(db.prepare('SELECT vector_to_json(embedding) AS v FROM vectors WHERE rowid=42').get().v), [4, 2]);
+        assert.deepEqual(db.prepare(sql).all(options), []);
+        publish(db);
         const neighbors = db.prepare(sql).all(options);
         assert.deepEqual(neighbors.map(row => row.rowid), [1, 7, 42]);
         assert.deepEqual(neighbors.map(row => row.distance), [0, 5, 13]);
@@ -73,9 +101,8 @@ test('built-in SQLite verifies packaged DiskANN rollback, rebuild and reopen', (
         assert.equal(db.prepare('SELECT label FROM metadata WHERE rowid=42').get().label, 'committed');
         db.exec("UPDATE vectors SET embedding=vector_from_json('[2,0]') WHERE rowid=1");
         db.exec('DELETE FROM vectors WHERE rowid=7');
-        db.exec("INSERT INTO vectors(operation) VALUES('consolidate')");
-        assert.equal(db.prepare('SELECT count(*) AS n FROM vectors_diskann_nodes WHERE state=1').get().n, 0);
-        assert.equal(db.prepare('SELECT count(*) AS n FROM vectors_diskann_rebuild').get().n, 0);
+        assert.equal(db.prepare("SELECT rowid FROM vectors WHERE knn_search(embedding,knn_param(vector_from_json('[2,0]'),3)) AND rowid=1").get(), undefined);
+        publish(db);
         const nearest = db.prepare("SELECT rowid,distance FROM vectors WHERE knn_search(embedding,knn_param(vector_from_json('[2,0]'),1))").get();
         assert.equal(nearest.rowid, 1);
         assert.equal(nearest.distance, 0);

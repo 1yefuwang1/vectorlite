@@ -126,15 +126,6 @@ impl<'db> Connection<'db> {
         unsafe { ffi::changes(self.db.as_ptr()) }
     }
 
-    /// Cumulative row modifications on this connection since open (SQLite >=3.38).
-    /// Increments on every INSERT/UPDATE/DELETE across statements, triggers,
-    /// and reentrant host trace/progress callbacks.
-    pub(crate) fn total_changes64(&self) -> i64 {
-        // SAFETY: DiskANN requires SQLite >=3.38, which set_api validated for
-        // `total_changes64`. The borrowed connection is live on this callback thread.
-        unsafe { ffi::total_changes64(self.db.as_ptr()) }
-    }
-
     fn error(&self, status: c_int, operation: &str) -> IndexError {
         // SAFETY: both accessors use the live borrowed connection. Copy the
         // connection-owned error string before any further SQLite operation.
@@ -282,6 +273,7 @@ impl Statement<'_> {
     /// Rewinds a completed statement without discarding its bindings. A Row
     /// must be drained through DONE first: resetting unfinished DML can hide a
     /// late error or commit successful effects. Failed steps are never reused.
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) -> Result<()> {
         if !matches!(self.state, State::Ready | State::Done) {
             return Err(IndexError::with_code(
@@ -301,6 +293,7 @@ impl Statement<'_> {
     }
 
     /// Clears copied buffers and private pointer bindings before reuse.
+    #[cfg(test)]
     pub(crate) fn clear_bindings(&mut self) -> Result<()> {
         if self.state != State::Ready {
             return Err(IndexError::with_code(
@@ -493,15 +486,6 @@ impl Statement<'_> {
             output.extend_from_slice(unsafe { std::slice::from_raw_parts(pointer, length) });
         }
         Ok(output)
-    }
-
-    /// Approximate heap bytes currently owned by this prepared statement.
-    pub(crate) fn memory_used(&self) -> usize {
-        // SAFETY: `stmt_status` is in the validated SQLite 3.20+ prefix and
-        // reads `SQLITE_STMTSTATUS_MEMUSED` without modifying statement state.
-        let bytes =
-            unsafe { ffi::stmt_status(self.raw(), ffi::SQLITE_STMTSTATUS_MEMUSED as c_int, 0) };
-        usize::try_from(bytes).unwrap_or(usize::MAX)
     }
 
     /// Finalizes explicitly so a deferred SQLite error can be reported.

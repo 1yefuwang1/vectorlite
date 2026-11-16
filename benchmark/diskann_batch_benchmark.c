@@ -1,12 +1,13 @@
-/* Focused native INSERT benchmark; each invocation builds exactly one index.
+/* Focused native INSERT benchmark. DiskANN times canonical ingestion only;
+ * it does not build or publish a graph. HNSW retains its historical query path.
  * Optional VECTORLITE_BENCH_ environment controls: METRIC (l2/cosine),
  * DATABASE (fresh plain path; default :memory:), SNAPSHOT (fresh backup path),
  * TIMEOUT_SECONDS (default 90), MAX_VISITS (default 65536), PAGE_SIZE, CACHE_SIZE
  * (signed pages/negative KiB), CACHE_SPILL (on/off), JOURNAL_MODE (delete/wal/
  * memory), SYNCHRONOUS (full/extra), MMAP_SIZE (bytes), TEMP_STORE (default/
  * file/memory). Unset controls preserve connection defaults. No SQL tracing.
- * WAL disables autocheckpoint and checkpoints FULL after same-open queries.
- * Dataset loading, queries, final checkpoint and backup are outside the build timer. */
+ * WAL disables autocheckpoint and checkpoints FULL after measured work.
+ * Dataset loading, queries, final checkpoint and backup are outside the INSERT timer. */
 #include <sqlite3.h>
 #include "vectorlite_batch.h"
 
@@ -446,11 +447,39 @@ int main(int argc, char **argv) {
   check_deadline();
   if (!hnsw) {
     sqlite3_stmt *counter = NULL;
-    require(db, sqlite3_prepare_v2(db, "SELECT live_count FROM v_diskann_meta", -1, &counter, NULL),
+    require(db, sqlite3_prepare_v2(db, "SELECT canonical_count FROM v_diskann_meta", -1, &counter, NULL),
             SQLITE_OK, "prepare count");
     require(db, sqlite3_step(counter), SQLITE_ROW, "read count");
     if (sqlite3_column_int64(counter, 0) != count) return 1;
     require(db, sqlite3_finalize(counter), SQLITE_OK, "finalize count");
+  }
+  if (!hnsw) {
+    /* Format 4 INSERT stores canonical rows, not KNN-eligible graph nodes. */
+    printf("{\"mode\":\"%s\",\"count\":%d,\"dimension\":%d,\"metric\":\"%s\",", argv[2], count, dimension, metric);
+    printf("\"sqlite\":\"%s\",\"canonical_ingest_seconds\":%.9f,", sqlite3_libversion(), build_seconds);
+    printf("\"measurement\":\"canonical_insert_only_no_graph_publication\",\"pager\":{\"requested\":");
+    print_controls(&controls);
+    printf(",\"defaults\":"); print_pager(&defaults);
+    printf(",\"effective\":"); print_pager(&effective);
+    printf("},\"final_checkpoint\":{");
+    if (!strcmp(effective.journal_mode, "wal")) {
+      int log_frames = -1, checkpointed_frames = -1;
+      double checkpoint_start = seconds();
+      int rc = sqlite3_wal_checkpoint_v2(db, "main", SQLITE_CHECKPOINT_FULL, &log_frames, &checkpointed_frames);
+      printf("\"performed\":true,\"seconds\":%.9f,\"rc\":%d,\"log_frames\":%d,\"checkpointed_frames\":%d}",
+             seconds() - checkpoint_start, rc, log_frames, checkpointed_frames);
+      if (rc != SQLITE_OK || log_frames < 0 || checkpointed_frames != log_frames) {
+        fprintf(stderr, "Final FULL checkpoint failed/incomplete: rc=%d log=%d checkpointed=%d\n", rc, log_frames, checkpointed_frames);
+        return 1;
+      }
+    } else printf("\"performed\":false}");
+    check_deadline();
+    if (snapshot && !save_snapshot(db, snapshot)) return 1;
+    printf("}\n");
+    sqlite3_progress_handler(db, 0, NULL, NULL);
+    require(db, sqlite3_close(db), SQLITE_OK, "close");
+    free(rowids); free(vectors); free(queries);
+    return 0;
   }
   printf("{\"mode\":\"%s\",\"count\":%d,\"dimension\":%d,\"metric\":\"%s\","
          "\"sqlite\":\"%s\",\"build_seconds\":%.9f,\"storage\":\"%s\",\"database\":",
