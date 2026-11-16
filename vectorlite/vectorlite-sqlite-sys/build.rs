@@ -66,8 +66,16 @@ fn regenerate(include: &std::path::Path) {
         )
         .unwrap();
     }
+    // Include the normalized header by absolute path: a bare quoted include would
+    // be resolved next to the wrapper file and then through the toolchain search
+    // path, where a system sqlite3ext.h of another version can win on Linux.
+    let normalized_header = normalized.join("sqlite3ext.h");
     let wrapper = out_dir.join("wrapper.h");
-    std::fs::write(&wrapper, "#include \"sqlite3ext.h\"\n").unwrap();
+    std::fs::write(
+        &wrapper,
+        format!("#include \"{}\"\n", normalized_header.display()),
+    )
+    .unwrap();
     let bindings = bindgen::Builder::default()
         .header(wrapper.to_string_lossy())
         .clang_arg(format!("-I{}", normalized.display()))
