@@ -138,15 +138,13 @@ jobs:
       - name: Rust unit tests, SQLite native ABI checks, and Highway tests
         run: ctest --test-dir build/release --output-on-failure --no-tests=error
 
-      - name: Install libclang for binding regeneration
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
-
+      # The committed bindings are the canonical, host-neutral view of the extension
+      # API table. Its textual regeneration is verified on macOS because that is where
+      # the file is produced and rustfmt-normalized; the per-platform struct layout is
+      # asserted instead by the abi-check C test, which compiles against each host's
+      # real sqlite3 headers and runs in every CTest invocation.
       - name: Check regenerated bindings without changing tracked sources
-        if: runner.os == 'Linux'
-        # Regenerates from the vcpkg headers with the platform-independent va_list
-        # normalization, formats with rustfmt, then diffs the committed file. The
-        # committed file is never modified, so a drift failure leaves the tree clean.
+        if: runner.os == 'macOS'
         run: python scripts/check_generated_bindings.py
 
       - name: Install uv

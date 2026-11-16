@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Regenerate the committed SQLite API bindings and fail if they drift.
+"""Regenerate the canonical SQLite API bindings and fail if they drift.
 
-The committed file is the canonical, platform-independent view of the host
-extension API table, so this check must be reproducible on any runner. Two
-normalizations make that possible:
+Run this on the host that produces the committed artifact (macOS in CI). The
+per-platform struct layout is verified separately by the abi-check C test, which
+compiles against each host's real sqlite3 headers. Two normalizations keep the
+generation stable:
 
 * the generator parses a copy of the sqlite3 headers with `va_list` rewritten to
   `void *` (the three va_list slots are replaced with opaque pointers anyway), so
