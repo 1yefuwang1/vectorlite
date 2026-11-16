@@ -144,9 +144,10 @@ jobs:
 
       - name: Check regenerated bindings without changing tracked sources
         if: runner.os == 'Linux'
-        run: |
-          cargo test --locked -p vectorlite-sqlite-sys --features regenerate,abi-check
-          git diff --exit-code -- vectorlite/vectorlite-sqlite-sys/src/bindings.rs
+        # Regenerates from the vcpkg headers with the platform-independent va_list
+        # normalization, formats with rustfmt, then diffs the committed file. The
+        # committed file is never modified, so a drift failure leaves the tree clean.
+        run: python scripts/check_generated_bindings.py
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0

@@ -42,11 +42,35 @@ fn main() {
 fn regenerate(include: &std::path::Path) {
     use std::{env, path::PathBuf};
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    // Feed bindgen a platform-normalized copy of the headers: the three
+    // `va_list` slots in `sqlite3_api_routines` are replaced below with opaque
+    // function pointers, but bindgen cannot represent `va_list` itself on every
+    // platform (on Linux it is `__builtin_va_list`, which the blocklist drops, so
+    // the fields would silently disappear and the generated struct layout would
+    // be wrong). Rewriting the token to `void *` keeps generation identical on
+    // every target; the canonical opaque form is what actually gets committed.
+    let normalized = out_dir.join("normalized_headers");
+    std::fs::create_dir_all(&normalized).unwrap();
+    // Copy every sqlite3* header: the vcpkg build includes its own config header
+    // next to sqlite3.h, so the normalized directory must be self-contained.
+    for entry in std::fs::read_dir(include).unwrap() {
+        let path = entry.unwrap().path();
+        let name = match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) if name.starts_with("sqlite3") && name.ends_with(".h") => name.to_owned(),
+            _ => continue,
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            normalized.join(name),
+            replace_identifier(&text, "va_list", "void *"),
+        )
+        .unwrap();
+    }
     let wrapper = out_dir.join("wrapper.h");
     std::fs::write(&wrapper, "#include \"sqlite3ext.h\"\n").unwrap();
     let bindings = bindgen::Builder::default()
         .header(wrapper.to_string_lossy())
-        .clang_arg(format!("-I{}", include.display()))
+        .clang_arg(format!("-I{}", normalized.display()))
         .allowlist_type("sqlite3.*")
         .allowlist_var("SQLITE_.*")
         .blocklist_item("SQLITE_OS_.*")
@@ -79,4 +103,33 @@ fn regenerate(include: &std::path::Path) {
         "cargo:warning=Generated target bindings at {}",
         output.display()
     );
+}
+
+/// Replaces whole-identifier occurrences only, so `va_list` inside a longer
+/// identifier or a comment word is untouched where it matters.
+#[cfg(feature = "regenerate")]
+fn replace_identifier(text: &str, needle: &str, replacement: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while let Some(found) = text[index..].find(needle) {
+        let start = index + found;
+        let end = start + needle.len();
+        let before = start
+            .checked_sub(1)
+            .map(|position| bytes[position] as char)
+            .unwrap_or(' ');
+        let after = text[end..].chars().next().unwrap_or(' ');
+        output.push_str(&text[index..start]);
+        if (before.is_ascii_alphanumeric() || before == '_')
+            || (after.is_ascii_alphanumeric() || after == '_')
+        {
+            output.push_str(needle);
+        } else {
+            output.push_str(replacement);
+        }
+        index = end;
+    }
+    output.push_str(&text[index..]);
+    output
 }

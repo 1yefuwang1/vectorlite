@@ -300,7 +300,13 @@ def native_sqlite_library():
     import ctypes
     import ctypes.util
 
-    library = os.environ.get("VECTORLITE_TEST_SQLITE_LIBRARY") or ctypes.util.find_library("sqlite3")
+    # Auto-discovery is POSIX-only: on Windows ctypes.util.find_library can return
+    # an unrelated sqlite3.dll whose ABI does not match this process, which crashed
+    # the probe. Windows therefore requires the explicit override.
+    if sys.platform == "win32":
+        library = os.environ.get("VECTORLITE_TEST_SQLITE_LIBRARY")
+    else:
+        library = os.environ.get("VECTORLITE_TEST_SQLITE_LIBRARY") or ctypes.util.find_library("sqlite3")
     if not library:
         return None
     try:

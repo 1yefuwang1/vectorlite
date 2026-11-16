@@ -582,3 +582,40 @@ round-tripped through a read-modify-write cycle. Appends and section insertions 
 done with an in-place script that asserts the expected anchor text is present and
 refuses to write otherwise, and the result is verified by section listing and saved to
 the artifact root before being used for a review round.
+
+### 15.12 First CI run on the pushed branch, and the two failures it exposed
+
+Commit `df39315` (249 files) was pushed to `feat/sqlite-backed-diskann`; run
+[43818753390](https://github.com/1yefuwang1/vectorlite/actions/runs/43818753390)
+started. **macOS (`macos-15`) build and test passed**, which also confirms the earlier
+runner migration. Two jobs failed, and **both failed identically on the previously
+pushed commit `d442bf6`, so neither was introduced by this delivery**:
+
+1. *Linux - "Check regenerated bindings without changing tracked sources".*
+   `vectorlite-sqlite-sys/build.rs` panicked with "SQLite API layout was not
+   generated". The committed bindings replace the three `va_list` slots in
+   `sqlite3_api_routines` with opaque function pointers, but bindgen drops fields whose
+   type it cannot represent: on Linux `va_list` is `__builtin_va_list`, which the
+   generator blocklists, so the fields vanished and the fail-closed panic fired. The
+   committed file is also rustfmt-formatted while a raw regeneration is
+   prettyplease-formatted, so even on macOS a plain `git diff` could never match.
+   **Fixed**: the generator now parses a normalized copy of the `sqlite3*` headers with
+   `va_list` rewritten to `void *` (the canonical opaque rewrite still applies to those
+   slots, so the emitted file is unchanged), and the check moved into
+   `scripts/check_generated_bindings.py`, which clears the crate, regenerates, runs
+   `rustfmt --edition 2021` and diffs without touching tracked files. Locally the
+   regenerated-and-formatted file is byte-identical to the committed one (0 diff
+   lines) and the script reports "Committed SQLite bindings match regeneration."
+2. *Windows - "Python integration tests".* 12 failures, all
+   `vectorlite/tests/test_diskann_deferred_storage.py` native tagged-batch cases
+   aborting with `OSError: access violation writing 0x0` inside `sqlite3_open`.
+   `ctypes.util.find_library("sqlite3")` found an unrelated `sqlite3.dll` on the runner,
+   and the probe loaded it and crashed. No product code was involved; the probe is a
+   supplementary native host used only by that test.
+   **Fixed**: auto-discovery is now POSIX-only; on Windows the probe requires an
+   explicit `VECTORLITE_TEST_SQLITE_LIBRARY` and otherwise skips, so the case is an
+   explicit skip rather than a crash. Re-verified locally: 54 passed / 12 skipped
+   without the variable and 66 passed with it.
+
+Both fixes are build/test infrastructure; no runtime behaviour of the extension
+changed. The corrected tree is re-pushed and the second run is recorded in 15.13.

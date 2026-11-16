@@ -170,7 +170,8 @@ def test_sdist_explicitly_includes_new_build_and_notice_inputs():
     includes = configuration["tool"]["scikit-build"]["sdist"]["include"]
     assert {
         "cmake/triplets/*.cmake", "scripts/check_macos_artifact.py",
-        "scripts/collect_runtime_licenses.py", "scripts/run_batch_native_test.py",
+        "scripts/check_generated_bindings.py", "scripts/collect_runtime_licenses.py",
+        "scripts/run_batch_native_test.py",
         "scripts/run_batch_tokio_host.py", "third_party/**",
         "vectorlite/src/**/*.rs", "vectorlite/include/*.h", "vectorlite/tests/*.py",
         "vectorlite/tests/*.c", "vectorlite/tests/batch_tokio_host/Cargo.toml",
