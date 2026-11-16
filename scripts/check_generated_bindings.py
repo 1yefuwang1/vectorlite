@@ -35,6 +35,18 @@ def run(command, **kwargs):
     return result
 
 
+def strip_placeholders(text: str, names) -> str:
+    """Drop the canonical opaque va_list slot lines so platforms can be compared."""
+    keep = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if any(stripped.startswith(f"pub(crate) {name}:") or stripped.startswith(f"pub {name}:")
+               for name in names):
+            continue
+        keep.append(line)
+    return "".join(keep)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep", action="store_true", help="keep the temporary generated copy")
@@ -73,7 +85,29 @@ def main() -> int:
         formatted = run(["rustfmt", "--edition", "2021", str(candidate)])
         if formatted.returncode != 0:
             return formatted.returncode
-        diff = run(["diff", "-u", str(candidate), str(COMMITTED)])
+        # bindgen drops struct fields whose type it cannot represent, and which
+        # types are representable differs per platform (Linux spells va_list as
+        # __builtin_va_list). The committed file always carries the canonical opaque
+        # placeholders for those three slots, so compare with those single-line
+        # fields removed from both sides; the per-platform struct layout itself is
+        # asserted by the abi-check C test that runs on every platform.
+        placeholders = ("vmprintf", "xvsnprintf", "str_vappendf")
+        committed_text = COMMITTED.read_text(encoding="utf-8")
+        for name in placeholders:
+            marker = f"    pub(crate) {name}:"
+            if marker not in committed_text:
+                print(f"committed bindings lost the canonical placeholder for {name}", file=sys.stderr)
+                return 1
+        stripped_committed = directory / "bindings-committed.rs"
+        stripped_candidate = directory / "bindings-generated.rs"
+        stripped_committed.write_text(
+            strip_placeholders(committed_text, placeholders), encoding="utf-8"
+        )
+        stripped_candidate.write_text(
+            strip_placeholders(candidate.read_text(encoding="utf-8"), placeholders),
+            encoding="utf-8",
+        )
+        diff = run(["diff", "-u", str(stripped_candidate), str(stripped_committed)])
         if diff.returncode != 0:
             sys.stdout.write(diff.stdout[-12000:])
             print(

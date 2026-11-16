@@ -1,0 +1,18 @@
+# Packaging tests hash exact file bytes (licenses, notices, manifests, Cargo.lock)
+# and compare them with upstream Git objects, so every checkout must reproduce the
+# repository's line endings instead of the platform default.
+* text=auto eol=lf
+
+# Binary fixtures are never converted; keep this explicit for clarity.
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.zip -text
+*.gz -text
+*.whl -text
+*.dylib -text
+*.so -text
+*.dll -text
+*.a -text
+*.lib -text

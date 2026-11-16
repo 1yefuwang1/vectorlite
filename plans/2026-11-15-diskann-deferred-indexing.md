@@ -619,3 +619,30 @@ pushed commit `d442bf6`, so neither was introduced by this delivery**:
 
 Both fixes are build/test infrastructure; no runtime behaviour of the extension
 changed. The corrected tree is re-pushed and the second run is recorded in 15.13.
+
+### 15.13 Second CI run: what it taught, and the platform-stable fixes
+
+Run [43820302782](https://github.com/1yefuwang1/vectorlite/actions/runs/43820302782)
+(commit `6fbbc40`) again passed macOS and failed Linux and Windows, each for a
+different, platform-specific reason that no local macOS run could have exposed:
+
+- *Linux bindings* still hit the fail-closed layout assertion. Even with `va_list`
+  rewritten to `void *`, bindgen on Linux omits the three slots, so the generated
+  text legitimately lacks fields the committed canonical file carries. The check is
+  now platform-tolerant in the right place: the script asserts the committed file
+  still has all three canonical `pub(crate)` placeholders (so the layout slots can
+  never silently disappear), then removes those single-line fields from both sides
+  before diffing. The platform struct layout itself remains asserted on every OS by
+  the `abi-check` C test that compares offsets and sizes against the real headers.
+- *Windows* failed differently from the first run: 8 packaging tests, including six
+  exact-byte hash comparisons. The message was unambiguous -
+  "Bundled DiskANN notice differs from upstream Git object: LICENSE.txt" - because
+  GitHub's Windows runners check out with `core.autocrlf=true`, so every text file
+  arrived with CRLF and no longer matched the recorded upstream blob hashes. The
+  probe fix from the previous round did work: the tagged-batch cases now skip instead
+  of crashing. Fixed by adding `.gitattributes` (`* text=auto eol=lf` plus explicit
+  `-text` for binary fixtures), so every platform checks out the repository's line
+  endings.
+
+Both are repository-infrastructure fixes, again with no extension runtime change.
+The third run's outcome is recorded in 15.14.
