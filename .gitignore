@@ -45,5 +45,7 @@ dist/*
 *egg-info
 
 node_modules
+# Native-package notice payloads are generated from the validated wheel.
+bindings/nodejs/packages/*/src/licenses/
 bindings/nodejs/vectorlite/package-lock.json
 _codeql_detected_source_root

@@ -1,0 +1,709 @@
+===== Unmodified leading source comments: src/byte_slice.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Traits for types that encapsulate a `[u8]`.
+//!
+//! These traits are used to bound the `B` parameter of [`Ref`].
+
+
+===== Unmodified leading source comments: src/byteorder.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2019 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Byte order-aware numeric primitives.
+//!
+//! This module contains equivalents of the native multi-byte integer types with
+//! no alignment requirement and supporting byte order conversions.
+//!
+//! For each native multi-byte integer type - `u16`, `i16`, `u32`, etc - and
+//! floating point type - `f32` and `f64` - an equivalent type is defined by
+//! this module - [`U16`], [`I16`], [`U32`], [`F32`], [`F64`], etc. Unlike their
+//! native counterparts, these types have alignment 1, and take a type parameter
+//! specifying the byte order in which the bytes are stored in memory. Each type
+//! implements this crate's relevant conversion and marker traits.
+//!
+//! These two properties, taken together, make these types useful for defining
+//! data structures whose memory layout matches a wire format such as that of a
+//! network protocol or a file format. Such formats often have multi-byte values
+//! at offsets that do not respect the alignment requirements of the equivalent
+//! native types, and stored in a byte order not necessarily the same as that of
+//! the target platform.
+//!
+//! Type aliases are provided for common byte orders in the [`big_endian`],
+//! [`little_endian`], [`network_endian`], and [`native_endian`] submodules.
+//! Note that network-endian is a synonym for big-endian.
+//!
+//! # Example
+//!
+//! One use of these types is for representing network packet formats, such as
+//! UDP:
+//!
+//! ```rust
+//! use zerocopy::{*, byteorder::network_endian::U16};
+//! # use zerocopy_derive::*;
+//!
+//! #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+//! #[repr(C)]
+//! struct UdpHeader {
+//!     src_port: U16,
+//!     dst_port: U16,
+//!     length: U16,
+//!     checksum: U16,
+//! }
+//!
+//! #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+//! #[repr(C, packed)]
+//! struct UdpPacket {
+//!     header: UdpHeader,
+//!     body: [u8],
+//! }
+//!
+//! impl UdpPacket {
+//!     fn parse(bytes: &[u8]) -> Option<&UdpPacket> {
+//!         UdpPacket::ref_from_bytes(bytes).ok()
+//!     }
+//! }
+//! ```
+
+
+===== Unmodified leading source comments: src/deprecated.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Deprecated items. These are kept separate so that they don't clutter up
+//! other modules.
+
+
+===== Unmodified leading source comments: src/doctests.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2025 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/error.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Types related to error reporting.
+//!
+//! ## Single failure mode errors
+//!
+//! Generally speaking, zerocopy's conversions may fail for one of up to three
+//! reasons:
+//! - [`AlignmentError`]: the conversion source was improperly aligned
+//! - [`SizeError`]: the conversion source was of incorrect size
+//! - [`ValidityError`]: the conversion source contained invalid data
+//!
+//! Methods that only have one failure mode, like
+//! [`FromBytes::read_from_bytes`], return that mode's corresponding error type
+//! directly.
+//!
+//! ## Compound errors
+//!
+//! Conversion methods that have either two or three possible failure modes
+//! return one of these error types:
+//! - [`CastError`]: the error type of reference conversions
+//! - [`TryCastError`]: the error type of fallible reference conversions
+//! - [`TryReadError`]: the error type of fallible read conversions
+//!
+//! ## [`Unaligned`] destination types
+//!
+//! For [`Unaligned`] destination types, alignment errors are impossible. All
+//! compound error types support infallibly discarding the alignment error via
+//! [`From`] so long as `Dst: Unaligned`. For example, see [`<SizeError as
+//! From<ConvertError>>::from`][size-error-from].
+//!
+//! [size-error-from]: struct.SizeError.html#method.from-1
+//!
+//! ## Accessing the conversion source
+//!
+//! All error types provide an `into_src` method that converts the error into
+//! the source value underlying the failed conversion.
+//!
+//! ## Display formatting
+//!
+//! All error types provide a `Display` implementation that produces a
+//! human-readable error message. When `debug_assertions` are enabled, these
+//! error messages are verbose and may include potentially sensitive
+//! information, including:
+//!
+//! - the names of the involved types
+//! - the sizes of the involved types
+//! - the addresses of the involved types
+//! - the contents of the involved types
+//!
+//! When `debug_assertions` are disabled (as is default for `release` builds),
+//! such potentially sensitive information is excluded.
+//!
+//! In the future, we may support manually configuring this behavior. If you are
+//! interested in this feature, [let us know on GitHub][issue-1457] so we know
+//! to prioritize it.
+//!
+//! [issue-1457]: https://github.com/google/zerocopy/issues/1457
+//!
+//! ## Validation order
+//!
+//! Our conversion methods typically check alignment, then size, then bit
+//! validity. However, we do not guarantee that this is always the case, and
+//! this behavior may change between releases.
+//!
+//! ## `Send`, `Sync`, and `'static`
+//!
+//! Our error types are `Send`, `Sync`, and `'static` when their `Src` parameter
+//! is `Send`, `Sync`, or `'static`, respectively. This can cause issues when an
+//! error is sent or synchronized across threads; e.g.:
+//!
+//! ```compile_fail,E0515
+//! use zerocopy::*;
+//!
+//! let result: SizeError<&[u8], u32> = std::thread::spawn(|| {
+//!     let source = &mut [0u8, 1, 2][..];
+//!     // Try (and fail) to read a `u32` from `source`.
+//!     u32::read_from_bytes(source).unwrap_err()
+//! }).join().unwrap();
+//! ```
+//!
+//! To work around this, use [`map_src`][CastError::map_src] to convert the
+//! source parameter to an unproblematic type; e.g.:
+//!
+//! ```
+//! use zerocopy::*;
+//!
+//! let result: SizeError<(), u32> = std::thread::spawn(|| {
+//!     let source = &mut [0u8, 1, 2][..];
+//!     // Try (and fail) to read a `u32` from `source`.
+//!     u32::read_from_bytes(source).unwrap_err()
+//!         // Erase the error source.
+//!         .map_src(drop)
+//! }).join().unwrap();
+//! ```
+//!
+//! Alternatively, use `.to_string()` to eagerly convert the error into a
+//! human-readable message; e.g.:
+//!
+//! ```
+//! use zerocopy::*;
+//!
+//! let result: Result<u32, String> = std::thread::spawn(|| {
+//!     let source = &mut [0u8, 1, 2][..];
+//!     // Try (and fail) to read a `u32` from `source`.
+//!     u32::read_from_bytes(source)
+//!         // Eagerly render the error message.
+//!         .map_err(|err| err.to_string())
+//! }).join().unwrap();
+//! ```
+
+===== Unmodified leading source comments: src/impls.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/layout.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/lib.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2018 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+// After updating the following doc comment, make sure to run the following
+// command to update `README.md` based on its contents:
+//
+//   (cd .. && cargo -q run --manifest-path tools/Cargo.toml -p generate-readme) > README.md
+
+//! ***<span style="font-size: 140%">Fast, safe, <span
+//! style="color:red;">compile error</span>. Pick two.</span>***
+//!
+//! Zerocopy makes zero-cost memory manipulation effortless. We write `unsafe`
+//! so you don't have to.
+//!
+//! *For an overview of what's changed from zerocopy 0.7, check out our [release
+//! notes][release-notes], which include a step-by-step upgrading guide.*
+//!
+//! *Have questions? Need more out of zerocopy? Submit a [customer request
+//! issue][customer-request-issue] or ask the maintainers on
+//! [GitHub][github-q-a] or [Discord][discord]!*
+//!
+//! [customer-request-issue]: https://github.com/google/zerocopy/issues/new/choose
+//! [release-notes]: https://github.com/google/zerocopy/discussions/1680
+//! [github-q-a]: https://github.com/google/zerocopy/discussions/categories/q-a
+//! [discord]: https://discord.gg/MAvWH2R6zk
+//!
+//! # Overview
+//!
+//! ##### Conversion Traits
+//!
+//! Zerocopy provides four derivable traits for zero-cost conversions:
+//! - [`TryFromBytes`] indicates that a type may safely be converted from
+//!   certain byte sequences (conditional on runtime checks)
+//! - [`FromZeros`] indicates that a sequence of zero bytes represents a valid
+//!   instance of a type
+//! - [`FromBytes`] indicates that a type may safely be converted from an
+//!   arbitrary byte sequence
+//! - [`IntoBytes`] indicates that a type may safely be converted *to* a byte
+//!   sequence
+//!
+//! These traits support sized types, slices, and [slice DSTs][slice-dsts].
+//!
+//! [slice-dsts]: KnownLayout#dynamically-sized-types
+//!
+//! ##### Marker Traits
+//!
+//! Zerocopy provides three derivable marker traits that do not provide any
+//! functionality themselves, but are required to call certain methods provided
+//! by the conversion traits:
+//! - [`KnownLayout`] indicates that zerocopy can reason about certain layout
+//!   qualities of a type
+//! - [`Immutable`] indicates that a type is free from interior mutability,
+//!   except by ownership or an exclusive (`&mut`) borrow
+//! - [`Unaligned`] indicates that a type's alignment requirement is 1
+//!
+//! You should generally derive these marker traits whenever possible.
+//!
+//! ##### Conversion Macros
+//!
+//! Zerocopy provides six macros for safe casting between types:
+//!
+//! - ([`try_`][try_transmute])[`transmute`] (conditionally) converts a value of
+//!   one type to a value of another type of the same size
+//! - ([`try_`][try_transmute_mut])[`transmute_mut`] (conditionally) converts a
+//!   mutable reference of one type to a mutable reference of another type of
+//!   the same size
+//! - ([`try_`][try_transmute_ref])[`transmute_ref`] (conditionally) converts a
+//!   mutable or immutable reference of one type to an immutable reference of
+//!   another type of the same size
+//!
+//! These macros perform *compile-time* size and alignment checks, meaning that
+//! unconditional casts have zero cost at runtime. Conditional casts do not need
+//! to validate size or alignment runtime, but do need to validate contents.
+//!
+//! These macros cannot be used in generic contexts. For generic conversions,
+//! use the methods defined by the [conversion traits](#conversion-traits).
+//!
+//! ##### Byteorder-Aware Numerics
+//!
+//! Zerocopy provides byte-order aware integer types that support these
+//! conversions; see the [`byteorder`] module. These types are especially useful
+//! for network parsing.
+//!
+//! # Cargo Features
+//!
+//! - **`alloc`**
+//!   By default, `zerocopy` is `no_std`. When the `alloc` feature is enabled,
+//!   the `alloc` crate is added as a dependency, and some allocation-related
+//!   functionality is added.
+//!
+//! - **`std`**
+//!   By default, `zerocopy` is `no_std`. When the `std` feature is enabled, the
+//!   `std` crate is added as a dependency (ie, `no_std` is disabled), and
+//!   support for some `std` types is added. `std` implies `alloc`.
+//!
+//! - **`derive`**
+//!   Provides derives for the core marker traits via the `zerocopy-derive`
+//!   crate. These derives are re-exported from `zerocopy`, so it is not
+//!   necessary to depend on `zerocopy-derive` directly.
+//!
+//!   However, you may experience better compile times if you instead directly
+//!   depend on both `zerocopy` and `zerocopy-derive` in your `Cargo.toml`,
+//!   since doing so will allow Rust to compile these crates in parallel. To do
+//!   so, do *not* enable the `derive` feature, and list both dependencies in
+//!   your `Cargo.toml` with the same leading non-zero version number; e.g:
+//!
+//!   ```toml
+//!   [dependencies]
+//!   zerocopy = "0.X"
+//!   zerocopy-derive = "0.X"
+//!   ```
+//!
+//!   To avoid the risk of [duplicate import errors][duplicate-import-errors] if
+//!   one of your dependencies enables zerocopy's `derive` feature, import
+//!   derives as `use zerocopy_derive::*` rather than by name (e.g., `use
+//!   zerocopy_derive::FromBytes`).
+//!
+//! - **`simd`**
+//!   When the `simd` feature is enabled, `FromZeros`, `FromBytes`, and
+//!   `IntoBytes` impls are emitted for all stable SIMD types which exist on the
+//!   target platform. Note that the layout of SIMD types is not yet stabilized,
+//!   so these impls may be removed in the future if layout changes make them
+//!   invalid. For more information, see the Unsafe Code Guidelines Reference
+//!   page on the [layout of packed SIMD vectors][simd-layout].
+//!
+//! - **`simd-nightly`**
+//!   Enables the `simd` feature and adds support for SIMD types which are only
+//!   available on nightly. Since these types are unstable, support for any type
+//!   may be removed at any point in the future.
+//!
+//! - **`float-nightly`**
+//!   Adds support for the unstable `f16` and `f128` types. These types are
+//!   not yet fully implemented and may not be supported on all platforms.
+//!
+//! [duplicate-import-errors]: https://github.com/google/zerocopy/issues/1587
+//! [simd-layout]: https://rust-lang.github.io/unsafe-code-guidelines/layout/packed-simd-vectors.html
+//!
+//! # Build Tuning
+//!
+//! ## `--cfg zerocopy_inline_always`
+//!
+//! Upgrades `#[inline]` to `#[inline(always)]` on many of zerocopy's public
+//! functions and methods. This provides a narrowly-scoped alternative that
+//! *may* improve the optimization of hot paths using zerocopy without the broad
+//! compile-time penalties of configuring `codegen-units=1`.
+//!
+//! # Security Ethos
+//!
+//! Zerocopy is expressly designed for use in security-critical contexts. We
+//! strive to ensure that that zerocopy code is sound under Rust's current
+//! memory model, and *any future memory model*. We ensure this by:
+//! - **...not 'guessing' about Rust's semantics.**
+//!   We annotate `unsafe` code with a precise rationale for its soundness that
+//!   cites a relevant section of Rust's official documentation. When Rust's
+//!   documented semantics are unclear, we work with the Rust Operational
+//!   Semantics Team to clarify Rust's documentation.
+//! - **...rigorously testing our implementation.**
+//!   We run tests using [Miri], ensuring that zerocopy is sound across a wide
+//!   array of supported target platforms of varying endianness and pointer
+//!   width, and across both current and experimental memory models of Rust.
+//! - **...formally proving the correctness of our implementation.**
+//!   We apply formal verification tools like [Kani][kani] to prove zerocopy's
+//!   correctness.
+//!
+//! For more information, see our full [soundness policy].
+//!
+//! [Miri]: https://github.com/rust-lang/miri
+//! [Kani]: https://github.com/model-checking/kani
+//! [soundness policy]: https://github.com/google/zerocopy/blob/main/zerocopy/POLICIES.md#soundness
+//!
+//! # Relationship to Project Safe Transmute
+//!
+//! [Project Safe Transmute] is an official initiative of the Rust Project to
+//! develop language-level support for safer transmutation. The Project consults
+//! with crates like zerocopy to identify aspects of safer transmutation that
+//! would benefit from compiler support, and has developed an [experimental,
+//! compiler-supported analysis][mcp-transmutability] which determines whether,
+//! for a given type, any value of that type may be soundly transmuted into
+//! another type. Once this functionality is sufficiently mature, zerocopy
+//! intends to replace its internal transmutability analysis (implemented by our
+//! custom derives) with the compiler-supported one. This change will likely be
+//! an implementation detail that is invisible to zerocopy's users.
+//!
+//! Project Safe Transmute will not replace the need for most of zerocopy's
+//! higher-level abstractions. The experimental compiler analysis is a tool for
+//! checking the soundness of `unsafe` code, not a tool to avoid writing
+//! `unsafe` code altogether. For the foreseeable future, crates like zerocopy
+//! will still be required in order to provide higher-level abstractions on top
+//! of the building block provided by Project Safe Transmute.
+//!
+//! [Project Safe Transmute]: https://rust-lang.github.io/rfcs/2835-project-safe-transmute.html
+//! [mcp-transmutability]: https://github.com/rust-lang/compiler-team/issues/411
+//!
+//! # MSRV
+//!
+//! See our [MSRV policy].
+//!
+//! [MSRV policy]: https://github.com/google/zerocopy/blob/main/zerocopy/POLICIES.md#msrv
+//!
+//! # Changelog
+//!
+//! Zerocopy uses [GitHub Releases].
+//!
+//! [GitHub Releases]: https://github.com/google/zerocopy/releases
+//!
+//! # Thanks
+//!
+//! Zerocopy is maintained by engineers at Google with help from [many wonderful
+//! contributors][contributors]. Thank you to everyone who has lent a hand in
+//! making Rust a little more secure!
+//!
+//! [contributors]: https://github.com/google/zerocopy/graphs/contributors
+
+// Sometimes we want to use lints which were added after our MSRV.
+// `unknown_lints` is `warn` by default and we deny warnings in CI, so without
+// this attribute, any unknown lint would cause a CI failure when testing with
+// our MSRV.
+
+===== Unmodified leading source comments: src/macros.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+/// Safely transmutes a value of one type to a value of another type of the same
+/// size.
+///
+/// This macro behaves like an invocation of this function:
+///
+/// ```ignore
+/// const fn transmute<Src, Dst>(src: Src) -> Dst
+/// where
+///     Src: IntoBytes,
+///     Dst: FromBytes,
+///     size_of::<Src>() == size_of::<Dst>(),
+/// {
+/// # /*
+///     ...
+/// # */
+/// }
+/// ```
+///
+/// However, unlike a function, this macro can only be invoked when the types of
+/// `Src` and `Dst` are completely concrete. The types `Src` and `Dst` are
+/// inferred from the calling context; they cannot be explicitly specified in
+/// the macro invocation.
+///
+/// Note that the `Src` produced by the expression `$e` will *not* be dropped.
+/// Semantically, its bits will be copied into a new value of type `Dst`, the
+/// original `Src` will be forgotten, and the value of type `Dst` will be
+/// returned.
+///
+/// # `#![allow(shrink)]`
+///
+/// If `#![allow(shrink)]` is provided, `transmute!` additionally supports
+/// transmutations that shrink the size of the value; e.g.:
+///
+/// ```
+/// # use zerocopy::transmute;
+/// let u: u32 = transmute!(#![allow(shrink)] 0u64);
+/// assert_eq!(u, 0u32);
+/// ```
+///
+/// # Examples
+///
+/// ```
+/// # use zerocopy::transmute;
+/// let one_dimensional: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+///
+/// let two_dimensional: [[u8; 4]; 2] = transmute!(one_dimensional);
+///
+/// assert_eq!(two_dimensional, [[0, 1, 2, 3], [4, 5, 6, 7]]);
+/// ```
+///
+/// # Use in `const` contexts
+///
+/// This macro can be invoked in `const` contexts.
+///
+
+===== Unmodified leading source comments: src/pointer/inner.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/pointer/invariant.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/pointer/mod.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2023 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Abstractions over raw pointers.
+
+
+===== Unmodified leading source comments: src/pointer/ptr.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2023 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/pointer/transmute.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2025 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/ref.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2024 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+===== Unmodified leading source comments: src/split_at.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2025 The Fuchsia Authors
+//
+// Licensed under the 2-Clause BSD License <LICENSE-BSD or
+// https://opensource.org/license/bsd-2-clause>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/util/macro_util.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2022 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+//! Utilities used by macros and by `zerocopy-derive`.
+//!
+//! These are defined here `zerocopy` rather than in code generated by macros or
+//! by `zerocopy-derive` so that they can be compiled once rather than
+//! recompiled for every invocation (e.g., if they were defined in generated
+//! code, then deriving `IntoBytes` and `FromBytes` on three different types
+//! would result in the code in question being emitted and compiled six
+//! different times).
+
+
+===== Unmodified leading source comments: src/util/macros.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2023 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+/// Unsafely implements trait(s) for a type.
+///
+/// # Safety
+///
+/// The trait impl must be sound.
+///
+/// When implementing `TryFromBytes`:
+/// - If no `is_safe` impl is provided, then it must be valid for `is_safe` to
+///   unconditionally return `true`. In other words, it must be the case that any
+///   initialized sequence of bytes constitutes a valid instance of `$ty`.
+/// - If an `is_safe` impl is provided, then the impl of `is_safe` must only
+///   return `true` if its argument refers to a valid `$ty`.
+
+===== Unmodified leading source comments: src/util/mod.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2023 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+
+===== Unmodified leading source comments: src/wrappers.rs =====
+// SPDX-License-Identifier: BSD-2-Clause OR Apache-2.0 OR MIT
+//
+// Copyright 2023 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
+
+

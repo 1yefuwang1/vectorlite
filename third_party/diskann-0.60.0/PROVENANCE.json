@@ -1,0 +1,26 @@
+{
+  "component": "Microsoft DiskANN",
+  "version": "0.60.0",
+  "crates": [
+    "diskann",
+    "diskann-providers",
+    "diskann-utils",
+    "diskann-vector",
+    "diskann-wide",
+    "diskann-quantization"
+  ],
+  "license": "MIT",
+  "repository": "https://github.com/microsoft/DiskANN",
+  "revision": "97a828a500848018d8be28c3ea6d5a585b07362f",
+  "source_files": {
+    "LICENSE.txt": "https://raw.githubusercontent.com/microsoft/DiskANN/97a828a500848018d8be28c3ea6d5a585b07362f/LICENSE.txt",
+    "NOTICE.txt": "https://raw.githubusercontent.com/microsoft/DiskANN/97a828a500848018d8be28c3ea6d5a585b07362f/NOTICE.txt"
+  },
+  "source_git_blobs": {
+    "LICENSE.txt": "b2f52a2bad4e27e2d9c68a755abb74cb8943f2fa",
+    "NOTICE.txt": "faf70aa99f51f9bdd98c82b8949ba2826d408a23"
+  },
+  "distribution": "Unmodified exact-version official crates.io dependencies; Cargo.lock records registry checksums. No algorithm/provider source vendoring, dependency patch, fork or private-helper copy.",
+  "upstream_core_archive_sha256": "ec463e5bfd1c0e6c850c607b7013ca13710103e92a0dcd4ca29419eaa176941e",
+  "notes": "Only upstream license/notice/provenance text is retained here. Native OneShot uses public full-precision provider/scalar-insert/prune APIs. This component record is not a complete transitive dependency audit; refresh rust-runtime inventory for the final resolved tree. Extension Apache-2.0 license unchanged."
+}

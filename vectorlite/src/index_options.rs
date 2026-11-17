@@ -22,6 +22,119 @@ impl Default for IndexOptions {
     }
 }
 
+/// Backend selection preserves the original HNSW parser and configuration.
+#[derive(Clone, Debug)]
+pub enum BackendOptions {
+    Hnsw(IndexOptions),
+    Diskann(DiskAnnOptions),
+}
+
+impl BackendOptions {
+    pub fn parse(input: &str) -> Result<Self, String> {
+        if input.trim().starts_with("diskann(") {
+            DiskAnnOptions::parse(input).map(Self::Diskann)
+        } else {
+            IndexOptions::parse(input).map(Self::Hnsw)
+        }
+    }
+}
+
+/// DiskANN settings bound working memory independently of the stored row count.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiskAnnOptions {
+    pub degree: usize,
+    pub build_list_size: usize,
+    pub search_list_size: usize,
+    pub alpha: f32,
+    pub cache_bytes: usize,
+    pub max_visits: usize,
+}
+
+impl Default for DiskAnnOptions {
+    fn default() -> Self {
+        Self {
+            degree: 32,
+            build_list_size: 100,
+            search_list_size: 64,
+            alpha: 1.2,
+            cache_bytes: 64 * 1024 * 1024,
+            max_visits: 65_536,
+        }
+    }
+}
+
+impl DiskAnnOptions {
+    pub fn parse(input: &str) -> Result<Self, String> {
+        let inner = input
+            .trim()
+            .strip_prefix("diskann(")
+            .and_then(|s| s.strip_suffix(')'))
+            .ok_or_else(|| {
+                "Invalid DiskANN options; expected diskann(key=value, ...)".to_owned()
+            })?;
+        let mut options = Self::default();
+        let mut seen = std::collections::HashSet::new();
+        if !inner.trim().is_empty() {
+            for pair in inner.split(',') {
+                let (key, value) = pair
+                    .trim()
+                    .split_once('=')
+                    .ok_or_else(|| "DiskANN options require key=value pairs".to_owned())?;
+                let (key, value) = (key.trim(), value.trim());
+                if !seen.insert(key) {
+                    return Err(format!("Duplicate DiskANN option: {key}"));
+                }
+                let parse_size = || {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| format!("Cannot parse DiskANN {key}: {value}"))
+                };
+                match key {
+                    "degree" => options.degree = parse_size()?,
+                    "build_list_size" => options.build_list_size = parse_size()?,
+                    "search_list_size" => options.search_list_size = parse_size()?,
+                    "cache_bytes" => options.cache_bytes = parse_size()?,
+                    "max_visits" => options.max_visits = parse_size()?,
+                    "alpha" => {
+                        options.alpha = value
+                            .parse()
+                            .map_err(|_| format!("Cannot parse DiskANN alpha: {value}"))?;
+                    }
+                    _ => return Err(format!("Invalid DiskANN option: {key}")),
+                }
+            }
+        }
+        options.validate()?;
+        Ok(options)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(2..=10_000).contains(&self.degree) {
+            return Err("DiskANN degree must be between 2 and 10000".into());
+        }
+        if self.build_list_size == 0
+            || self.search_list_size == 0
+            || self.max_visits == 0
+            || self.max_visits > u32::MAX as usize
+            || self.build_list_size > self.max_visits
+            || self.search_list_size > self.max_visits
+        {
+            return Err("DiskANN list sizes must be positive and no greater than max_visits (at most u32::MAX)".into());
+        }
+        if !self.alpha.is_finite() || self.alpha < 1.0 {
+            return Err("DiskANN alpha must be finite and at least 1".into());
+        }
+        if self.cache_bytes < 4096 || self.cache_bytes > isize::MAX as usize {
+            return Err("DiskANN cache_bytes must be between 4096 and isize::MAX".into());
+        }
+        Ok(())
+    }
+
+    pub fn physical_degree(&self) -> usize {
+        (self.degree as f32 * 1.3) as usize
+    }
+}
+
 fn is_word(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }

@@ -1,0 +1,1528 @@
+===== Unmodified leading source comments: src/math/acos.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_acos.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* acos(x)
+ * Method :
+ *      acos(x)  = pi/2 - asin(x)
+ *      acos(-x) = pi/2 + asin(x)
+ * For |x|<=0.5
+ *      acos(x) = pi/2 - (x + x*x^2*R(x^2))     (see asin.c)
+ * For x>0.5
+ *      acos(x) = pi/2 - (pi/2 - 2asin(sqrt((1-x)/2)))
+ *              = 2asin(sqrt((1-x)/2))
+ *              = 2s + 2s*z*R(z)        ...z=(1-x)/2, s=sqrt(z)
+ *              = 2f + (2c + 2s*z*R(z))
+ *     where f=hi part of s, and c = (z-f*f)/(s+f) is the correction term
+ *     for f so that f+c ~ sqrt(z).
+ * For x<-0.5
+ *      acos(x) = pi - 2asin(sqrt((1-|x|)/2))
+ *              = pi - 0.5*(s+s*z*R(z)), where z=(1-|x|)/2,s=sqrt(z)
+ *
+ * Special cases:
+ *      if x is NaN, return x itself;
+ *      if |x|>1, return NaN with invalid signal.
+ *
+ * Function needed: sqrt
+ */
+
+
+===== Unmodified leading source comments: src/math/acosf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_acosf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/asin.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_asin.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* asin(x)
+ * Method :
+ *      Since  asin(x) = x + x^3/6 + x^5*3/40 + x^7*15/336 + ...
+ *      we approximate asin(x) on [0,0.5] by
+ *              asin(x) = x + x*x^2*R(x^2)
+ *      where
+ *              R(x^2) is a rational approximation of (asin(x)-x)/x^3
+ *      and its remez error is bounded by
+ *              |(asin(x)-x)/x^3 - R(x^2)| < 2^(-58.75)
+ *
+ *      For x in [0.5,1]
+ *              asin(x) = pi/2-2*asin(sqrt((1-x)/2))
+ *      Let y = (1-x), z = y/2, s := sqrt(z), and pio2_hi+pio2_lo=pi/2;
+ *      then for x>0.98
+ *              asin(x) = pi/2 - 2*(s+s*z*R(z))
+ *                      = pio2_hi - (2*(s+s*z*R(z)) - pio2_lo)
+ *      For x<=0.98, let pio4_hi = pio2_hi/2, then
+ *              f = hi part of s;
+ *              c = sqrt(z) - f = (z-f*f)/(s+f)         ...f+c=sqrt(z)
+ *      and
+ *              asin(x) = pi/2 - 2*(s+s*z*R(z))
+ *                      = pio4_hi+(pio4-2s)-(2s*z*R(z)-pio2_lo)
+ *                      = pio4_hi+(pio4-2f)-(2s*z*R(z)-(pio2_lo+2c))
+ *
+ * Special cases:
+ *      if x is NaN, return x itself;
+ *      if |x|>1, return NaN with invalid signal.
+ *
+ */
+
+
+===== Unmodified leading source comments: src/math/asinf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_asinf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/atan.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_atan.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* atan(x)
+ * Method
+ *   1. Reduce x to positive by atan(x) = -atan(-x).
+ *   2. According to the integer k=4t+0.25 chopped, t=x, the argument
+ *      is further reduced to one of the following intervals and the
+ *      arctangent of t is evaluated by the corresponding formula:
+ *
+ *      [0,7/16]      atan(x) = t-t^3*(a1+t^2*(a2+...(a10+t^2*a11)...)
+ *      [7/16,11/16]  atan(x) = atan(1/2) + atan( (t-0.5)/(1+t/2) )
+ *      [11/16.19/16] atan(x) = atan( 1 ) + atan( (t-1)/(1+t) )
+ *      [19/16,39/16] atan(x) = atan(3/2) + atan( (t-1.5)/(1+1.5t) )
+ *      [39/16,INF]   atan(x) = atan(INF) + atan( -1/t )
+ *
+ * Constants:
+ * The hexadecimal values are the intended ones for the following
+ * constants. The decimal values may be used, provided that the
+ * compiler will convert from decimal to binary accurately enough
+ * to produce the hexadecimal values shown.
+ */
+
+
+===== Unmodified leading source comments: src/math/atan2.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_atan2.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ *
+ */
+/* atan2(y,x)
+ * Method :
+ *      1. Reduce y to positive by atan2(y,x)=-atan2(-y,x).
+ *      2. Reduce x to positive by (if x and y are unexceptional):
+ *              ARG (x+iy) = arctan(y/x)           ... if x > 0,
+ *              ARG (x+iy) = pi - arctan[y/(-x)]   ... if x < 0,
+ *
+ * Special cases:
+ *
+ *      ATAN2((anything), NaN ) is NaN;
+ *      ATAN2(NAN , (anything) ) is NaN;
+ *      ATAN2(+-0, +(anything but NaN)) is +-0  ;
+ *      ATAN2(+-0, -(anything but NaN)) is +-pi ;
+ *      ATAN2(+-(anything but 0 and NaN), 0) is +-pi/2;
+ *      ATAN2(+-(anything but INF and NaN), +INF) is +-0 ;
+ *      ATAN2(+-(anything but INF and NaN), -INF) is +-pi;
+ *      ATAN2(+-INF,+INF ) is +-pi/4 ;
+ *      ATAN2(+-INF,-INF ) is +-3pi/4;
+ *      ATAN2(+-INF, (anything but,0,NaN, and INF)) is +-pi/2;
+ *
+ * Constants:
+ * The hexadecimal values are the intended ones for the following
+ * constants. The decimal values may be used, provided that the
+ * compiler will convert from decimal to binary accurately enough
+ * to produce the hexadecimal values shown.
+ */
+
+
+===== Unmodified leading source comments: src/math/atan2f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_atan2f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/atanf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_atanf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/cbrt.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: core-math/src/binary64/cbrt/cbrt.c
+ * Copyright (c) 2021-2022 Alexei Sibidanov.
+ * Ported to Rust in 2025 by Trevor Gross.
+ */
+
+
+===== Unmodified leading source comments: src/math/cbrtf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_cbrtf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* cbrtf(x)
+ * Return cube root of x
+ */
+
+
+===== Unmodified leading source comments: src/math/cos.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/s_cos.c */
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+
+===== Unmodified leading source comments: src/math/cosf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_cosf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/erff.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_erff.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/exp.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_exp.c */
+/*
+ * ====================================================
+ * Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* exp(x)
+ * Returns the exponential of x.
+ *
+ * Method
+ *   1. Argument reduction:
+ *      Reduce x to an r so that |r| <= 0.5*ln2 ~ 0.34658.
+ *      Given x, find r and integer k such that
+ *
+ *               x = k*ln2 + r,  |r| <= 0.5*ln2.
+ *
+ *      Here r will be represented as r = hi-lo for better
+ *      accuracy.
+ *
+ *   2. Approximation of exp(r) by a special rational function on
+ *      the interval [0,0.34658]:
+ *      Write
+ *          R(r**2) = r*(exp(r)+1)/(exp(r)-1) = 2 + r*r/6 - r**4/360 + ...
+ *      We use a special Remez algorithm on [0,0.34658] to generate
+ *      a polynomial of degree 5 to approximate R. The maximum error
+ *      of this polynomial approximation is bounded by 2**-59. In
+ *      other words,
+ *          R(z) ~ 2.0 + P1*z + P2*z**2 + P3*z**3 + P4*z**4 + P5*z**5
+ *      (where z=r*r, and the values of P1 to P5 are listed below)
+ *      and
+ *          |                  5          |     -59
+ *          | 2.0+P1*z+...+P5*z   -  R(z) | <= 2
+ *          |                             |
+ *      The computation of exp(r) thus becomes
+ *                              2*r
+ *              exp(r) = 1 + ----------
+ *                            R(r) - r
+ *                                 r*c(r)
+ *                     = 1 + r + ----------- (for better accuracy)
+ *                                2 - c(r)
+ *      where
+ *                              2       4             10
+ *              c(r) = r - (P1*r  + P2*r  + ... + P5*r   ).
+ *
+ *   3. Scale back to obtain exp(x):
+ *      From step 1, we have
+ *         exp(x) = 2^k * exp(r)
+ *
+ * Special cases:
+ *      exp(INF) is INF, exp(NaN) is NaN;
+ *      exp(-INF) is 0, and
+ *      for finite argument, only exp(0)=1 is exact.
+ *
+ * Accuracy:
+ *      according to an error analysis, the error is always less than
+ *      1 ulp (unit in the last place).
+ *
+ * Misc. info.
+ *      For IEEE double
+ *          if x >  709.782712893383973096 then exp(x) overflows
+ *          if x < -745.133219101941108420 then exp(x) underflows
+ */
+
+
+===== Unmodified leading source comments: src/math/exp2.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/s_exp2.c */
+//-
+// Copyright (c) 2005 David Schultz <das@FreeBSD.ORG>
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
+// 1. Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimer.
+// 2. Redistributions in binary form must reproduce the above copyright
+//    notice, this list of conditions and the following disclaimer in the
+//    documentation and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+// ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+// OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+// HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+// OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+// SUCH DAMAGE.
+
+
+===== Unmodified leading source comments: src/math/exp2f.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/s_exp2f.c
+//-
+// Copyright (c) 2005 David Schultz <das@FreeBSD.ORG>
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
+// 1. Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimer.
+// 2. Redistributions in binary form must reproduce the above copyright
+//    notice, this list of conditions and the following disclaimer in the
+//    documentation and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+// ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+// OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+// HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+// OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+// SUCH DAMAGE.
+
+
+===== Unmodified leading source comments: src/math/expf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_expf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/expm1.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_expm1.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/expm1f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_expm1f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/fma.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: musl src/math/fma.c, fmaf.c Ported to generic Rust algorithm in 2025, TG. */
+
+
+===== Unmodified leading source comments: src/math/generic/ceil.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: musl src/math/ceilf.c */
+
+//! Generic `ceil` algorithm.
+//!
+//! Note that this uses the algorithm from musl's `ceilf` rather than `ceil` or `ceill` because
+//! performance seems to be better (based on icount) and it does not seem to experience rounding
+//! errors on i386.
+
+
+===== Unmodified leading source comments: src/math/generic/floor.rs =====
+/* SPDX-License-Identifier: MIT
+ * origin: musl src/math/floor.c */
+
+//! Generic `floor` algorithm.
+//!
+//! Note that this uses the algorithm from musl's `floorf` rather than `floor` or `floorl` because
+//! performance seems to be better (based on icount) and it does not seem to experience rounding
+//! errors on i386.
+
+
+===== Unmodified leading source comments: src/math/generic/fma.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: musl src/math/fma.c. Ported to generic Rust algorithm in 2025, TG. */
+
+
+===== Unmodified leading source comments: src/math/generic/fmax.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2011 `maxNum`. This has been superseded by IEEE 754-2019 `maximumNumber`.
+//!
+//! Per the spec, returns the canonicalized result of:
+//! - `x` if `x > y`
+//! - `y` if `y > x`
+//! - The other number if one is NaN
+//! - Otherwise, either `x` or `y`, canonicalized
+//! - -0.0 and +0.0 may be disregarded (unlike newer operations)
+//!
+//! Excluded from our implementation is sNaN handling.
+//!
+//! More on the differences: [link].
+//!
+//! [link]: https://grouper.ieee.org/groups/msc/ANSI_IEEE-Std-754-2019/background/minNum_maxNum_Removal_Demotion_v3.pdf
+
+
+===== Unmodified leading source comments: src/math/generic/fmaximum.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2019 `maximum`.
+//!
+//! Per the spec, returns the canonicalized result of:
+//! - `x` if `x > y`
+//! - `y` if `y > x`
+//! - +0.0 if x and y are zero with opposite signs
+//! - qNaN if either operation is NaN
+//!
+//! Excluded from our implementation is sNaN handling.
+
+
+===== Unmodified leading source comments: src/math/generic/fmaximum_num.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2019 `maximumNumber`.
+//!
+//! Per the spec, returns:
+//! - `x` if `x > y`
+//! - `y` if `y > x`
+//! - +0.0 if x and y are zero with opposite signs
+//! - Either `x` or `y` if `x == y` and the signs are the same
+//! - Non-NaN if one operand is NaN
+//! - qNaN if both operands are NaNx
+//!
+//! Excluded from our implementation is sNaN handling.
+
+
+===== Unmodified leading source comments: src/math/generic/fmin.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2008 `minNum`. This has been superseded by IEEE 754-2019 `minimumNumber`.
+//!
+//! Per the spec, returns the canonicalized result of:
+//! - `x` if `x < y`
+//! - `y` if `y < x`
+//! - The other number if one is NaN
+//! - Otherwise, either `x` or `y`, canonicalized
+//! - -0.0 and +0.0 may be disregarded (unlike newer operations)
+//!
+//! Excluded from our implementation is sNaN handling.
+//!
+//! More on the differences: [link].
+//!
+//! [link]: https://grouper.ieee.org/groups/msc/ANSI_IEEE-Std-754-2019/background/minNum_maxNum_Removal_Demotion_v3.pdf
+
+
+===== Unmodified leading source comments: src/math/generic/fminimum.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2019 `minimum`.
+//!
+//! Per the spec, returns the canonicalized result of:
+//! - `x` if `x < y`
+//! - `y` if `y < x`
+//! - -0.0 if x and y are zero with opposite signs
+//! - qNaN if either operation is NaN
+//!
+//! Excluded from our implementation is sNaN handling.
+
+
+===== Unmodified leading source comments: src/math/generic/fminimum_num.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+//! IEEE 754-2019 `minimum`.
+//!
+//! Per the spec, returns:
+//! - `x` if `x < y`
+//! - `y` if `y < x`
+//! - -0.0 if x and y are zero with opposite signs
+//! - Either `x` or `y` if `x == y` and the signs are the same
+//! - Non-NaN if one operand is NaN
+//! - qNaN if both operands are NaNx
+//!
+//! Excluded from our implementation is sNaN handling.
+
+
+===== Unmodified leading source comments: src/math/generic/fmod.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+
+===== Unmodified leading source comments: src/math/generic/rint.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: musl src/math/rint.c */
+
+
+===== Unmodified leading source comments: src/math/generic/sqrt.rs =====
+/* SPDX-License-Identifier: MIT */
+/* origin: musl src/math/sqrt.c. Ported to generic Rust algorithm in 2025, TG. */
+
+//! Generic square root algorithm.
+//!
+//! This routine operates around `m_u2`, a U.2 (fixed point with two integral bits) mantissa
+//! within the range [1, 4). A table lookup provides an initial estimate, then goldschmidt
+//! iterations at various widths are used to approach the real values.
+//!
+//! For the iterations, `r` is a U0 number that approaches `1/sqrt(m_u2)`, and `s` is a U2 number
+//! that approaches `sqrt(m_u2)`. Recall that m_u2 ∈ [1, 4).
+//!
+//! With Newton-Raphson iterations, this would be:
+//!
+//! - `w = r * r           w ~ 1 / m`
+//! - `u = 3 - m * w       u ~ 3 - m * w = 3 - m / m = 2`
+//! - `r = r * u / 2       r ~ r`
+//!
+//! (Note that the righthand column does not show anything analytically meaningful (i.e. r ~ r),
+//! since the value of performing one iteration is in reducing the error representable by `~`).
+//!
+//! Instead of Newton-Raphson iterations, Goldschmidt iterations are used to calculate
+//! `s = m * r`:
+//!
+//! - `s = m * r           s ~ m / sqrt(m)`
+//! - `u = 3 - s * r       u ~ 3 - (m / sqrt(m)) * (1 / sqrt(m)) = 3 - m / m = 2`
+//! - `r = r * u / 2       r ~ r`
+//! - `s = s * u / 2       s ~ s`
+//!
+//! The above is precise because it uses the original value `m`. There is also a faster version
+//! that performs fewer steps but does not use `m`:
+//!
+//! - `u = 3 - s * r       u ~ 3 - 1`
+//! - `r = r * u / 2       r ~ r`
+//! - `s = s * u / 2       s ~ s`
+//!
+//! Rounding errors accumulate faster with the second version, so it is only used for subsequent
+//! iterations within the same width integer. The first version is always used for the first
+//! iteration at a new width in order to avoid this accumulation.
+//!
+//! Goldschmidt has the advantage over Newton-Raphson that `sqrt(x)` and `1/sqrt(x)` are
+//! computed at the same time, i.e. there is no need to calculate `1/sqrt(x)` and invert it.
+
+
+===== Unmodified leading source comments: src/math/generic/trunc.rs =====
+/* SPDX-License-Identifier: MIT
+ * origin: musl src/math/trunc.c */
+
+
+===== Unmodified leading source comments: src/math/j0.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_j0.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* j0(x), y0(x)
+ * Bessel function of the first and second kinds of order zero.
+ * Method -- j0(x):
+ *      1. For tiny x, we use j0(x) = 1 - x^2/4 + x^4/64 - ...
+ *      2. Reduce x to |x| since j0(x)=j0(-x),  and
+ *         for x in (0,2)
+ *              j0(x) = 1-z/4+ z^2*R0/S0,  where z = x*x;
+ *         (precision:  |j0-1+z/4-z^2R0/S0 |<2**-63.67 )
+ *         for x in (2,inf)
+ *              j0(x) = sqrt(2/(pi*x))*(p0(x)*cos(x0)-q0(x)*sin(x0))
+ *         where x0 = x-pi/4. It is better to compute sin(x0),cos(x0)
+ *         as follow:
+ *              cos(x0) = cos(x)cos(pi/4)+sin(x)sin(pi/4)
+ *                      = 1/sqrt(2) * (cos(x) + sin(x))
+ *              sin(x0) = sin(x)cos(pi/4)-cos(x)sin(pi/4)
+ *                      = 1/sqrt(2) * (sin(x) - cos(x))
+ *         (To avoid cancellation, use
+ *              sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))
+ *          to compute the worse one.)
+ *
+ *      3 Special cases
+ *              j0(nan)= nan
+ *              j0(0) = 1
+ *              j0(inf) = 0
+ *
+ * Method -- y0(x):
+ *      1. For x<2.
+ *         Since
+ *              y0(x) = 2/pi*(j0(x)*(ln(x/2)+Euler) + x^2/4 - ...)
+ *         therefore y0(x)-2/pi*j0(x)*ln(x) is an even function.
+ *         We use the following function to approximate y0,
+ *              y0(x) = U(z)/V(z) + (2/pi)*(j0(x)*ln(x)), z= x^2
+ *         where
+ *              U(z) = u00 + u01*z + ... + u06*z^6
+ *              V(z) = 1  + v01*z + ... + v04*z^4
+ *         with absolute approximation error bounded by 2**-72.
+ *         Note: For tiny x, U/V = u0 and j0(x)~1, hence
+ *              y0(tiny) = u0 + (2/pi)*ln(tiny), (choose tiny<2**-27)
+ *      2. For x>=2.
+ *              y0(x) = sqrt(2/(pi*x))*(p0(x)*cos(x0)+q0(x)*sin(x0))
+ *         where x0 = x-pi/4. It is better to compute sin(x0),cos(x0)
+ *         by the method mentioned above.
+ *      3. Special cases: y0(0)=-inf, y0(x<0)=NaN, y0(inf)=0.
+ */
+
+
+===== Unmodified leading source comments: src/math/j0f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_j0f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/j1.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_j1.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* j1(x), y1(x)
+ * Bessel function of the first and second kinds of order zero.
+ * Method -- j1(x):
+ *      1. For tiny x, we use j1(x) = x/2 - x^3/16 + x^5/384 - ...
+ *      2. Reduce x to |x| since j1(x)=-j1(-x),  and
+ *         for x in (0,2)
+ *              j1(x) = x/2 + x*z*R0/S0,  where z = x*x;
+ *         (precision:  |j1/x - 1/2 - R0/S0 |<2**-61.51 )
+ *         for x in (2,inf)
+ *              j1(x) = sqrt(2/(pi*x))*(p1(x)*cos(x1)-q1(x)*sin(x1))
+ *              y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))
+ *         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)
+ *         as follow:
+ *              cos(x1) =  cos(x)cos(3pi/4)+sin(x)sin(3pi/4)
+ *                      =  1/sqrt(2) * (sin(x) - cos(x))
+ *              sin(x1) =  sin(x)cos(3pi/4)-cos(x)sin(3pi/4)
+ *                      = -1/sqrt(2) * (sin(x) + cos(x))
+ *         (To avoid cancellation, use
+ *              sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))
+ *          to compute the worse one.)
+ *
+ *      3 Special cases
+ *              j1(nan)= nan
+ *              j1(0) = 0
+ *              j1(inf) = 0
+ *
+ * Method -- y1(x):
+ *      1. screen out x<=0 cases: y1(0)=-inf, y1(x<0)=NaN
+ *      2. For x<2.
+ *         Since
+ *              y1(x) = 2/pi*(j1(x)*(ln(x/2)+Euler)-1/x-x/2+5/64*x^3-...)
+ *         therefore y1(x)-2/pi*j1(x)*ln(x)-1/x is an odd function.
+ *         We use the following function to approximate y1,
+ *              y1(x) = x*U(z)/V(z) + (2/pi)*(j1(x)*ln(x)-1/x), z= x^2
+ *         where for x in [0,2] (abs err less than 2**-65.89)
+ *              U(z) = U0[0] + U0[1]*z + ... + U0[4]*z^4
+ *              V(z) = 1  + v0[0]*z + ... + v0[4]*z^5
+ *         Note: For tiny x, 1/x dominate y1 and hence
+ *              y1(tiny) = -2/pi/tiny, (choose tiny<2**-54)
+ *      3. For x>=2.
+ *              y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))
+ *         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)
+ *         by method mentioned above.
+ */
+
+
+===== Unmodified leading source comments: src/math/j1f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_j1f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/jn.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_jn.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/*
+ * jn(n, x), yn(n, x)
+ * floating point Bessel's function of the 1st and 2nd kind
+ * of order n
+ *
+ * Special cases:
+ *      y0(0)=y1(0)=yn(n,0) = -inf with division by zero signal;
+ *      y0(-ve)=y1(-ve)=yn(n,-ve) are NaN with invalid signal.
+ * Note 2. About jn(n,x), yn(n,x)
+ *      For n=0, j0(x) is called,
+ *      for n=1, j1(x) is called,
+ *      for n<=x, forward recursion is used starting
+ *      from values of j0(x) and j1(x).
+ *      for n>x, a continued fraction approximation to
+ *      j(n,x)/j(n-1,x) is evaluated and then backward
+ *      recursion is used starting from a supposed value
+ *      for j(n,x). The resulting value of j(0,x) is
+ *      compared with the actual value to correct the
+ *      supposed value of j(n,x).
+ *
+ *      yn(n,x) is similar in all respects, except
+ *      that forward recursion is used for all
+ *      values of n>1.
+ */
+
+
+===== Unmodified leading source comments: src/math/jnf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_jnf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/k_cos.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/k_cos.c
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+
+===== Unmodified leading source comments: src/math/k_cosf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/k_cosf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+/* |cos(x) - c(x)| < 2**-34.1 (~[-5.37e-11, 5.295e-11]). */
+
+===== Unmodified leading source comments: src/math/k_sin.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/k_sin.c
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+
+===== Unmodified leading source comments: src/math/k_sinf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/k_sinf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+/* |sin(x)/x - s(x)| < 2**-37.5 (~[-4.89e-12, 4.824e-12]). */
+
+===== Unmodified leading source comments: src/math/k_tan.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/k_tan.c */
+//
+// ====================================================
+// Copyright 2004 Sun Microsystems, Inc.  All Rights Reserved.
+//
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+// kernel tan function on ~[-pi/4, pi/4] (except on -0), pi/4 ~ 0.7854
+// Input x is assumed to be bounded by ~pi/4 in magnitude.
+// Input y is the tail of x.
+// Input odd indicates whether tan (if odd = 0) or -1/tan (if odd = 1) is returned.
+//
+// Algorithm
+//      1. Since tan(-x) = -tan(x), we need only to consider positive x.
+//      2. Callers must return tan(-0) = -0 without calling here since our
+//         odd polynomial is not evaluated in a way that preserves -0.
+//         Callers may do the optimization tan(x) ~ x for tiny x.
+//      3. tan(x) is approximated by a odd polynomial of degree 27 on
+//         [0,0.67434]
+//                               3             27
+//              tan(x) ~ x + T1*x + ... + T13*x
+//         where
+//
+//              |tan(x)         2     4            26   |     -59.2
+//              |----- - (1+T1*x +T2*x +.... +T13*x    )| <= 2
+//              |  x                                    |
+//
+//         Note: tan(x+y) = tan(x) + tan'(x)*y
+//                        ~ tan(x) + (1+x*x)*y
+//         Therefore, for better accuracy in computing tan(x+y), let
+//                   3      2      2       2       2
+//              r = x *(T2+x *(T3+x *(...+x *(T12+x *T13))))
+//         then
+//                                  3    2
+//              tan(x+y) = x + (T1*x + (x *(r+y)+y))
+//
+//      4. For x in [0.67434,pi/4],  let y = pi/4 - x, then
+//              tan(x) = tan(pi/4-y) = (1-tan(y))/(1+tan(y))
+//                     = 1 - 2*(tan(y) - (tan(y)^2)/(1+tan(y)))
+
+===== Unmodified leading source comments: src/math/k_tanf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/k_tan.c */
+/*
+ * ====================================================
+ * Copyright 2004 Sun Microsystems, Inc.  All Rights Reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+/* |tan(x)/x - t(x)| < 2**-25.5 (~[-2e-08, 2e-08]). */
+
+===== Unmodified leading source comments: src/math/lgamma_r.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_lgamma_r.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ *
+ */
+/* lgamma_r(x, signgamp)
+ * Reentrant version of the logarithm of the Gamma function
+ * with user provide pointer for the sign of Gamma(x).
+ *
+ * Method:
+ *   1. Argument Reduction for 0 < x <= 8
+ *      Since gamma(1+s)=s*gamma(s), for x in [0,8], we may
+ *      reduce x to a number in [1.5,2.5] by
+ *              lgamma(1+s) = log(s) + lgamma(s)
+ *      for example,
+ *              lgamma(7.3) = log(6.3) + lgamma(6.3)
+ *                          = log(6.3*5.3) + lgamma(5.3)
+ *                          = log(6.3*5.3*4.3*3.3*2.3) + lgamma(2.3)
+ *   2. Polynomial approximation of lgamma around its
+ *      minimun ymin=1.461632144968362245 to maintain monotonicity.
+ *      On [ymin-0.23, ymin+0.27] (i.e., [1.23164,1.73163]), use
+ *              Let z = x-ymin;
+ *              lgamma(x) = -1.214862905358496078218 + z^2*poly(z)
+ *      where
+ *              poly(z) is a 14 degree polynomial.
+ *   2. Rational approximation in the primary interval [2,3]
+ *      We use the following approximation:
+ *              s = x-2.0;
+ *              lgamma(x) = 0.5*s + s*P(s)/Q(s)
+ *      with accuracy
+ *              |P/Q - (lgamma(x)-0.5s)| < 2**-61.71
+ *      Our algorithms are based on the following observation
+ *
+ *                             zeta(2)-1    2    zeta(3)-1    3
+ * lgamma(2+s) = s*(1-Euler) + --------- * s  -  --------- * s  + ...
+ *                                 2                 3
+ *
+ *      where Euler = 0.5771... is the Euler constant, which is very
+ *      close to 0.5.
+ *
+ *   3. For x>=8, we have
+ *      lgamma(x)~(x-0.5)log(x)-x+0.5*log(2pi)+1/(12x)-1/(360x**3)+....
+ *      (better formula:
+ *         lgamma(x)~(x-0.5)*(log(x)-1)-.5*(log(2pi)-1) + ...)
+ *      Let z = 1/x, then we approximation
+ *              f(z) = lgamma(x) - (x-0.5)(log(x)-1)
+ *      by
+ *                                  3       5             11
+ *              w = w0 + w1*z + w2*z  + w3*z  + ... + w6*z
+ *      where
+ *              |w - f(z)| < 2**-58.74
+ *
+ *   4. For negative x, since (G is gamma function)
+ *              -x*G(-x)*G(x) = PI/sin(PI*x),
+ *      we have
+ *              G(x) = PI/(sin(PI*x)*(-x)*G(-x))
+ *      since G(-x) is positive, sign(G(x)) = sign(sin(PI*x)) for x<0
+ *      Hence, for x<0, signgam = sign(sin(PI*x)) and
+ *              lgamma(x) = log(|Gamma(x)|)
+ *                        = log(PI/(|x*sin(PI*x)|)) - lgamma(-x);
+ *      Note: one should avoid compute PI*(-x) directly in the
+ *            computation of sin(PI*(-x)).
+ *
+ *   5. Special Cases
+ *              lgamma(2+s) ~ s*(1-Euler) for tiny s
+ *              lgamma(1) = lgamma(2) = 0
+ *              lgamma(x) ~ -log(|x|) for tiny x
+ *              lgamma(0) = lgamma(neg.integer) = inf and raise divide-by-zero
+ *              lgamma(inf) = inf
+ *              lgamma(-inf) = inf (bug for bug compatible with C99!?)
+ *
+ */
+
+
+===== Unmodified leading source comments: src/math/lgammaf_r.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_lgammaf_r.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/log.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_log.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* log(x)
+ * Return the logarithm of x
+ *
+ * Method :
+ *   1. Argument Reduction: find k and f such that
+ *                      x = 2^k * (1+f),
+ *         where  sqrt(2)/2 < 1+f < sqrt(2) .
+ *
+ *   2. Approximation of log(1+f).
+ *      Let s = f/(2+f) ; based on log(1+f) = log(1+s) - log(1-s)
+ *               = 2s + 2/3 s**3 + 2/5 s**5 + .....,
+ *               = 2s + s*R
+ *      We use a special Remez algorithm on [0,0.1716] to generate
+ *      a polynomial of degree 14 to approximate R The maximum error
+ *      of this polynomial approximation is bounded by 2**-58.45. In
+ *      other words,
+ *                      2      4      6      8      10      12      14
+ *          R(z) ~ Lg1*s +Lg2*s +Lg3*s +Lg4*s +Lg5*s  +Lg6*s  +Lg7*s
+ *      (the values of Lg1 to Lg7 are listed in the program)
+ *      and
+ *          |      2          14          |     -58.45
+ *          | Lg1*s +...+Lg7*s    -  R(z) | <= 2
+ *          |                             |
+ *      Note that 2s = f - s*f = f - hfsq + s*hfsq, where hfsq = f*f/2.
+ *      In order to guarantee error in log below 1ulp, we compute log
+ *      by
+ *              log(1+f) = f - s*(f - R)        (if f is not too large)
+ *              log(1+f) = f - (hfsq - s*(hfsq+R)).     (better accuracy)
+ *
+ *      3. Finally,  log(x) = k*ln2 + log(1+f).
+ *                          = k*ln2_hi+(f-(hfsq-(s*(hfsq+R)+k*ln2_lo)))
+ *         Here ln2 is split into two floating point number:
+ *                      ln2_hi + ln2_lo,
+ *         where n*ln2_hi is always exact for |n| < 2000.
+ *
+ * Special cases:
+ *      log(x) is NaN with signal if x < 0 (including -INF) ;
+ *      log(+INF) is +INF; log(0) is -INF with signal;
+ *      log(NaN) is that NaN with no signal.
+ *
+ * Accuracy:
+ *      according to an error analysis, the error is always less than
+ *      1 ulp (unit in the last place).
+ *
+ * Constants:
+ * The hexadecimal values are the intended ones for the following
+ * constants. The decimal values may be used, provided that the
+ * compiler will convert from decimal to binary accurately enough
+ * to produce the hexadecimal values shown.
+ */
+
+
+===== Unmodified leading source comments: src/math/log10.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_log10.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/*
+ * Return the base 10 logarithm of x.  See log.c for most comments.
+ *
+ * Reduce x to 2^k (1+f) and calculate r = log(1+f) - f + f*f/2
+ * as in log.c, then combine and scale in extra precision:
+ *    log10(x) = (f - f*f/2 + r)/log(10) + k*log10(2)
+ */
+
+
+===== Unmodified leading source comments: src/math/log10f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_log10f.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/*
+ * See comments in log10.c.
+ */
+
+
+===== Unmodified leading source comments: src/math/log1p.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_log1p.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/* double log1p(double x)
+ * Return the natural logarithm of 1+x.
+ *
+ * Method :
+ *   1. Argument Reduction: find k and f such that
+ *                      1+x = 2^k * (1+f),
+ *         where  sqrt(2)/2 < 1+f < sqrt(2) .
+ *
+ *      Note. If k=0, then f=x is exact. However, if k!=0, then f
+ *      may not be representable exactly. In that case, a correction
+ *      term is need. Let u=1+x rounded. Let c = (1+x)-u, then
+ *      log(1+x) - log(u) ~ c/u. Thus, we proceed to compute log(u),
+ *      and add back the correction term c/u.
+ *      (Note: when x > 2**53, one can simply return log(x))
+ *
+ *   2. Approximation of log(1+f): See log.c
+ *
+ *   3. Finally, log1p(x) = k*ln2 + log(1+f) + c/u. See log.c
+ *
+ * Special cases:
+ *      log1p(x) is NaN with signal if x < -1 (including -INF) ;
+ *      log1p(+INF) is +INF; log1p(-1) is -INF with signal;
+ *      log1p(NaN) is that NaN with no signal.
+ *
+ * Accuracy:
+ *      according to an error analysis, the error is always less than
+ *      1 ulp (unit in the last place).
+ *
+ * Constants:
+ * The hexadecimal values are the intended ones for the following
+ * constants. The decimal values may be used, provided that the
+ * compiler will convert from decimal to binary accurately enough
+ * to produce the hexadecimal values shown.
+ *
+ * Note: Assuming log() return accurate answer, the following
+ *       algorithm can be used to compute log1p(x) to within a few ULP:
+ *
+ *              u = 1+x;
+ *              if(u==1.0) return x ; else
+ *                         return log(u)*(x/(u-1.0));
+ *
+ *       See HP-15C Advanced Functions Handbook, p.193.
+ */
+
+
+===== Unmodified leading source comments: src/math/log1pf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_log1pf.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/log2.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_log2.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/*
+ * Return the base 2 logarithm of x.  See log.c for most comments.
+ *
+ * Reduce x to 2^k (1+f) and calculate r = log(1+f) - f + f*f/2
+ * as in log.c, then combine and scale in extra precision:
+ *    log2(x) = (f - f*f/2 + r)/log(2) + k
+ */
+
+
+===== Unmodified leading source comments: src/math/log2f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_log2f.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+/*
+ * See comments in log2.c.
+ */
+
+
+===== Unmodified leading source comments: src/math/logf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_logf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/pow.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_pow.c */
+/*
+ * ====================================================
+ * Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+// pow(x,y) return x**y
+//
+//                    n
+// Method:  Let x =  2   * (1+f)
+//      1. Compute and return log2(x) in two pieces:
+//              log2(x) = w1 + w2,
+//         where w1 has 53-24 = 29 bit trailing zeros.
+//      2. Perform y*log2(x) = n+y' by simulating multi-precision
+//         arithmetic, where |y'|<=0.5.
+//      3. Return x**y = 2**n*exp(y'*log2)
+//
+// Special cases:
+//      1.  (anything) ** 0  is 1
+//      2.  1 ** (anything)  is 1
+//      3.  (anything except 1) ** NAN is NAN
+//      4.  NAN ** (anything except 0) is NAN
+//      5.  +-(|x| > 1) **  +INF is +INF
+//      6.  +-(|x| > 1) **  -INF is +0
+//      7.  +-(|x| < 1) **  +INF is +0
+//      8.  +-(|x| < 1) **  -INF is +INF
+//      9.  -1          ** +-INF is 1
+//      10. +0 ** (+anything except 0, NAN)               is +0
+//      11. -0 ** (+anything except 0, NAN, odd integer)  is +0
+//      12. +0 ** (-anything except 0, NAN)               is +INF, raise divbyzero
+//      13. -0 ** (-anything except 0, NAN, odd integer)  is +INF, raise divbyzero
+//      14. -0 ** (+odd integer) is -0
+//      15. -0 ** (-odd integer) is -INF, raise divbyzero
+//      16. +INF ** (+anything except 0,NAN) is +INF
+//      17. +INF ** (-anything except 0,NAN) is +0
+//      18. -INF ** (+odd integer) is -INF
+//      19. -INF ** (anything) = -0 ** (-anything), (anything except odd integer)
+//      20. (anything) ** 1 is (anything)
+//      21. (anything) ** -1 is 1/(anything)
+//      22. (-anything) ** (integer) is (-1)**(integer)*(+anything**integer)
+//      23. (-anything except 0 and inf) ** (non-integer) is NAN
+//
+// Accuracy:
+//      pow(x,y) returns x**y nearly rounded. In particular
+//                      pow(integer,integer)
+//      always returns the correct integer provided it is
+//      representable.
+//
+// Constants :
+// The hexadecimal values are the intended ones for the following
+// constants. The decimal values may be used, provided that the
+// compiler will convert from decimal to binary accurately enough
+// to produce the hexadecimal values shown.
+//
+
+===== Unmodified leading source comments: src/math/powf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_powf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/rem_pio2.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/e_rem_pio2.c
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// Optimized by Bruce D. Evans. */
+
+===== Unmodified leading source comments: src/math/rem_pio2f.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/e_rem_pio2f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/sin.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/s_sin.c */
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+
+===== Unmodified leading source comments: src/math/sincos.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_sin.c */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/sincosf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_sinf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/sinf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_sinf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
+===== Unmodified leading source comments: src/math/support/int_traits/narrowing_div.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+
+===== Unmodified leading source comments: src/math/support/modular.rs =====
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+
+//! This module provides accelerated modular multiplication by large powers
+//! of two, which is needed for computing floating point remainders in `fmod`
+//! and similar functions.
+//!
+//! To keep the equations somewhat concise, the following conventions are used:
+//!  - all integer operations are in the mathematical sense, without overflow
+//!  - concatenation means multiplication: `2xq = 2 * x * q`
+//!  - `R = (1 << U::BITS)` is the modulus of wrapping arithmetic in `U`
+
+
+===== Unmodified leading source comments: src/math/tan.rs =====
+// origin: FreeBSD /usr/src/lib/msun/src/s_tan.c */
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+
+===== Unmodified leading source comments: src/math/tanf.rs =====
+/* origin: FreeBSD /usr/src/lib/msun/src/s_tanf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+
