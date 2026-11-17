@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::batch_input::BatchView;
 use crate::core::{Index, SearchFilter, SearchResult};
-use crate::diskann_store::{DiskAnnTable, QueryRows};
+use crate::diskann_store::{DiskAnnTable, LiveIdProbe, QueryRows};
 use crate::ffi::{
     self, sqlite3, sqlite3_context, sqlite3_index_info, sqlite3_module, sqlite3_value,
     sqlite3_vtab, sqlite3_vtab_cursor, Value,
@@ -1082,7 +1082,13 @@ unsafe extern "C" fn x_filter(
     // SAFETY: plan and values come from xBestIndex and this xFilter invocation;
     // both IN iteration and the KnnParam borrow end before this callback exits.
     let in_limit = match &vtab.backend {
-        Backend::Diskann(table) => Some(table.options().cache_bytes / 256),
+        Backend::Diskann(table) => {
+            // The query claims this callback's budget, including the rowid-IN
+            // set materialised just below. Drop the retained writer set first so
+            // it cannot be counted twice.
+            table.release_writer();
+            Some(table.options().cache_bytes / 256)
+        }
         Backend::Hnsw(_) => None,
     };
     // SAFETY: the validated xBestIndex plan describes these protected xFilter
@@ -1231,11 +1237,16 @@ fn execute_insert_batch(table: &DiskAnnTable, values: &mut [Value<'_>]) -> Resul
     Ok(0)
 }
 
+/// Applies one row's vector.
+///
+/// A DiskANN insert carries the proof of the frontend's live-id probe, which is
+/// the single pre-write probe for that row (T2); an update re-checks the row
+/// exactly as before. HNSW uses the same add for both, as it always has.
 fn insert_or_update_vector(
     backend: &Backend,
     value: &mut Value<'_>,
     rowid: u64,
-    is_update: bool,
+    probe: Option<LiveIdProbe>,
 ) -> Result<(), VTabError> {
     if value.kind() != ffi::SQLITE_BLOB as c_int {
         return Err(VTabError::new("vector must be of type Blob"));
@@ -1253,12 +1264,10 @@ fn insert_or_update_vector(
         Backend::Hnsw(entry) => entry.index.add(&vec, rowid).map_err(|error| {
             VTabError::new(format!("Failed to insert row {rowid} due to: {error}"))
         }),
-        Backend::Diskann(table) => if is_update {
-            table.update(rowid, rowid, &vec)
-        } else {
-            table.insert(rowid, &vec)
-        }
-        .map_err(Into::into),
+        Backend::Diskann(table) => match probe {
+            Some(probe) => table.insert(rowid, &vec, probe).map_err(Into::into),
+            None => table.update(rowid, rowid, &vec).map_err(Into::into),
+        },
     }
 }
 
@@ -1306,7 +1315,13 @@ fn update(
                 VTabError::new(error)
             });
         }
-        insert_or_update_vector(backend, &mut values[2], rowid, false)?;
+        // The probe above is this row's single pre-write live-id check.
+        insert_or_update_vector(
+            backend,
+            &mut values[2],
+            rowid,
+            Some(LiveIdProbe::after_frontend_probe()),
+        )?;
         Ok(raw_rowid)
     } else if values.len() == 1 && argv0_type != null {
         let raw_rowid = values[0].int64();
@@ -1333,7 +1348,7 @@ fn update(
         if !backend.contains(rowid)? {
             return Err(VTabError::new(format!("rowid {source_rowid} not found")));
         }
-        insert_or_update_vector(backend, &mut values[2], rowid, true)?;
+        insert_or_update_vector(backend, &mut values[2], rowid, None)?;
         Ok(source_rowid)
     } else {
         Err(VTabError::new("Operation not supported for now"))
@@ -1370,6 +1385,17 @@ unsafe extern "C" fn x_update(
     let result = match &vtab.backend {
         Backend::Hnsw(_) => update(&vtab.backend, values, insert_rowid),
         Backend::Diskann(table) => {
+            // A control row drives maintenance, which claims the same budget the
+            // retained writer set occupies. Suppress retention for the whole
+            // callback - candidate copying, the carrier's own pre-guard arm and
+            // the action - then restore it, so the next row can retain again.
+            let control_action = argc == 6
+                && values[0].kind() == ffi::SQLITE_NULL as c_int
+                && values[(2 + COL_OPERATION) as usize].kind() == ffi::SQLITE_TEXT as c_int
+                && values[(2 + COL_OPERATION) as usize]
+                    .text()
+                    .is_ok_and(crate::diskann_control::is_maintenance_operation);
+            let _suppression = control_action.then(|| table.suppress_writer_retention());
             // Parameter parsing, owned token resolution, fresh SQL cursor reads and
             // bounded candidate copying happen BEFORE the journal carrier dispatch.
             let prepared = (|| -> Result<_, VTabError> {

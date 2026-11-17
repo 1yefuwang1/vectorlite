@@ -74,6 +74,22 @@ fn deletion_count(table: &DiskAnnTable) -> Result<u64> {
     u64::try_from(table.connection().changes())
         .map_err(|_| corrupt("DiskANN negative delete count"))
 }
+fn historical_sql(names: &StorageNames) -> String {
+    format!("DELETE FROM {} WHERE entry_id=?1 AND retired_revision IS NOT NULL AND NOT EXISTS(SELECT 1 FROM {} WHERE entry_id=?1) AND NOT EXISTS(SELECT 1 FROM {} WHERE generation_id IN (?4,?5) AND entry_id=?1) AND NOT EXISTS(SELECT 1 FROM {} WHERE job_id=?6 AND entry_id=?1) AND NOT (?2 IS NOT NULL AND entry_id<=?3 AND created_revision<=?2 AND retired_revision>?2)",names.entries,names.current,names.graph_nodes,names.snapshot_map)
+}
+/// Loop-invariant parameters of slots 2..6 of `historical_sql`: one metadata
+/// snapshot taken before the bounded scan. `None` is SQL NULL, which the reuse
+/// cycle guarantees by clearing every binding before the iteration rather than by
+/// relying on the previous statement's defaults.
+fn historical_bounds(m: &Metadata, active: Option<&Job>) -> [Option<u64>; 5] {
+    [
+        active.map(|j| j.cutoff_revision),
+        active.map(|j| j.cutoff_entry_id),
+        m.published_generation,
+        m.candidate_generation,
+        m.active_job,
+    ]
+}
 /// Bounded PK-in-SELECT-LIMIT deletion works at SQLite floor without optional
 /// SQLITE_ENABLE_UPDATE_DELETE_LIMIT. Protect current, published/staged graph and active map references,
 /// and cutoff input even BEFORE snapshot_map capture completes.
@@ -165,39 +181,31 @@ pub(crate) fn cleanup_step(table: &DiskAnnTable, opts: StepOptions) -> Result<Cl
     s.finish()?;
     let scanned = entries.len() as u64;
     let mut cursor = m.cleanup_entry_id;
+    // One reclamation statement for the whole bounded scan. Slots 2..6 are the
+    // optional metadata bounds, taken from the single snapshot read before this
+    // loop, so the set of bound slots is identical for every iteration of the
+    // cycle. Every iteration still starts with reset + clear_bindings: an absent
+    // bound is then SQL NULL by construction and can never be the previous
+    // iteration's (or previous step call's) primary key.
+    let bounds = historical_bounds(&m, active.as_ref());
+    let mut historical = jobs::LoopStatement::new(historical_sql(table.names()));
     for entry in entries {
         cursor = entry;
-        let mut s=table.connection().prepare(&format!("DELETE FROM {} WHERE entry_id=?1 AND retired_revision IS NOT NULL AND NOT EXISTS(SELECT 1 FROM {} WHERE entry_id=?1) AND NOT EXISTS(SELECT 1 FROM {} WHERE generation_id IN (?4,?5) AND entry_id=?1) AND NOT EXISTS(SELECT 1 FROM {} WHERE job_id=?6 AND entry_id=?1) AND NOT (?2 IS NOT NULL AND entry_id<=?3 AND created_revision<=?2 AND retired_revision>?2)",table.names().entries,table.names().current,table.names().graph_nodes,table.names().snapshot_map))?;
-        s.bind_i64(1, checked_id(entry)?)?;
-        if let Some(j) = &active {
-            s.bind_i64(2, checked_id(j.cutoff_revision)?)?;
-            s.bind_i64(3, checked_id(j.cutoff_entry_id)?)?;
-        } else {
-            /* Fresh prepared parameters default to SQL NULL; statement is never reused. */
-            /* Fresh prepared parameters default to SQL NULL; statement is never reused. */
+        let statement = historical.begin(table.connection())?;
+        statement.bind_i64(1, checked_id(entry)?)?;
+        for (offset, value) in bounds.iter().enumerate() {
+            if let Some(value) = value {
+                statement.bind_i64(offset + 2, checked_id(*value)?)?;
+            }
         }
-        if let Some(g) = m.published_generation {
-            s.bind_i64(4, checked_id(g)?)?;
-        } else {
-            /* Fresh prepared parameters default to SQL NULL; statement is never reused. */
-        }
-        if let Some(g) = m.candidate_generation {
-            s.bind_i64(5, checked_id(g)?)?;
-        } else {
-            /* Fresh prepared parameters default to SQL NULL; statement is never reused. */
-        }
-        if let Some(id) = m.active_job {
-            s.bind_i64(6, checked_id(id)?)?;
-        } else {
-            /* Fresh prepared parameters default to SQL NULL; statement is never reused. */
-        }
-        done(s)?;
+        jobs::drain(statement)?;
         let deleted = deletion_count(table)?;
         if deleted > 1 {
             return Err(corrupt("DiskANN historical deletion count"));
         }
         result.historical_entries += deleted;
     }
+    historical.finish()?;
     // Wrap only after a bounded exhausted scan; future retirements behind the
     // cursor are reclaimed on a later cycle, never mistaken for complete GC.
     if scanned < remaining {
@@ -211,4 +219,83 @@ pub(crate) fn cleanup_step(table: &DiskAnnTable, opts: StepOptions) -> Result<Cl
     jobs::changed(table, "cleanup progress/retained retirement count")?;
     result.scanned_entries = scanned;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn metadata_fixture(
+        published: Option<u64>,
+        candidate: Option<u64>,
+        active: Option<u64>,
+    ) -> Metadata {
+        Metadata {
+            instance_id: [0; 16],
+            revision: 3,
+            next_entry_id: 32,
+            next_job_id: 4,
+            next_generation_id: 4,
+            next_fence: 4,
+            cleanup_entry_id: 0,
+            canonical_count: 20,
+            retired_count: 0,
+            published_generation: published,
+            candidate_generation: candidate,
+            active_job: active,
+        }
+    }
+    fn job_fixture(cutoff_revision: u64, cutoff_entry_id: u64) -> Job {
+        Job {
+            job_id: 1,
+            generation_id: 1,
+            parent_generation: None,
+            cutoff_revision,
+            cutoff_entry_id,
+            snapshot_chain: [0; 32],
+            fence: 1,
+            owner_nonce: None,
+            phase: jobs::BUILDING,
+            expected_count: 0,
+            scan_entry_id: 0,
+            captured_count: 0,
+            import_cursor: 0,
+            validation_cursor: 0,
+            cleanup_cursor: 0,
+            source_hash: None,
+            config_hash: [0; 32],
+            candidate_hash: None,
+            failure_code: None,
+        }
+    }
+
+    #[test]
+    fn historical_reclamation_binds_one_metadata_snapshot_for_the_whole_cycle() {
+        let names = StorageNames::new("main", "v").unwrap();
+        assert_eq!(
+            historical_sql(&names),
+            "DELETE FROM \"main\".\"v_diskann_entries\" WHERE entry_id=?1 AND retired_revision IS NOT NULL AND NOT EXISTS(SELECT 1 FROM \"main\".\"v_diskann_current\" WHERE entry_id=?1) AND NOT EXISTS(SELECT 1 FROM \"main\".\"v_diskann_graph_nodes\" WHERE generation_id IN (?4,?5) AND entry_id=?1) AND NOT EXISTS(SELECT 1 FROM \"main\".\"v_diskann_snapshot_map\" WHERE job_id=?6 AND entry_id=?1) AND NOT (?2 IS NOT NULL AND entry_id<=?3 AND created_revision<=?2 AND retired_revision>?2)"
+        );
+        // Slots 2..6 are the optional bounds, read once before the bounded scan;
+        // slot 1 is the examined entry and is bound on every iteration.
+        let active = job_fixture(7, 9);
+        let populated = metadata_fixture(Some(1), Some(2), Some(3));
+        assert_eq!(
+            historical_bounds(&populated, Some(&active)),
+            [Some(7), Some(9), Some(1), Some(2), Some(3)]
+        );
+        // With no active job and no generation bound, every optional slot stays
+        // SQL NULL for the whole cycle. Each iteration starts from a cleared
+        // statement, so none of them can carry a previous iteration's primary key.
+        let empty = metadata_fixture(None, None, None);
+        assert_eq!(
+            historical_bounds(&empty, None),
+            [None, None, None, None, None]
+        );
+        // A partial snapshot binds only the slots it has; the rest stay NULL.
+        let mixed = metadata_fixture(Some(1), None, None);
+        assert_eq!(
+            historical_bounds(&mixed, None),
+            [None, None, Some(1), None, None]
+        );
+    }
 }

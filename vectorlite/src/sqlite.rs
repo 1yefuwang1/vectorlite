@@ -328,6 +328,29 @@ impl Statement<'_> {
         usize::try_from(bytes).ok().filter(|&bytes| bytes != 0)
     }
 
+    /// Number of transparent recompilations SQLite has performed for this
+    /// statement, which a retained-statement owner samples to know when the
+    /// measured VM footprint must be taken again.
+    ///
+    /// A finalized statement has no VM and reports zero; such a statement is
+    /// never reused, so the owner's "unmeasured" branch already handles it.
+    pub(crate) fn reprepares(&self) -> c_int {
+        let Some(pointer) = self.pointer else {
+            return 0;
+        };
+        // SAFETY: the owned statement is live on its borrowed host connection and
+        // this read-only counter query neither steps the statement nor invalidates
+        // a column view. REPREPARE is a plain counter slot, never the MEMUSED
+        // opcode that SQLite answers from an accounting pass.
+        unsafe {
+            ffi::stmt_status(
+                pointer.as_ptr(),
+                ffi::SQLITE_STMTSTATUS_REPREPARE as c_int,
+                0,
+            )
+        }
+    }
+
     pub(crate) fn step(&mut self) -> Result<Step> {
         if self.state == State::Done {
             return Ok(Step::Done);

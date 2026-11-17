@@ -428,6 +428,27 @@ pub(crate) enum ActionEffect {
     Claim(u64, u64),
     Forget,
 }
+/// Names accepted by [`prepare_action`] that drive maintenance and therefore
+/// claim the connection's DiskANN workspace. `insert_batch` is deliberately
+/// absent: it re-arms the writer set against its own chunk reservation instead.
+///
+/// This list mirrors the match arms in [`prepare_action`]; keep them identical.
+pub(crate) fn is_maintenance_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "index_prepare"
+            | "consolidate"
+            | "index_snapshot_step"
+            | "index_claim_build"
+            | "index_import_step"
+            | "index_validate_step"
+            | "index_publish"
+            | "index_cancel"
+            | "index_restart"
+            | "index_cleanup_step"
+    )
+}
+
 pub(crate) fn prepare_action(
     table: &DiskAnnTable,
     registration: &Arc<Registration>,
@@ -438,6 +459,8 @@ pub(crate) fn prepare_action(
 ) -> Result<PreparedAction> {
     let allowed: &[&str] = match operation {
         "index_prepare" | "consolidate" => &[],
+        // NOTE: the accepted control names are mirrored by
+        // `is_maintenance_operation` below; keep the two lists identical.
         "index_snapshot_step" => &["job_id", "fence", "max_records", "max_bytes"],
         "index_claim_build" => &["job_id", "fence"],
         "index_import_step" | "index_validate_step" => &[

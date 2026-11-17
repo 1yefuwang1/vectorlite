@@ -67,6 +67,58 @@ pub(crate) fn changed(table: &DiskAnnTable, name: &str) -> Result<()> {
     }
     Ok(())
 }
+/// One loop statement of a bounded step, prepared at most once per step call.
+///
+/// A step call is itself the bounded callback, so the statement is created,
+/// reused and finalized inside it: it never crosses a callback boundary, needs
+/// no cache_bytes admission and is always dropped with the step. `begin` is the
+/// only way to start an iteration and it performs reset **and** clear_bindings,
+/// because sqlite3_reset keeps the bindings of the previous iteration while
+/// sqlite3_clear_bindings restores every parameter to SQL NULL. A statement left
+/// in Row or Failed is therefore never reused: reset rejects both states, the
+/// error propagates out of the step and the statement is dropped.
+pub(crate) struct LoopStatement {
+    sql: String,
+    statement: Option<Statement<'static>>,
+}
+impl LoopStatement {
+    pub(crate) fn new(sql: String) -> Self {
+        Self {
+            sql,
+            statement: None,
+        }
+    }
+    /// Prepares on first use, then starts one reuse cycle: reset, clear, bind.
+    pub(crate) fn begin(
+        &mut self,
+        connection: &Connection<'static>,
+    ) -> Result<&mut Statement<'static>> {
+        if self.statement.is_none() {
+            self.statement = Some(connection.prepare(&self.sql)?);
+        }
+        let statement = self
+            .statement
+            .as_mut()
+            .ok_or_else(|| corrupt("DiskANN loop statement was not prepared"))?;
+        statement.reset()?;
+        statement.clear_bindings()?;
+        Ok(statement)
+    }
+    /// Finalizes explicitly so a deferred SQLite error is still reported; a step
+    /// that never used the statement prepares nothing and finalizes nothing.
+    pub(crate) fn finish(self) -> Result<()> {
+        match self.statement {
+            Some(statement) => statement.finish(),
+            None => Ok(()),
+        }
+    }
+}
+/// Drains one reused statement to DONE. A statement that never reaches DONE is an
+/// error, so a later iteration can never start from a half-executed write.
+pub(crate) fn drain(statement: &mut Statement<'_>) -> Result<()> {
+    while statement.step()? == Step::Row {}
+    Ok(())
+}
 pub(crate) fn metadata(table: &DiskAnnTable) -> Result<Metadata> {
     let (m, anchor) = table.read_metadata()?;
     anchor.finish()?;
@@ -229,6 +281,10 @@ pub(crate) fn bound(table: &DiskAnnTable, b: &BuildBinding) -> Result<Job> {
     }
     Ok(j)
 }
+/// Every captured id binds all four slots; no column here is conditionally bound.
+fn snapshot_map_sql(names: &StorageNames) -> String {
+    format!("INSERT INTO {} VALUES(?1,?2,?3,?4)", names.snapshot_map)
+}
 pub(crate) fn snapshot_step(table: &DiskAnnTable, id: u64, opts: StepOptions) -> Result<Job> {
     let j = active(table, id)?;
     if j.phase == SEALED {
@@ -263,6 +319,9 @@ pub(crate) fn snapshot_step(table: &DiskAnnTable, id: u64, opts: StepOptions) ->
     let mut scan = j.scan_entry_id;
     let mut count = j.captured_count;
     let mut chain = j.snapshot_chain;
+    // One statement for the whole bounded chunk; every captured id binds all four
+    // slots of this cycle, so no value can be inherited from the previous row.
+    let mut map = LoopStatement::new(snapshot_map_sql(table.names()));
     for id in ids {
         if count == j.expected_count {
             break;
@@ -272,19 +331,17 @@ pub(crate) fn snapshot_step(table: &DiskAnnTable, id: u64, opts: StepOptions) ->
         if e.created_revision <= j.cutoff_revision
             && e.retired_revision.is_none_or(|r| r > j.cutoff_revision)
         {
-            let mut map = table.connection().prepare(&format!(
-                "INSERT INTO {} VALUES(?1,?2,?3,?4)",
-                table.names().snapshot_map
-            ))?;
+            let statement = map.begin(table.connection())?;
             for (i, v) in [(1, j.job_id), (2, count), (3, id), (4, e.public_rowid)] {
-                map.bind_i64(i, checked_id(v)?)?;
+                statement.bind_i64(i, checked_id(v)?)?;
             }
-            done(map)?;
+            drain(statement)?;
             changed(table, "snapshot map insert")?;
             chain = chain_row(chain, count, id, e.public_rowid, &e.vector);
             count += 1;
         }
     }
+    map.finish()?;
     if count < j.expected_count && (exhausted || scan == j.cutoff_entry_id) {
         return Err(corrupt("DiskANN snapshot early exhaustion"));
     }
@@ -460,6 +517,19 @@ mod tests {
         );
         assert_ne!(b, chain_row(a, 1, 9, 99, &[4, 5, 6, 7]));
         assert_ne!(h, chain_header([7; 32], 12, 26, 2));
+    }
+    #[test]
+    fn snapshot_map_insert_binds_every_slot_and_an_unused_loop_statement_does_nothing() {
+        let names = StorageNames::new("main", "v").unwrap();
+        assert_eq!(
+            snapshot_map_sql(&names),
+            "INSERT INTO \"main\".\"v_diskann_snapshot_map\" VALUES(?1,?2,?3,?4)"
+        );
+        // A step that captures no row prepares nothing, and finalizing the unused
+        // loop statement touches no host statement at all.
+        assert!(LoopStatement::new(snapshot_map_sql(&names))
+            .finish()
+            .is_ok());
     }
     #[test]
     fn step_bounds_are_explicit() {

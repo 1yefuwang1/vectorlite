@@ -74,82 +74,101 @@ impl DiskAnnTable {
         done(stmt)?;
         self.expect_one_change("metadata initialization")
     }
+    /// Per-layout catalog validation (D2a): the eight layouts keep their own
+    /// checks and message order, and only the five pragma shapes are retained.
     pub(super) fn validate_schema(&self) -> Result<()> {
         for layout in LAYOUTS {
             let table = self.names.base(layout.suffix);
-            let mut kind=self.connection.prepare("SELECT type,ncol,wr,strict FROM pragma_table_list(?1) WHERE schema=?2 COLLATE NOCASE")?;
-            kind.bind_text(1, &table)?;
-            kind.bind_text(2, &self.names.schema)?;
-            if kind.step()? != Step::Row
-                || !matches!(kind.column_text(0)?.as_str(), "table" | "shadow")
-                || nonnegative(&kind, 1, "column count")? != layout.columns.len() as u64
-                || nonnegative(&kind, 2, "WITHOUT ROWID")? != u64::from(layout.without_rowid)
-                || nonnegative(&kind, 3, "STRICT")? != 0
-                || kind.step()? != Step::Done
+            let (kind, columns, without_rowid, strict) = self.pragma_table_row(
+                &table,
+                ["column count", "WITHOUT ROWID", "STRICT"],
+                "DiskANN shadow table kind is incompatible",
+            )?;
+            if !matches!(kind.as_str(), "table" | "shadow")
+                || columns != layout.columns.len() as u64
+                || without_rowid != u64::from(layout.without_rowid)
+                || strict != 0
             {
                 return Err(corrupt("DiskANN shadow table kind is incompatible"));
             }
-            kind.finish()?;
-            self.validate_columns(&table, layout.columns)?;
+            self.validate_columns(&table, layout.columns, SLOT_CATALOG_COLUMNS)?;
             self.validate_indexes(&table, layout.unique)?;
-            let mut fks = self
-                .connection
-                .prepare("SELECT 1 FROM pragma_foreign_key_list(?1,?2) LIMIT 1")?;
-            fks.bind_text(1, &table)?;
-            fks.bind_text(2, &self.names.schema)?;
-            if fks.step()? != Step::Done {
-                return Err(corrupt("DiskANN shadows cannot have foreign keys"));
-            }
-            fks.finish()?;
+            self.with_writer(
+                SLOT_CATALOG_FOREIGN_KEYS,
+                || String::from("SELECT 1 FROM pragma_foreign_key_list(?1,?2) LIMIT 1"),
+                |fks| {
+                    fks.bind_text(1, &table)?;
+                    fks.bind_text(2, &self.names.schema)?;
+                    if fks.step()? != Step::Done {
+                        return Err(corrupt("DiskANN shadows cannot have foreign keys"));
+                    }
+                    Ok(())
+                },
+            )?;
         }
         Ok(())
     }
     pub(super) fn validate_indexes(&self, table: &str, expected: &[&[&str]]) -> Result<()> {
-        let mut list = self.connection.prepare(
-            "SELECT length(name),name,\"unique\",origin,partial FROM pragma_index_list(?1,?2)",
-        )?;
-        list.bind_text(1, table)?;
-        list.bind_text(2, &self.names.schema)?;
-        let mut seen = vec![false; expected.len()];
-        while list.step()? == Step::Row {
-            if nonnegative(&list, 0, "index name length")? > (table.len() + 64) as u64
-                || nonnegative(&list, 2, "unique flag")? != 1
-                || !matches!(list.column_text(3)?.as_str(), "u" | "pk")
-                || nonnegative(&list, 4, "partial flag")? != 0
-            {
-                return Err(corrupt("DiskANN unexpected shadow index"));
-            }
-            let name = list.column_text(1)?;
-            let mut cols = self.connection.prepare(
-                "SELECT seqno,length(name),name FROM pragma_index_info(?1,?2) ORDER BY seqno",
-            )?;
-            cols.bind_text(1, &name)?;
-            cols.bind_text(2, &self.names.schema)?;
-            let mut names = Vec::new();
-            while cols.step()? == Step::Row {
-                if names.len() >= 2
-                    || nonnegative(&cols, 0, "index sequence")? != names.len() as u64
-                    || nonnegative(&cols, 1, "index column length")? > 32
-                {
-                    return Err(corrupt("DiskANN incompatible unique index"));
+        self.with_writer(
+            SLOT_CATALOG_INDEX_LIST,
+            || {
+                String::from(
+                    "SELECT length(name),name,\"unique\",origin,partial FROM pragma_index_list(?1,?2)",
+                )
+            },
+            |list| {
+                list.bind_text(1, table)?;
+                list.bind_text(2, &self.names.schema)?;
+                let mut seen = vec![false; expected.len()];
+                while list.step()? == Step::Row {
+                    if nonnegative(list, 0, "index name length")? > (table.len() + 64) as u64
+                        || nonnegative(list, 2, "unique flag")? != 1
+                        || !matches!(list.column_text(3)?.as_str(), "u" | "pk")
+                        || nonnegative(list, 4, "partial flag")? != 0
+                    {
+                        return Err(corrupt("DiskANN unexpected shadow index"));
+                    }
+                    let name = list.column_text(1)?;
+                    let mut names = Vec::new();
+                    self.with_writer(
+                        SLOT_CATALOG_INDEX_INFO,
+                        || {
+                            String::from(
+                                "SELECT seqno,length(name),name FROM pragma_index_info(?1,?2) ORDER BY seqno",
+                            )
+                        },
+                        |cols| {
+                            cols.bind_text(1, &name)?;
+                            cols.bind_text(2, &self.names.schema)?;
+                            while cols.step()? == Step::Row {
+                                if names.len() >= 2
+                                    || nonnegative(cols, 0, "index sequence")? != names.len() as u64
+                                    || nonnegative(cols, 1, "index column length")? > 32
+                                {
+                                    return Err(corrupt("DiskANN incompatible unique index"));
+                                }
+                                names.push(cols.column_text(2)?);
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    let pos = expected
+                        .iter()
+                        .position(|e| {
+                            e.len() == names.len() && e.iter().zip(&names).all(|(a, b)| a == b)
+                        })
+                        .ok_or_else(|| corrupt("DiskANN unique index does not match layout"))?;
+                    if seen[pos] {
+                        return Err(corrupt("DiskANN duplicate layout index"));
+                    }
+                    seen[pos] = true;
                 }
-                names.push(cols.column_text(2)?);
-            }
-            cols.finish()?;
-            let pos = expected
-                .iter()
-                .position(|e| e.len() == names.len() && e.iter().zip(&names).all(|(a, b)| a == b))
-                .ok_or_else(|| corrupt("DiskANN unique index does not match layout"))?;
-            if seen[pos] {
-                return Err(corrupt("DiskANN duplicate layout index"));
-            }
-            seen[pos] = true;
-        }
-        list.finish()?;
-        if seen.iter().any(|v| !*v) {
-            return Err(corrupt("DiskANN required unique index is missing"));
-        }
-        Ok(())
+                if seen.iter().any(|v| !*v) {
+                    return Err(corrupt("DiskANN required unique index is missing"));
+                }
+                Ok(())
+            },
+        )
     }
 }
 
