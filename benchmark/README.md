@@ -174,7 +174,7 @@ The work allowance is explicit (`--max-visits`, default 65536) and applies to an
 entire true chunk; a batch-32 run may need a larger setting than batch-8. Failed
 runs remain in their own result directory instead of being silently retried.
 
-## Deferred-backend measurements (Format 4)
+## Deferred-backend measurements (Format 5)
 
 The DiskANN backend is store-first: ordinary INSERT/UPDATE/DELETE commit canonical
 versions, and a separate fenced SQL maintenance job builds one global graph and
@@ -209,7 +209,7 @@ hashing and oracle helpers stay tested. `upstream_diskann_benchmark.py` now comp
 only upstream RAM and SSD builds: its SQLite comparison backends are rejected
 because a Format 3 synchronous build no longer exists. Deferred end-to-end
 measurements, native recall parity and the concurrent-writer evidence live under
-`build/benchmarks/diskann-deferred-*` in the delivery that introduced Format 4.
+`build/benchmarks/diskann-deferred-*` in the deferred-backend deliveries (Format 4 and its Format 5 publication model).
 
 The [native host](<diskann_batch_benchmark.c>) retains its existing default L2
 `:memory:` CLI. Optional `VECTORLITE_BENCH_METRIC`, `VECTORLITE_BENCH_DATABASE`,
@@ -290,7 +290,7 @@ not automatic reuse or deletion.
   phase's wall time is recorded separately from canonical ingestion. Use
   `--skip-consolidation` to leave the run's post-mutation changes pending and
   ineligible instead of republishing. The runtime descriptor/format version is
-  recorded so older experimental layouts cannot be mistaken for Format 4 results.
+  recorded so older experimental layouts cannot be mistaken for current-format results.
   No default latency or recall SLA is implied by this benchmark.
 
 ### Controlled large-storage fixture
@@ -309,7 +309,7 @@ python benchmark/diskann_benchmark.py \
 ```
 
 **This is not a production ANN build or a general recall benchmark.** It uses a
-public canonical bootstrap, then writes a synthetic Format 4 published generation
+public canonical bootstrap, then writes a synthetic Format 5 published generation
 (bounded graph nodes plus the current mapping). The runtime descriptor is preserved
 and its format recorded; no descriptor is fabricated to bypass extension
 validation. Those writes are benchmark fixture construction, **not a supported

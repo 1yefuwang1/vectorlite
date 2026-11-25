@@ -295,7 +295,7 @@ def main() -> None:
     retired = [name for name in backends if name in RETIRED_SQLITE_BACKENDS]
     if retired:
         raise SystemExit(
-            "SQLite comparison backends are retired for the Format 4 deferred backend: "
+            "SQLite comparison backends are retired for the deferred backend: "
             f"{', '.join(retired)}. Upstream RAM/SSD backends still work; deferred "
             "ingestion/publication measurements live under build/benchmarks/diskann-deferred-*."
         )

@@ -2,8 +2,8 @@
 """Retired Format 3 identity-cache A/B runner.
 
 The former runner and graph snapshot verifier assumed synchronous graph INSERT,
-Format 3 node shadows, and a cache no longer used by Format 4. It must not be
-used to make Format 4 performance claims. Generic, artifact-independent input,
+Format 3 node shadows, and a cache no longer used by the current deferred format. It must not be
+used to make current-format performance claims. Generic, artifact-independent input,
 pager and hashing helpers remain for their own tests.
 """
 from __future__ import annotations
@@ -111,7 +111,7 @@ def finite_number(value, positive=False) -> bool:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
-    print("The Format 3 identity-cache benchmark is retired; use diskann_benchmark.py for Format 4 lifecycle measurements.", file=sys.stderr)
+    print("The Format 3 identity-cache benchmark is retired; use diskann_benchmark.py for current-format lifecycle measurements.", file=sys.stderr)
     return 2
 
 

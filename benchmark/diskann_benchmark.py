@@ -195,8 +195,8 @@ def read_manifest(connection: sqlite3.Connection) -> dict:
 
 def dataset_config(connection: sqlite3.Connection, runtime: dict) -> dict:
     saved = read_manifest(connection)
-    if "storage_descriptor" not in saved or saved.get("storage_format_version") != 4:
-        raise ValueError("benchmark manifest lacks a Format 4 descriptor")
+    if "storage_descriptor" not in saved or saved.get("storage_format_version") != 5:
+        raise ValueError("benchmark manifest lacks a Format 5 descriptor")
     descriptor(connection, saved)
     # An explicit extension can be changed to compare compatible implementations.
     return {**saved, **{key: runtime[key] for key in (
@@ -219,24 +219,31 @@ def linear_vector(coordinate: float, dimension: int) -> bytes:
     return struct.pack("<f", coordinate) + bytes((dimension - 1) * 4)
 
 
-def linear_neighbors(rowid: int, count: int) -> bytes:
-    # Native IDs are dense 0..count-1, with frozen root at count.
+def linear_neighbors(rowid: int, count: int, entries: dict[int, int]) -> bytes:
+    """Format 5 slots: 16-byte (native_local_id, entry_id) pairs.
+
+    Native IDs are dense 0..count-1, with the frozen root at count. The root has
+    no entry id, so its slot carries 0; every live target resolves through the
+    published current map.
+    """
     node = rowid - 1
     neighbors = [count if node == 0 else node - 1]
     if rowid < count:
         neighbors.append(node + 1)
-    return struct.pack("<" + "Q" * len(neighbors), *neighbors)
+    return b"".join(
+        struct.pack("<QQ", target, 0 if target == count else entries[target + 1])
+        for target in neighbors)
 
 
 def descriptor(connection: sqlite3.Connection, config: dict) -> tuple[int, dict]:
     version, raw = connection.execute(
         f"SELECT format_version,descriptor FROM {TABLE}_diskann_meta WHERE singleton=1").fetchone()
     value = json.loads(raw)
-    if (version != 4 or value.get("format_version") != 4
+    if (version != 5 or value.get("format_version") != 5
             or value.get("backend") != "diskann" or value.get("dimension") != config["dim"]
             or value.get("metric") != ("l2_squared" if config["metric"] == "l2" else "cosine")
             or value.get("maintenance") != "deferred-oneshot-v1"):
-        raise ValueError("unsupported or mismatched Format 4 storage descriptor")
+        raise ValueError("unsupported or mismatched Format 5 storage descriptor")
     options = value.get("options", {})
     for key in ("degree", "build_list_size", "search_list_size", "cache_bytes", "max_visits"):
         if options.get(key) != config[key]:
@@ -317,7 +324,7 @@ def maintenance(config: dict, started_at: float | None = None) -> dict:
 
 
 def build_storage_fixture(connection: sqlite3.Connection, config: dict) -> None:
-    """Unsupported synthetic Format 4 generation, exclusively for storage tests."""
+    """Unsupported synthetic Format 5 generation, exclusively for storage tests."""
     count, dimension = config["count"], config["dim"]
     descriptor(connection, config)
     if connection.execute(f"SELECT singleton,value FROM {TABLE}_diskann_txn ORDER BY singleton").fetchall() != [(1, 0), (2, 0)]:
@@ -326,6 +333,10 @@ def build_storage_fixture(connection: sqlite3.Connection, config: dict) -> None:
     digest = bytes(range(32))  # Fixture hashes are opaque, not validation evidence.
     connection.execute(f"INSERT INTO {TABLE}_diskann_generations VALUES(1,1,1,?,?,?,?,?,?)",
                        (revision, digest, digest[::-1], count, count, count))
+    entries = {rowid: entry for entry, rowid in connection.execute(
+        f"SELECT entry_id,public_rowid FROM {TABLE}_diskann_current").fetchall()}
+    if len(entries) != count:
+        raise ValueError("fixture canonical population does not match manifest")
     cursor = connection.execute(f"SELECT entry_id,public_rowid FROM {TABLE}_diskann_current ORDER BY public_rowid")
     seen = 0
     while rows := cursor.fetchmany(config["batch_size"]):
@@ -334,12 +345,11 @@ def build_storage_fixture(connection: sqlite3.Connection, config: dict) -> None:
             seen += 1
             if rowid != seen:
                 raise ValueError("fixture requires contiguous canonical rowids")
-            graph.append((1, rowid - 1, entry, 0, None, linear_neighbors(rowid, count)))
-        write_batch(connection, f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(?,?,?,?,?,?)", graph)
-    if seen != count:
-        raise ValueError("fixture canonical population does not match manifest")
-    connection.execute(f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(1,?,NULL,2,?,?)",
-                       (count, linear_vector(0, dimension), struct.pack("<Q", 0)))
+            graph.append((1, rowid - 1, entry, rowid, 0,
+                          linear_neighbors(rowid, count, entries), None))
+        write_batch(connection, f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(?,?,?,?,?,?,?)", graph)
+    connection.execute(f"INSERT INTO {TABLE}_diskann_graph_nodes VALUES(1,?,NULL,NULL,2,?,?)",
+                       (count, struct.pack("<QQ", 0, entries[1]), linear_vector(0, dimension)))
     connection.execute(f"UPDATE {TABLE}_diskann_meta SET next_generation_id=2,next_job_id=2,published_generation=1")
 
 
