@@ -3,7 +3,7 @@
 Plan version: v2
 Date: 2026-11-13 (Asia/Shanghai)
 Status: COMPLETE UNDER EXPLICIT WAIVER W1. All three original reviewers APPROVED the complete integrated delivery with no blockers. The original1.10x primary target was not achieved (actual1.031279x); only that numerical gate was user-waived. All remaining technical/review gates pass. Verification and review were completed before the user’s separate commit-and-push request.
-Canonical plan: [DiskANN insertion performance](</Volumes/external/vectorlite/plans/2026-11-13-diskann-insertion-performance.md>)
+Canonical plan: [DiskANN insertion performance](</Volumes/external/vectorlite/plan/2026-11-13-diskann-insertion-performance/plan.md>)
 
 ## 1. Request and confirmed decisions
 

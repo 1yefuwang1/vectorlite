@@ -2,7 +2,7 @@
 
 Plan version: v1
 Date: 2026-11-15 (Asia/Shanghai)
-Canonical path: /Volumes/external/vectorlite/plans/2026-11-15-diskann-deferred-indexing.md
+Canonical path: /Volumes/external/vectorlite/plan/2026-11-15-diskann-deferred-indexing/plan.md
 Status: Plan gate APPROVED (3/3); user implementation gate APPROVED on 2026-11-15 at 16:15 +08. Implementation in progress; T1 qualification first.
 
 ## 1. Original request and decision record
