@@ -126,6 +126,16 @@ impl<'db> Connection<'db> {
         unsafe { ffi::changes(self.db.as_ptr()) }
     }
 
+    /// Monotonic connection-wide change counter read for the D3 mutation
+    /// detector. This is a pure in-memory field read during which no host
+    /// callback can fire.
+    pub(crate) fn total_changes(&self) -> i64 {
+        // SAFETY: the constructor's contract keeps the connection live and
+        // restricts calls to its serialized callback access; the DiskANN
+        // virtual table requires the SQLite 3.38 prefix that owns this routine.
+        unsafe { ffi::total_changes64(self.db.as_ptr()) }
+    }
+
     fn error(&self, status: c_int, operation: &str) -> IndexError {
         // SAFETY: both accessors use the live borrowed connection. Copy the
         // connection-owned error string before any further SQLite operation.

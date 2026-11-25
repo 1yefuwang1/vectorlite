@@ -125,6 +125,7 @@ def test_actual_native_full_pipeline_and_ready_replay(population, metric):
         assert all(re.fullmatch(r"[0-9a-f]{64}", candidate[k]) for k in ["input_hash", "config_hash", "candidate_hash"])
         published(db, job, candidate)
         s = status(db)
+        assert s["format"] == 5
         assert (s["canonical_count"], s["eligible_count"], s["pending_count"], s["published_count"]) == (population, population, 0, population)
         rows = db.execute("SELECT rowid,embedding FROM v WHERE knn_search(embedding,knn_param(?,20))", (blob((0, 1)),)).fetchall()
         assert {r[0] for r in rows} == set(range(population))
@@ -227,6 +228,39 @@ def test_native_build_rejects_transaction_cursor_and_outer_from(db, kind):
         if db.in_transaction:
             db.execute("ROLLBACK")
     assert build(db, job)["population"] == 6
+
+
+SHADOW_SUFFIXES = (
+    "meta",
+    "entries",
+    "current",
+    "generations",
+    "graph_nodes",
+    "generation_retired",
+    "jobs",
+    "snapshot_map",
+    "txn",
+)
+
+
+def test_status_reports_format5_and_registers_nine_shadow_names(db):
+    """Format 5: the status JSON reports format 5 and all nine shadows exist.
+
+    The status document is the public format signal (Format-5 readers must never
+    depend on a guessed format), and the ninth shadow layout
+    (v_diskann_generation_retired) is registered with the other eight so create,
+    rename, drop and status enumerate the same fixed set.
+    """
+    assert status(db)["format"] == 5
+    names = {row[0] for row in db.execute("SELECT name FROM main.sqlite_schema WHERE type='table'")}
+    expected = {"v"} | {"v_diskann_" + suffix for suffix in SHADOW_SUFFIXES}
+    assert expected <= names, expected - names
+    job = prepared(db, 1)
+    candidate = build(db, job)
+    published(db, job, candidate)
+    assert status(db)["format"] == 5
+    names = {row[0] for row in db.execute("SELECT name FROM main.sqlite_schema WHERE type='table'")}
+    assert expected <= names, expected - names
 
 
 def test_status_readonly_bounded_and_no_recovery(tmp_path):

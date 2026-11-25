@@ -98,6 +98,13 @@ pub(crate) trait GraphStore {
     fn set_neighbors(&mut self, id: u64, neighbors: &[u64]) -> StoreResult<()>;
     fn mark_delete(&mut self, rowid: u64) -> StoreResult<()>;
     fn start_points(&mut self) -> StoreResult<Vec<u64>>;
+    /// Charge-free instrumentation boundary: `Output::post_process` has begun
+    /// resolving supplied candidates. The query adapter uses it to count only
+    /// post-processing `rowid()` calls as decision reads; it never changes
+    /// visits, charges, or results, and the default is a no-op.
+    fn begin_post_process(&mut self) {}
+    /// Charge-free instrumentation boundary: `Output::post_process` has ended.
+    fn end_post_process(&mut self) {}
 }
 
 #[derive(Clone, Debug)]
@@ -1481,18 +1488,34 @@ impl glue::SearchPostProcess<Accessor<'_>, &[f32]> for Output {
         B: diskann::graph::SearchOutputBuffer<u64> + Send + ?Sized,
     {
         ready((|| {
+            // Mark the phase so Debug instrumentation can attribute these
+            // `rowid()` resolutions to post-processing. The boundary calls are
+            // charge-free and default to no-ops on stores without counters.
+            with_store(&accessor.context, |store| {
+                store.begin_post_process();
+                Ok(())
+            })
+            .map_err(ann)?;
             let before = output.current_len();
-            for neighbor in candidates {
-                if output.size_hint() == Some(0) {
-                    break;
-                }
-                if let glue::Decision::Accept(_) = accessor.decision(*neighbor.id())? {
-                    if output.push(neighbor).is_full() {
+            let outcome = (|| -> ANNResult<usize> {
+                for neighbor in candidates {
+                    if output.size_hint() == Some(0) {
                         break;
                     }
+                    if let glue::Decision::Accept(_) = accessor.decision(*neighbor.id())? {
+                        if output.push(neighbor).is_full() {
+                            break;
+                        }
+                    }
                 }
-            }
-            Ok(output.current_len() - before)
+                Ok(output.current_len() - before)
+            })();
+            with_store(&accessor.context, |store| {
+                store.end_post_process();
+                Ok(())
+            })
+            .map_err(ann)?;
+            outcome
         })())
     }
 }

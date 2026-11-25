@@ -696,7 +696,7 @@ pub struct ChunkNode {
     pub entry: Option<SnapshotNode>,
     pub offset_start: u64,
     pub offset_end: u64,
-    pub neighbors: Vec<u32>,
+    pub neighbors: Vec<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1165,13 +1165,26 @@ impl CandidateSessions {
                 .ok_or(WorkerError::InvalidTopology {
                     message: "native adjacency node is missing".to_owned(),
                 })?;
-            let mut owned: Vec<u32> = Vec::new();
+            let mut owned: Vec<(u64, u64)> = Vec::new();
             owned
                 .try_reserve_exact(neighbors.len())
                 .map_err(|_| WorkerError::Allocation {
                     what: "candidate chunk adjacency",
                 })?;
-            owned.extend_from_slice(neighbors);
+            for &id in neighbors {
+                let entry = if Some(id) == topology.root() {
+                    0
+                } else {
+                    candidate
+                        .meta
+                        .node(id)
+                        .ok_or(WorkerError::InvalidTopology {
+                            message: "native adjacency target metadata is missing".to_owned(),
+                        })?
+                        .entry
+                };
+                owned.push((u64::from(id), entry));
+            }
             nodes.push(ChunkNode {
                 ordinal,
                 entry: candidate.meta.node(ordinal),

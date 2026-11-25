@@ -1,4 +1,4 @@
-"""Format 4 deferred DiskANN SQL/storage regressions against the selected extension.
+"""Format 5 deferred DiskANN SQL/storage regressions against the selected extension.
 
 Small deterministic graphs test semantics, not beyond-RAM performance or RSS.
 Shadow-table writes below are deliberate fault injection, not supported user API.
@@ -30,7 +30,7 @@ def extension_path():
 
 
 SUFFIXES = tuple("_diskann_" + suffix for suffix in (
-    "meta", "entries", "current", "generations", "graph_nodes", "jobs", "snapshot_map", "txn",
+    "meta", "entries", "current", "generations", "graph_nodes", "generation_retired", "jobs", "snapshot_map", "txn",
 ))
 BUILD_BUDGET = 128 * 1024 * 1024
 
@@ -179,7 +179,7 @@ def _maintenance(connection, name="v", schema="main", records=256):
 
 
 def _snapshot(connection, name="v", schema="main"):
-    # Capture all eight Format 4 shadows, including compound generation/job keys.
+    # Capture all nine Format 5 shadows, including compound generation/job keys.
     return tuple(
         tuple(connection.execute(
             f"SELECT * FROM {_table(name + suffix, schema)} ORDER BY 1,2"
@@ -198,6 +198,29 @@ def _live_id(connection, rowid):
     return connection.execute(
         "SELECT entry_id FROM v_diskann_current WHERE public_rowid=?", (rowid,)
     ).fetchone()[0]
+
+
+def _slot_payload(connection, generation_id, ids):
+    """Format-5 16-byte (native_local_id, entry_id) neighbour slots.
+
+    entry_id is zero only for the frozen root (native id total_count); every
+    other slot carries that node's own entry identity.
+    """
+    rows = dict(connection.execute(
+        "SELECT native_local_id,entry_id FROM v_diskann_graph_nodes "
+        "WHERE generation_id=? AND state=0",
+        (generation_id,),
+    ).fetchall())
+    root = connection.execute(
+        "SELECT root_local_id FROM v_diskann_generations WHERE generation_id=?",
+        (generation_id,),
+    ).fetchone()[0]
+    payload = bytearray()
+    for native_id in ids:
+        payload += struct.pack(
+            "<QQ", native_id, 0 if native_id == root else rows[native_id]
+        )
+    return bytes(payload)
 
 
 def _observe_allocations(connection):
@@ -883,34 +906,46 @@ def test_diskann_has_no_external_file_command(conn, tmp_path, operation):
 
 @pytest.mark.parametrize("kind", ["short-vector", "nan-vector", "short-neighbors", "oversized-neighbors", "missing-reference", "missing-frozen"])
 def test_diskann_corrupt_shadow_nodes_raise_errors_not_false_absence(extension_path, tmp_path, kind):
+    """Format 5 payload damage must fail closed, never EOF/false absence.
+
+    Payload authority is split (D1/D10): the graph_nodes row stays authoritative
+    for public_rowid/state/adjacency (frozen-root adjacency cases), while live
+    vectors are canonical in v_diskann_entries, so the vector cases inject the
+    scored canonical row (query-visible again under the lean v11 layout). A
+    missing root row and a dangling adjacency reference stay corruption.
+    """
     path = tmp_path / f"corrupt-{kind}.db"
     connection = _open(extension_path, path)
     _create(connection)
     _seed(connection)
-    live = _live_id(connection, 1)
+    live = connection.execute(
+        "SELECT native_local_id FROM v_diskann_graph_nodes WHERE entry_id=? AND state=0",
+        (_live_id(connection, 1),),
+    ).fetchone()[0]
+    entry = _live_id(connection, 1)
     connection.close()
     raw = sqlite3.connect(path, isolation_level=None)
     try:
         raw.execute("PRAGMA ignore_check_constraints=ON")
         if kind in {"short-vector", "nan-vector"}:
+            # Lean v11: the scored live vector is the canonical entries payload.
             raw.execute("UPDATE v_diskann_entries SET vector=? WHERE entry_id=?",
-                        (b"\0" if kind == "short-vector" else _blob([math.nan, 0]), live))
+                        (b"\0" if kind == "short-vector" else _blob([math.nan, 0]), entry))
         elif kind == "missing-frozen":
             raw.execute("DELETE FROM v_diskann_graph_nodes WHERE state=2")
         else:
-            payload = {"short-neighbors": b"\0",
-                       "oversized-neighbors": struct.pack("<512Q", *([0] * 512)),
-                       "missing-reference": struct.pack("<Q", 999999)}[kind]
+            payload = {
+                "short-neighbors": b"\0",
+                "oversized-neighbors": struct.pack("<512Q", *([0] * 512)),
+                "missing-reference": struct.pack("<QQ", 999999, entry),
+            }[kind]
             raw.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE state=2", (payload,))
     finally:
         raw.close()
     reopened = _open(extension_path, path)
     try:
         with pytest.raises(sqlite3.DatabaseError) as error:
-            if kind in {"short-vector", "nan-vector"}:
-                _get(reopened, 1)
-            else:
-                _knn(reopened, k=1)
+            _knn(reopened, k=1)
         assert error.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
     finally:
         reopened.close()
@@ -938,15 +973,21 @@ def test_diskann_stored_vector_validation_keeps_error_codes_and_atomicity(
         if access == "snapshot":
             _control(connection, "index_prepare")
         live = _live_id(connection, 1)
+        # Lean v11 payload authority (D10 row 2): live vectors are canonical in
+        # v_diskann_entries on every access class — the graph route scores the
+        # canonical row, and point reads, capture and mutation validation read the
+        # same payload. Corrupt the table every access class actually reads.
+        target = "v_diskann_entries"
+        key = ("entry_id", live)
         original = connection.execute(
-            "SELECT vector FROM v_diskann_entries WHERE entry_id=?", (live,),
+            f"SELECT vector FROM {target} WHERE {key[0]}=?", (key[1],),
         ).fetchone()[0]
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
-            "UPDATE v_diskann_entries SET vector=? WHERE entry_id=?", (payload, live),
+            f"UPDATE {target} SET vector=? WHERE {key[0]}=?", (payload, key[1]),
         )
         assert connection.execute(
-            "SELECT vector FROM v_diskann_entries WHERE entry_id=?", (live,),
+            f"SELECT vector FROM {target} WHERE {key[0]}=?", (key[1],),
         ).fetchone()[0] == payload, "the corruption injection must actually persist"
         before = _snapshot(connection)
         with pytest.raises(sqlite3.DatabaseError) as error:
@@ -964,14 +1005,15 @@ def test_diskann_stored_vector_validation_keeps_error_codes_and_atomicity(
                 connection.execute("UPDATE v SET embedding=? WHERE rowid=1", (_blob([2, 1]),))
             else:
                 _control(connection, "index_snapshot_step", _jf(_status(connection)["current_job"]))
-        # Format 4 validates capture input before writing the snapshot map;
-        # the removed Format 3 staging CASE/NOT NULL path no longer runs.
+        # Lean Format 5 keeps the same validation order: the reached canonical
+        # entries payload read (the only live-vector authority, D10 row 2) fails as
+        # corruption before any write is committed.
         expected_primary = expected_extended = sqlite3.SQLITE_CORRUPT
         assert error.value.sqlite_errorcode & 0xff == expected_primary
         assert error.value.sqlite_errorcode == expected_extended
         assert _snapshot(connection) == before
         connection.execute(
-            "UPDATE v_diskann_entries SET vector=? WHERE entry_id=?", (original, live),
+            f"UPDATE {target} SET vector=? WHERE {key[0]}=?", (original, key[1]),
         )
         _insert(connection, 99, [2.0, 1.0])
         assert _knn(connection, k=1)[0][0] == 1
@@ -1233,8 +1275,11 @@ def test_diskann_batch_read_detects_missing_dangling_neighbor_fail_closed(extens
         for rowid in range(1, 25):
             _insert(connection, rowid, [float(rowid), 0.5])
         _maintenance(connection)
+        generation = connection.execute(
+            "SELECT published_generation FROM v_diskann_meta"
+        ).fetchone()[0]
         connection.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE state=2",
-                           (struct.pack("<3Q", 0, 4, 23),))
+                           (_slot_payload(connection, generation, (0, 4, 23)),))
         connection.execute("DELETE FROM v_diskann_graph_nodes WHERE native_local_id=4")
         with pytest.raises(sqlite3.DatabaseError) as error:
             _knn(connection, k=3, query=[5.0, 0.5])
@@ -1306,7 +1351,7 @@ def test_diskann_large_k_effective_beam_preserves_scratch_headroom(extension_pat
             _insert(connection, i, [i / 2400.0, (i % 31) / 31.0])
         connection.execute("COMMIT")
         _maintenance(connection)
-        # Format 4 additionally charges current-version and entry/graph reads.
+        # Format 5 additionally charges current-version and entry/graph reads.
         # Double the old 4.2 MB bound for this larger work allowance.
         # Both omitted override and explicit override below `k` expand to
         # effective beam `l = 2000` in core search and must not fail `TOOBIG`
@@ -1697,6 +1742,46 @@ os._exit(73)
         reopened.close()
 
 
+def test_diskann_format5_round_trip_reopen_query_and_literal(extension_path, tmp_path):
+    """T1 defect class: a Format-5 database reopens and queries successfully.
+
+    The stored meta literal is exactly 5 and the status JSON reports format 5.
+    A close/reopen of the same file must answer the same KNN query, prove a clean
+    integrity check, and reject a literal that no longer matches the compiled
+    Format-5 layouts instead of silently misreading it. A literal-mismatch
+    regression therefore fails this test rather than passing through.
+    """
+    path = tmp_path / "format5-round-trip.db"
+    connection = _open(extension_path, path)
+    try:
+        _create(connection)
+        _seed(connection)
+        _insert(connection, 42, [4, 2])
+        _maintenance(connection)
+    finally:
+        connection.close()
+    reopened = _open(extension_path, path, readonly=True)
+    try:
+        assert reopened.execute("SELECT format_version FROM v_diskann_meta").fetchone() == (5,)
+        assert _status(reopened)["format"] == 5
+        assert _knn(reopened, query=[4.0, 2.0], k=1) == [(42, 0.0)]
+        assert reopened.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        reopened.close()
+    raw = sqlite3.connect(path, isolation_level=None)
+    try:
+        raw.execute("PRAGMA ignore_check_constraints=ON")
+        raw.execute("UPDATE v_diskann_meta SET format_version=4")
+    finally:
+        raw.close()
+    mismatched = _open(extension_path, path)
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            _get(mismatched, 42)
+    finally:
+        mismatched.close()
+
+
 @pytest.mark.parametrize("cache_bytes", [4096, 24576])
 def test_diskann_canonical_workspace_rejects_before_shadow_ddl(extension_path, cache_bytes):
     connection = _open(extension_path)
@@ -1713,9 +1798,10 @@ def test_diskann_canonical_workspace_rejects_before_shadow_ddl(extension_path, c
         assert error.value.sqlite_errorcode == sqlite3.SQLITE_TOOBIG
         assert attempted == []
         assert not ({"v"} | {"v" + s for s in SUFFIXES}) & _schema_names(connection)
-        # This budget formerly rejected INSERT graph scratch. Canonical ingestion
-        # now succeeds without allocating a frozen/user graph node or native RAM.
-        _create(connection, options="diskann(degree=4,build_list_size=8,cache_bytes=32768,max_visits=128)")
+        # D6 pins the canonical floor at 26,824 bytes for table "v" (dim=2), so
+        # cache_bytes=24576 still rejects and cache_bytes=27000 still accepts;
+        # the ninth layout is excluded from the canonical floor name fold.
+        _create(connection, options="diskann(degree=4,build_list_size=8,cache_bytes=27000,max_visits=128)")
         _insert(connection, 1, [1, 0])
         assert _get(connection, 1) == (1.0, 0.0)
         before = _snapshot(connection)
@@ -1734,10 +1820,11 @@ def test_diskann_retired_navigation_bridge_is_immutable_and_gc_pinned(conn):
     _maintenance(conn)
     # Deliberately controlled valid directed topology, not a user import API.
     # Native frozen root N has a one-way incoming edge to soon-retired node0.
+    generation = conn.execute("SELECT published_generation FROM v_diskann_meta").fetchone()[0]
     for local in range(33):
         neighbors = [0] if local == 32 else [1] if local == 0 else [local - 1, local + 1] if local < 31 else [30]
         conn.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE native_local_id=?",
-                     (struct.pack(f"<{len(neighbors)}Q", *neighbors), local))
+                     (_slot_payload(conn, generation, neighbors), local))
     graph_before = conn.execute("SELECT * FROM v_diskann_graph_nodes ORDER BY native_local_id").fetchall()
     retired_entry = _live_id(conn, 0)
     conn.execute("DELETE FROM v WHERE rowid=0")
@@ -1819,9 +1906,9 @@ def test_diskann_validation_rejects_imported_order_corruption_without_progress(c
     _control(conn, "index_import_step", opts)
     generation = job["generation_id"]
     rows = conn.execute("SELECT native_local_id,neighbors FROM v_diskann_graph_nodes WHERE generation_id=? ORDER BY native_local_id", (generation,)).fetchall()
-    local, original = next((local, neighbors) for local, neighbors in rows if len(neighbors) >= 16)
-    ids = struct.unpack(f"<{len(original) // 8}Q", original)
-    changed = struct.pack(f"<{len(ids)}Q", *reversed(ids))
+    local, original = next((local, neighbors) for local, neighbors in rows if len(neighbors) >= 32)
+    slots = [original[offset : offset + 16] for offset in range(0, len(original), 16)]
+    changed = b"".join(reversed(slots))
     assert changed != original
     conn.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE generation_id=? AND native_local_id=?", (changed, generation, local))
     before = _snapshot(conn)

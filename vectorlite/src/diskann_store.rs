@@ -1,4 +1,4 @@
-//! SQLite-authoritative deferred DiskANN canonical/version storage (Format4).
+//! SQLite-authoritative deferred DiskANN canonical/version storage (Format5).
 //! Mutations remain inside the ordinary two-row journal carrier. No constructor,
 //! graph traversal, runtime, background work, recovery write, or GC is performed
 //! by canonical DML or open. All names refer to the borrowed host connection.
@@ -14,8 +14,8 @@ use crate::vector_space::{DistanceType, NamedVectorSpace, VectorType};
 use std::cell::RefCell;
 use std::mem::size_of;
 type Result<T> = std::result::Result<T, IndexError>;
-const FORMAT_VERSION: i64 = 4;
-const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024;
+pub(crate) const FORMAT_VERSION: i64 = 5;
+pub(crate) const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024;
 const MAX_ID: u64 = i64::MAX as u64;
 const MAX_INSERT_BATCH: usize = 32;
 /// Upper bound on the SQLite VM memory one table's retained write statements may
@@ -46,6 +46,7 @@ pub(crate) struct StorageNames {
     pub(crate) current: String,
     pub(crate) generations: String,
     pub(crate) graph_nodes: String,
+    pub(crate) generation_retired: String,
     pub(crate) jobs: String,
     pub(crate) snapshot_map: String,
     pub(crate) txn: String,
@@ -54,10 +55,19 @@ impl StorageNames {
     pub(crate) fn base(&self, suffix: &str) -> String {
         format!("{}_{}", self.table, suffix)
     }
+    /// The nine shadow-table base names in layout order, exactly as SQLite
+    /// stores them in `sqlite_schema.name`. The query-side mutation stamp binds
+    /// only these names, never the catalog version or unrelated tables.
+    pub(crate) fn shadow_bases(&self) -> Vec<String> {
+        schema::LAYOUTS
+            .iter()
+            .map(|layout| self.base(layout.suffix))
+            .collect()
+    }
     pub(crate) fn qualified(&self, suffix: &str) -> Result<String> {
         qualified_name(&self.schema, &self.base(suffix))
     }
-    fn new(schema: &str, table: &str) -> Result<Self> {
+    pub(crate) fn new(schema: &str, table: &str) -> Result<Self> {
         let name = |suffix| qualified_name(schema, &format!("{table}_{suffix}"));
         Ok(Self {
             schema: schema.into(),
@@ -67,6 +77,7 @@ impl StorageNames {
             current: name("diskann_current")?,
             generations: name("diskann_generations")?,
             graph_nodes: name("diskann_graph_nodes")?,
+            generation_retired: name("diskann_generation_retired")?,
             jobs: name("diskann_jobs")?,
             snapshot_map: name("diskann_snapshot_map")?,
             txn: name("diskann_txn")?,
@@ -101,7 +112,7 @@ pub(crate) struct QueryRows {
     pub(crate) anchor: Statement<'static>,
 }
 /// IDs are committed non-reused allocators; rolled-back IDs never escape SQL.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Metadata {
     pub(crate) instance_id: [u8; 16],
     pub(crate) revision: u64,
@@ -222,6 +233,10 @@ const SLOT_RETIRE_NODE: usize = 20;
 const SLOT_RETIRE_ELIGIBLE: usize = 21;
 const SLOT_RETIRE_ENTRY: usize = 22;
 const SLOT_RETIRE_CURRENT: usize = 23;
+/// Per-use, non-retained insert into `generation_retired`. It sits outside
+/// `retains_statement`'s retained range deliberately: retained DML re-executed
+/// inside the journal carrier would stale the carrier's cached key (11-17).
+const SLOT_RETIRE_RETIRED: usize = 24;
 
 /// Whether a slot may be retained across uses.
 ///
@@ -239,7 +254,7 @@ const fn retains_statement(slot: usize) -> bool {
     slot <= SLOT_LIVE_ID
 }
 /// Number of retained writer slots; every slot is lazy and may stay empty.
-const WRITER_SLOTS: usize = 24;
+const WRITER_SLOTS: usize = 25;
 
 /// Proof that the frontend's pre-write live-id probe already observed a public
 /// rowid absent in this callback, so insertion must not probe a second time.
@@ -461,7 +476,7 @@ fn job_sql(table: &DiskAnnTable) -> String {
 }
 /// The one graph-node projection read by scalar and retained callers alike.
 fn graph_node_sql(table: &DiskAnnTable) -> String {
-    format!("SELECT entry_id,state,{},{},frozen_vector IS NULL FROM {} WHERE generation_id=?1 AND native_local_id=?2",blob_projection("frozen_vector",table.vector_bytes,true),blob_projection("neighbors",table.adjacency_bytes,false),table.names.graph_nodes)
+    format!("SELECT entry_id,state,{},{},vector IS NULL FROM {} WHERE generation_id=?1 AND native_local_id=?2",blob_projection("vector",table.vector_bytes,true),blob_projection("neighbors",table.adjacency_bytes,false),table.names.graph_nodes)
 }
 /// The one generation projection read by both scalar and retained callers.
 fn generation_sql(table: &DiskAnnTable) -> String {
@@ -475,6 +490,51 @@ fn metadata_sql(table: &DiskAnnTable) -> String {
 fn resume_writer(statement: &mut Statement<'static>) -> Result<()> {
     statement.reset()?;
     statement.clear_bindings()
+}
+
+fn canonical_workspace_floor(names: &StorageNames, vector_bytes: usize) -> Result<usize> {
+    // The per-use, non-retained retired writer fits the fixed 24 KiB slack;
+    // query-side retired reads are admitted separately from the query budget.
+    let name_bytes = schema::LAYOUTS
+        .iter()
+        .filter(|l| l.suffix != "diskann_generation_retired")
+        .try_fold(0usize, |sum, l| {
+            sum.checked_add(names.base(l.suffix).len())
+                .ok_or_else(|| too_big("DiskANN SQL identifier workspace overflow"))
+        })?;
+    checked_product(vector_bytes, 3, "canonical buffers")?
+        .checked_add(checked_product(name_bytes, 16, "SQL names")?)
+        .and_then(|v| v.checked_add(24 * 1024))
+        .ok_or_else(|| too_big("DiskANN canonical workspace overflow"))
+}
+
+/// Format-5 CREATE TABLE statement for one shadow layout, byte-identical to
+/// the DDL `create_schema` emits for it. The D7 migration surface recreates
+/// the metadata/graph shapes without opening a Format-5 store, so the DDL must
+/// come from the same layout constants instead of a second hand-written copy.
+pub(crate) fn format5_create_table_sql(
+    names: &StorageNames,
+    suffix: &str,
+    vector_bytes: usize,
+    adjacency_bytes: usize,
+) -> Result<Option<String>> {
+    let Some(layout) = schema::LAYOUTS.iter().find(|l| l.suffix == suffix) else {
+        return Ok(None);
+    };
+    let definition = layout
+        .definition
+        .replace("{vector_bytes}", &vector_bytes.to_string())
+        .replace("{adjacency_bytes}", &adjacency_bytes.to_string());
+    Ok(Some(format!(
+        "CREATE TABLE {} ({}){}",
+        names.qualified(suffix)?,
+        definition,
+        if layout.without_rowid {
+            " WITHOUT ROWID"
+        } else {
+            ""
+        }
+    )))
 }
 
 impl DiskAnnTable {
@@ -499,7 +559,7 @@ impl DiskAnnTable {
         if vector_bytes > i32::MAX as usize {
             return Err(too_big("DiskANN vector exceeds SQLite BLOB length limit"));
         }
-        let adjacency_bytes = checked_product(options.physical_degree(), 8, "adjacency")?;
+        let adjacency_bytes = checked_product(options.physical_degree(), 16, "adjacency")?;
         let descriptor = descriptor(&space, &options);
         let handle = Self {
             connection,
@@ -545,14 +605,7 @@ impl DiskAnnTable {
     }
     /// Canonical workspace reservation, before any caller-specific request.
     fn workspace_floor(&self) -> Result<usize> {
-        let names = schema::LAYOUTS.iter().try_fold(0usize, |sum, l| {
-            sum.checked_add(self.names.base(l.suffix).len())
-                .ok_or_else(|| too_big("DiskANN SQL identifier workspace overflow"))
-        })?;
-        checked_product(self.vector_bytes, 3, "canonical buffers")?
-            .checked_add(checked_product(names, 16, "SQL names")?)
-            .and_then(|v| v.checked_add(24 * 1024))
-            .ok_or_else(|| too_big("DiskANN canonical workspace overflow"))
+        canonical_workspace_floor(&self.names, self.vector_bytes)
     }
     fn check_workspace(&self, extra: usize) -> Result<()> {
         let minimum = self
@@ -665,7 +718,7 @@ impl DiskAnnTable {
                 }
                 if nonnegative(s, 0, "format version")? != FORMAT_VERSION as u64 {
                     return Err(corrupt(
-                    "DiskANN format version is unsupported; Format4 requires recreation (no migration)",
+                    "DiskANN format version is unsupported; recreate the index or run vectorlite_index_upgrade before connecting",
                 ));
                 }
                 if s.step()? != Step::Done {
@@ -708,7 +761,7 @@ impl DiskAnnTable {
         )
     }
     fn metadata_from_row(&self, anchor: &Statement<'_>) -> Result<Metadata> {
-        if nonnegative(anchor, 0, "format version")? != 4 {
+        if nonnegative(anchor, 0, "format version")? != FORMAT_VERSION as u64 {
             return Err(corrupt("DiskANN format version is unsupported"));
         }
         if nonnegative(anchor, 14, "metadata count")? != 1 {
@@ -878,7 +931,7 @@ impl DiskAnnTable {
                 && (state != 0
                     || id >= g.total_count
                     || entry_id.is_none_or(|v| v == 0)
-                    || nonnegative(s, 6, "frozen NULL flag")? != 1))
+                    || nonnegative(s, 6, "vector NULL flag")? != 1))
         {
             return Err(corrupt("DiskANN native root/node version role mismatch"));
         }
@@ -893,6 +946,7 @@ impl DiskAnnTable {
             &bounded_blob(s, 4, 5, self.adjacency_bytes, false, "neighbors")?,
             self.options.physical_degree(),
             Some(id),
+            g.total_count,
         )?;
         if neighbors.iter().any(|n| *n > g.total_count) {
             return Err(corrupt(
@@ -1285,6 +1339,24 @@ impl DiskAnnTable {
                     },
                 )?;
                 self.expect_one_change("generation eligibility")?;
+                // The retired id is the generation's eligibility record: the
+                // query-side graph route decides liveness from this table, so
+                // it is written in the same transaction as the count decrement.
+                self.with_writer(
+                    SLOT_RETIRE_RETIRED,
+                    || {
+                        format!(
+                            "INSERT INTO {} VALUES(?1,?2)",
+                            self.names.generation_retired
+                        )
+                    },
+                    |insert| {
+                        insert.bind_i64(1, checked_id(generation)?)?;
+                        insert.bind_i64(2, checked_id(id)?)?;
+                        drain(insert)
+                    },
+                )?;
+                self.expect_one_change("generation retirement")?;
             }
         }
         self.with_writer(
@@ -1752,5 +1824,18 @@ impl DiskAnnTable {
                 Ok(())
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod canonical_floor_tests {
+    use super::*;
+    #[test]
+    fn short_name_floor_preserves_host_boundaries() {
+        let floor = canonical_workspace_floor(&StorageNames::new("main", "v").unwrap(), 8).unwrap();
+        assert_eq!(floor, 26_824);
+        assert!(24_576 < floor);
+        assert!(27_000 >= floor);
+        assert!(27_000 < floor + 32 * 8);
     }
 }

@@ -469,7 +469,11 @@ fn chunk_and_root_vector_are_owned_and_bounded() {
     assert_eq!(first.next, Some(2));
     for (position, node) in first.nodes.iter().enumerate() {
         assert_eq!(node.ordinal as usize, position);
-        assert_eq!(&node.neighbors, &expected_neighbors[position]);
+        let mapped: Vec<(u64, u64)> = expected_neighbors[position]
+            .iter()
+            .map(|&id| (u64::from(id), if id == 3 { 0 } else { u64::from(id) + 10 }))
+            .collect();
+        assert_eq!(node.neighbors, mapped);
         assert_eq!(
             (node.offset_start, node.offset_end),
             expected_offsets[position]

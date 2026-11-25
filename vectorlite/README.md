@@ -81,13 +81,14 @@ types, files, and nontransactional behavior remain unchanged. See the
 [SQL/operational guide](<../doc/diskann.md>).
 
 Relevant modules: [diskann_store.rs](<src/diskann_store.rs>) and
-[diskann_deferred/](<src/diskann_deferred/>) for the Format 4 schema, canonical
+[diskann_deferred/](<src/diskann_deferred/>) for the Format 5 schema, canonical
 versions, fenced job helpers and published-generation query adapter;
 [diskann_build.rs](<src/diskann_build.rs>) for the pure owned-RAM OneShot builder;
 [diskann_worker.rs](<src/diskann_worker.rs>) for the connection/job/fence-bound
 candidate registry; [diskann_build_guard.rs](<src/diskann_build_guard.rs>) for the
 transaction-free admission check; [diskann_target.rs](<src/diskann_target.rs>) for
-the bounded declaration parser; [diskann_control.rs](<src/diskann_control.rs>) and
+the bounded declaration parser; [diskann_control.rs](<src/diskann_control.rs>)
+(including the `vectorlite_index_upgrade` Format-4 migration scalar) and
 [diskann_registration.rs](<src/diskann_registration.rs>) for the public SQL
 frontend; plus [diskann_core.rs](<src/diskann_core.rs>) (read-path provider glue),
 [atomic_callback.rs](<src/atomic_callback.rs>), [sqlite.rs](<src/sqlite.rs>),

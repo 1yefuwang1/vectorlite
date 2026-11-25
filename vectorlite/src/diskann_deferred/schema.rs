@@ -1,4 +1,4 @@
-//! Format4 durable layouts. No triggers, foreign keys, or recovery on open.
+//! Format5 durable layouts. No triggers, foreign keys, or recovery on open.
 use super::*;
 
 pub(super) struct Layout {
@@ -12,7 +12,7 @@ pub(super) struct Layout {
 
 pub(super) const LAYOUTS: &[Layout] = &[
  Layout { suffix:"diskann_meta", without_rowid:false, unique:&[],
- definition:"singleton INTEGER PRIMARY KEY CHECK(singleton=1),format_version INTEGER NOT NULL CHECK(format_version=4),instance_id BLOB NOT NULL CHECK(length(instance_id)=16),descriptor BLOB NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),next_entry_id INTEGER NOT NULL CHECK(next_entry_id>=1),next_job_id INTEGER NOT NULL CHECK(next_job_id>=1),next_generation_id INTEGER NOT NULL CHECK(next_generation_id>=1),canonical_count INTEGER NOT NULL CHECK(canonical_count>=0),retired_count INTEGER NOT NULL CHECK(retired_count>=0),published_generation INTEGER CHECK(published_generation>=1),candidate_generation INTEGER CHECK(candidate_generation>=1),active_job INTEGER CHECK(active_job>=1),next_fence INTEGER NOT NULL CHECK(next_fence>=1),cleanup_entry_id INTEGER NOT NULL CHECK(cleanup_entry_id>=0 AND cleanup_entry_id<next_entry_id)",
+ definition:"singleton INTEGER PRIMARY KEY CHECK(singleton=1),format_version INTEGER NOT NULL CHECK(format_version=5),instance_id BLOB NOT NULL CHECK(length(instance_id)=16),descriptor BLOB NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),next_entry_id INTEGER NOT NULL CHECK(next_entry_id>=1),next_job_id INTEGER NOT NULL CHECK(next_job_id>=1),next_generation_id INTEGER NOT NULL CHECK(next_generation_id>=1),canonical_count INTEGER NOT NULL CHECK(canonical_count>=0),retired_count INTEGER NOT NULL CHECK(retired_count>=0),published_generation INTEGER CHECK(published_generation>=1),candidate_generation INTEGER CHECK(candidate_generation>=1),active_job INTEGER CHECK(active_job>=1),next_fence INTEGER NOT NULL CHECK(next_fence>=1),cleanup_entry_id INTEGER NOT NULL CHECK(cleanup_entry_id>=0 AND cleanup_entry_id<next_entry_id)",
  columns:&[("singleton","INTEGER",0,1),("format_version","INTEGER",1,0),("instance_id","BLOB",1,0),("descriptor","BLOB",1,0),("revision","INTEGER",1,0),("next_entry_id","INTEGER",1,0),("next_job_id","INTEGER",1,0),("next_generation_id","INTEGER",1,0),("canonical_count","INTEGER",1,0),("retired_count","INTEGER",1,0),("published_generation","INTEGER",0,0),("candidate_generation","INTEGER",0,0),("active_job","INTEGER",0,0),("next_fence","INTEGER",1,0),("cleanup_entry_id","INTEGER",1,0)] },
  Layout {suffix:"diskann_entries",without_rowid:false,unique:&[],
  definition:"entry_id INTEGER PRIMARY KEY CHECK(entry_id>=1),public_rowid INTEGER NOT NULL CHECK(public_rowid>=0),created_revision INTEGER NOT NULL CHECK(created_revision>=1),retired_revision INTEGER CHECK(retired_revision>created_revision),vector BLOB NOT NULL CHECK(length(vector)={vector_bytes})",
@@ -24,8 +24,11 @@ pub(super) const LAYOUTS: &[Layout] = &[
  definition:"generation_id INTEGER PRIMARY KEY CHECK(generation_id>=1),job_id INTEGER NOT NULL CHECK(job_id>=1),state INTEGER NOT NULL CHECK(state IN (0,1,2)),source_revision INTEGER NOT NULL CHECK(source_revision>=0),source_hash BLOB CHECK(source_hash IS NULL OR length(source_hash)=32),config_hash BLOB NOT NULL CHECK(length(config_hash)=32),total_count INTEGER NOT NULL CHECK(total_count>=0 AND total_count<=4294967294),eligible_count INTEGER NOT NULL CHECK(eligible_count>=0 AND eligible_count<=total_count),root_local_id INTEGER,CHECK(state!=1 OR source_hash IS NOT NULL),CHECK((total_count=0 AND root_local_id IS NULL) OR (total_count>0 AND root_local_id=total_count))",
  columns:&[("generation_id","INTEGER",0,1),("job_id","INTEGER",1,0),("state","INTEGER",1,0),("source_revision","INTEGER",1,0),("source_hash","BLOB",0,0),("config_hash","BLOB",1,0),("total_count","INTEGER",1,0),("eligible_count","INTEGER",1,0),("root_local_id","INTEGER",0,0)]},
  Layout {suffix:"diskann_graph_nodes",without_rowid:true,unique:&[&["generation_id","native_local_id"],&["generation_id","entry_id"]],
- definition:"generation_id INTEGER NOT NULL CHECK(generation_id>=1),native_local_id INTEGER NOT NULL CHECK(native_local_id>=0 AND native_local_id<=4294967294),entry_id INTEGER CHECK(entry_id>=1),state INTEGER NOT NULL CHECK(state IN (0,2)),frozen_vector BLOB,neighbors BLOB NOT NULL CHECK(length(neighbors)<={adjacency_bytes} AND length(neighbors)%8=0),PRIMARY KEY(generation_id,native_local_id),UNIQUE(generation_id,entry_id),CHECK((state=0 AND entry_id IS NOT NULL AND frozen_vector IS NULL) OR (state=2 AND entry_id IS NULL AND typeof(frozen_vector)='blob' AND length(frozen_vector)={vector_bytes}))",
- columns:&[("generation_id","INTEGER",1,1),("native_local_id","INTEGER",1,2),("entry_id","INTEGER",0,0),("state","INTEGER",1,0),("frozen_vector","BLOB",0,0),("neighbors","BLOB",1,0)]},
+ definition:"generation_id INTEGER NOT NULL CHECK(generation_id>=1),native_local_id INTEGER NOT NULL CHECK(native_local_id>=0 AND native_local_id<=4294967294),entry_id INTEGER CHECK(entry_id>=1),public_rowid INTEGER CHECK(public_rowid>=0),state INTEGER NOT NULL CHECK(state IN (0,2)),neighbors BLOB NOT NULL CHECK(typeof(neighbors)='blob' AND length(neighbors)<={adjacency_bytes} AND length(neighbors)%16=0),vector BLOB CHECK(vector IS NULL OR (typeof(vector)='blob' AND length(vector)={vector_bytes})),PRIMARY KEY(generation_id,native_local_id),UNIQUE(generation_id,entry_id),CHECK((state=0 AND entry_id IS NOT NULL AND public_rowid IS NOT NULL AND vector IS NULL) OR (state=2 AND entry_id IS NULL AND public_rowid IS NULL AND typeof(vector)='blob' AND length(vector)={vector_bytes}))",
+ columns:&[("generation_id","INTEGER",1,1),("native_local_id","INTEGER",1,2),("entry_id","INTEGER",0,0),("public_rowid","INTEGER",0,0),("state","INTEGER",1,0),("neighbors","BLOB",1,0),("vector","BLOB",0,0)]},
+ Layout {suffix:"diskann_generation_retired",without_rowid:true,unique:&[&["generation_id","entry_id"]],
+ definition:"generation_id INTEGER NOT NULL CHECK(generation_id>=1),entry_id INTEGER NOT NULL CHECK(entry_id>=1),PRIMARY KEY(generation_id,entry_id)",
+ columns:&[("generation_id","INTEGER",1,1),("entry_id","INTEGER",1,2)]},
  Layout {suffix:"diskann_jobs",without_rowid:false,unique:&[],
  definition:"job_id INTEGER PRIMARY KEY CHECK(job_id>=1),generation_id INTEGER NOT NULL CHECK(generation_id>=1),parent_generation INTEGER CHECK(parent_generation>=1),cutoff_revision INTEGER NOT NULL CHECK(cutoff_revision>=0),fence INTEGER NOT NULL CHECK(fence>=1),owner_nonce BLOB CHECK(owner_nonce IS NULL OR length(owner_nonce)=16),phase INTEGER NOT NULL CHECK(phase BETWEEN 0 AND 6),expected_count INTEGER NOT NULL CHECK(expected_count>=0 AND expected_count<=4294967294),scan_entry_id INTEGER NOT NULL CHECK(scan_entry_id>=0),captured_count INTEGER NOT NULL CHECK(captured_count>=0 AND captured_count<=expected_count),import_cursor INTEGER NOT NULL CHECK(import_cursor>=0),validation_cursor INTEGER NOT NULL CHECK(validation_cursor>=0),cleanup_cursor INTEGER NOT NULL CHECK(cleanup_cursor>=0),source_hash BLOB CHECK(source_hash IS NULL OR length(source_hash)=32),config_hash BLOB NOT NULL CHECK(length(config_hash)=32),candidate_hash BLOB CHECK(candidate_hash IS NULL OR length(candidate_hash)=32),failure_code INTEGER,cutoff_entry_id INTEGER NOT NULL CHECK(cutoff_entry_id>=0),snapshot_chain BLOB NOT NULL CHECK(typeof(snapshot_chain)='blob' AND length(snapshot_chain)=32),CHECK(scan_entry_id<=cutoff_entry_id AND expected_count<=cutoff_entry_id)",
  columns:&[("job_id","INTEGER",0,1),("generation_id","INTEGER",1,0),("parent_generation","INTEGER",0,0),("cutoff_revision","INTEGER",1,0),("fence","INTEGER",1,0),("owner_nonce","BLOB",0,0),("phase","INTEGER",1,0),("expected_count","INTEGER",1,0),("scan_entry_id","INTEGER",1,0),("captured_count","INTEGER",1,0),("import_cursor","INTEGER",1,0),("validation_cursor","INTEGER",1,0),("cleanup_cursor","INTEGER",1,0),("source_hash","BLOB",0,0),("config_hash","BLOB",1,0),("candidate_hash","BLOB",0,0),("failure_code","INTEGER",0,0),("cutoff_entry_id","INTEGER",1,0),("snapshot_chain","BLOB",1,0)]},
@@ -66,7 +69,7 @@ impl DiskAnnTable {
             return Err(too_big("DiskANN descriptor too large"));
         }
         let mut stmt = self.connection.prepare(&format!(
-            "INSERT INTO {} VALUES(1,4,?1,?2,0,1,1,1,0,0,NULL,NULL,NULL,1,0)",
+            "INSERT INTO {} VALUES(1,5,?1,?2,0,1,1,1,0,0,NULL,NULL,NULL,1,0)",
             self.names.meta
         ))?;
         stmt.bind_blob(1, &self.connection.random_instance_id())?;
@@ -74,7 +77,7 @@ impl DiskAnnTable {
         done(stmt)?;
         self.expect_one_change("metadata initialization")
     }
-    /// Per-layout catalog validation (D2a): the eight layouts keep their own
+    /// Per-layout catalog validation (D2a): the nine layouts keep their own
     /// checks and message order, and only the five pragma shapes are retained.
     pub(super) fn validate_schema(&self) -> Result<()> {
         for layout in LAYOUTS {
@@ -177,7 +180,7 @@ mod tests {
     use super::*;
     #[test]
     fn layouts_and_unique_reverse_maps_are_fixed_and_bounded() {
-        assert_eq!(LAYOUTS.len(), 8);
+        assert_eq!(LAYOUTS.len(), 9);
         for (index, layout) in LAYOUTS.iter().enumerate() {
             assert!(!LAYOUTS[..index].iter().any(|l| l.suffix == layout.suffix));
             assert!(layout.columns.len() <= 19);
@@ -194,12 +197,41 @@ mod tests {
             .iter()
             .find(|l| l.suffix == "diskann_graph_nodes")
             .unwrap();
+        assert_eq!(graph.columns.len(), 7);
+        assert_eq!(
+            graph
+                .columns
+                .iter()
+                .map(|column| column.0)
+                .collect::<Vec<_>>(),
+            [
+                "generation_id",
+                "native_local_id",
+                "entry_id",
+                "public_rowid",
+                "state",
+                "neighbors",
+                "vector"
+            ]
+        );
+        let retired = LAYOUTS
+            .iter()
+            .find(|l| l.suffix == "diskann_generation_retired")
+            .unwrap();
+        assert!(retired.without_rowid);
+        assert_eq!(retired.unique, &[&["generation_id", "entry_id"][..]]);
         assert!(graph.without_rowid);
         assert!(graph.unique.contains(&&["generation_id", "entry_id"][..]));
-        assert!(graph.definition.contains("state=2 AND entry_id IS NULL"));
-        assert!(graph
-            .definition
-            .contains("state=0 AND entry_id IS NOT NULL"));
+        // The spike reverts the vector column to ROOT-ONLY semantics: live rows
+        // carry no payload, so the frozen root alone owns the inline blob.
+        assert_eq!(graph.columns[6], ("vector", "BLOB", 0, 0));
+        assert!(graph.definition.contains(
+            "state=2 AND entry_id IS NULL AND public_rowid IS NULL AND typeof(vector)='blob'"
+        ));
+        assert!(graph.definition.contains(
+            "state=0 AND entry_id IS NOT NULL AND public_rowid IS NOT NULL AND vector IS NULL"
+        ));
+        assert!(graph.definition.contains("vector IS NULL OR"));
     }
     #[test]
     fn immutable_original_labels_and_native_root_n_are_explicit() {

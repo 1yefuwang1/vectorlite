@@ -55,10 +55,8 @@ impl CandidateInput {
         {
             return Err(jobs::stale("native candidate digest mismatch"));
         }
-        let per = (manifest.max_degree as usize)
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(manifest.dimension as usize * 4 + 96))
-            .ok_or_else(|| too_big("candidate chunk bytes"))?;
+        let per =
+            candidate_record_bytes(manifest.max_degree as usize, manifest.dimension as usize)?;
         if opts.max_bytes < per {
             return Err(too_big("candidate chunk budget below one node"));
         }
@@ -88,6 +86,13 @@ impl CandidateInput {
             root,
         })
     }
+}
+fn candidate_record_bytes(degree: usize, dimension: usize) -> Result<usize> {
+    let physical = (degree as f32 * 1.3) as usize;
+    checked_product(physical, 16, "candidate adjacency")?
+        .checked_add(checked_product(dimension, 4, "candidate vector")?)
+        .and_then(|n| n.checked_add(96))
+        .ok_or_else(|| too_big("candidate chunk bytes"))
 }
 fn verify(table: &DiskAnnTable, input: &CandidateInput, cursor: u64) -> Result<Job> {
     let j = jobs::bound(table, &input.binding)?;
@@ -137,13 +142,15 @@ enum NodeKind {
 impl NodeKind {
     fn sql(self, names: &StorageNames) -> String {
         match self {
+            // Lean layout: live rows carry no payload, so the vector column is
+            // SQL NULL for a live node and only the frozen root owns a blob.
             Self::Live => format!(
-                "INSERT INTO {} VALUES(?1,?2,?3,0,NULL,?4)",
+                "INSERT INTO {} VALUES(?1,?2,?3,?4,0,?5,NULL)",
                 names.graph_nodes
             ),
             Self::FrozenRoot => {
                 format!(
-                    "INSERT INTO {} VALUES(?1,?2,NULL,2,?3,?4)",
+                    "INSERT INTO {} VALUES(?1,?2,NULL,NULL,2,?3,?4)",
                     names.graph_nodes
                 )
             }
@@ -199,21 +206,14 @@ fn map_node(
     Ok(Some((entry, rowid)))
 }
 fn adjacency(table: &DiskAnnTable, j: &Job, node: &ChunkNode) -> Result<Vec<u8>> {
-    let mut ids = Vec::new();
-    reserve(&mut ids, node.neighbors.len())?;
-    for &id in &node.neighbors {
-        if u64::from(id) > j.expected_count {
-            return Err(corrupt("DiskANN candidate adjacency range"));
-        }
-        ids.push(u64::from(id));
-    }
-    if node.offset_end.checked_sub(node.offset_start) != Some(ids.len() as u64) {
+    if node.offset_end.checked_sub(node.offset_start) != Some(node.neighbors.len() as u64) {
         return Err(corrupt("DiskANN candidate CSR offsets"));
     }
     encode_ids(
-        &ids,
+        &node.neighbors,
         table.options().physical_degree(),
         Some(u64::from(node.ordinal)),
+        j.expected_count,
     )
 }
 fn advance(
@@ -271,6 +271,10 @@ pub(crate) fn import_step(table: &DiskAnnTable, input: &CandidateInput) -> Resul
     let mut mapped = jobs::LoopStatement::new(map_sql(table.names()));
     let mut live = jobs::LoopStatement::new(NodeKind::Live.sql(table.names()));
     let mut frozen = jobs::LoopStatement::new(NodeKind::FrozenRoot.sql(table.names()));
+    let mut retired = jobs::LoopStatement::new(format!(
+        "INSERT INTO {} VALUES(?1,?2)",
+        table.names().generation_retired
+    ));
     for node in &input.chunk.nodes {
         if u64::from(node.ordinal) != next {
             return Err(corrupt("DiskANN import order"));
@@ -282,13 +286,21 @@ pub(crate) fn import_step(table: &DiskAnnTable, input: &CandidateInput) -> Resul
             statement.bind_i64(1, checked_id(j.generation_id)?)?;
             statement.bind_i64(2, i64::from(node.ordinal))?;
             statement.bind_i64(3, checked_id(entry)?)?;
-            statement.bind_blob(4, &adj)?;
+            statement.bind_i64(4, checked_id(rowid)?)?;
+            statement.bind_blob(5, &adj)?;
             // The live-id probe runs before the row is written, in the order the
             // per-row statement it replaces used.
             let eligible_now = table.lookup_live_id(rowid)? == Some(entry);
             jobs::drain(statement)?;
+            jobs::changed(table, "candidate node insert")?;
             if eligible_now {
                 eligible += 1;
+            } else {
+                let statement = retired.begin(table.connection())?;
+                statement.bind_i64(1, checked_id(j.generation_id)?)?;
+                statement.bind_i64(2, checked_id(entry)?)?;
+                jobs::drain(statement)?;
+                jobs::changed(table, "candidate retired insert")?;
             }
         } else {
             if input.root.len() != table.vector_bytes() {
@@ -297,16 +309,17 @@ pub(crate) fn import_step(table: &DiskAnnTable, input: &CandidateInput) -> Resul
             let statement = frozen.begin(table.connection())?;
             statement.bind_i64(1, checked_id(j.generation_id)?)?;
             statement.bind_i64(2, i64::from(node.ordinal))?;
-            statement.bind_blob(3, &input.root)?;
-            statement.bind_blob(4, &adj)?;
+            statement.bind_blob(3, &adj)?;
+            statement.bind_blob(4, &input.root)?;
             jobs::drain(statement)?;
+            jobs::changed(table, "candidate node insert")?;
         }
-        jobs::changed(table, "candidate node insert")?;
         next += 1;
     }
     mapped.finish()?;
     live.finish()?;
     frozen.finish()?;
+    retired.finish()?;
     if eligible > 0 {
         let mut s=table.connection().prepare(&format!("UPDATE {} SET eligible_count=eligible_count+?1 WHERE generation_id=?2 AND state=0 AND eligible_count+?1<=total_count",table.names().generations))?;
         s.bind_i64(1, eligible)?;
@@ -327,27 +340,60 @@ pub(crate) fn validate_step(table: &DiskAnnTable, input: &CandidateInput) -> Res
     {
         return Err(jobs::stale("validation phase/cursor"));
     }
-    let g = table.read_generation(j.generation_id)?;
+    assert_retired_count(table, j.generation_id)?;
     let mut next = j.validation_cursor;
     // One statement for the whole bounded chunk, prepared at most once per call.
     let mut mapped_statement = jobs::LoopStatement::new(map_sql(table.names()));
+    let max_adj = checked_product(
+        table.options().physical_degree(),
+        16,
+        "validation adjacency",
+    )?;
+    // Lean layout: a live row must store SQL NULL in the vector column; the
+    // frozen root alone must store the exact candidate root payload. The
+    // entries-side snapshot identity is checked by map_node above, so the live
+    // row is no longer compared byte-wise against the canonical vector.
+    let mut rows = jobs::LoopStatement::new(format!(
+        "SELECT entry_id,public_rowid,state,{},vector IS NULL,{} FROM {} WHERE generation_id=?1 AND native_local_id=?2",
+        blob_projection("neighbors", max_adj, false),
+        blob_projection("vector", table.vector_bytes(), true),
+        table.names().graph_nodes
+    ));
     for node in &input.chunk.nodes {
         if u64::from(node.ordinal) != next {
             return Err(corrupt("DiskANN validation order"));
         }
         let mapped = map_node(table, &j, node, &mut mapped_statement)?;
         let expected = adjacency(table, &j, node)?;
-        let stored = table.read_graph_node(&g, u64::from(node.ordinal))?;
-        let actual = encode_ids(
-            &stored.neighbors,
-            table.options().physical_degree(),
-            Some(u64::from(node.ordinal)),
-        )?;
-        if stored.native_local_id != u64::from(node.ordinal)
-            || stored.entry_id != mapped.map(|p| p.0)
+        let s = rows.begin(table.connection())?;
+        s.bind_i64(1, checked_id(j.generation_id)?)?;
+        s.bind_i64(2, i64::from(node.ordinal))?;
+        if s.step()? != Step::Row {
+            return Err(corrupt("DiskANN imported graph node missing"));
+        }
+        let entry = optional_id(s, 0, "graph entry")?;
+        let rowid = optional_id(s, 1, "graph rowid")?;
+        let state = nonnegative(s, 2, "graph state")?;
+        let actual = bounded_blob(s, 3, 4, max_adj, false, "neighbors")?;
+        let vector_null = nonnegative(s, 5, "graph vector NULL flag")?;
+        let valid_vector = match &mapped {
+            Some(_) => vector_null == 1,
+            None => {
+                vector_null == 0
+                    && bounded_blob(s, 6, 7, table.vector_bytes(), true, "graph vector")?
+                        == input.root
+            }
+        };
+        let (expected_entry, expected_rowid, expected_state) = match &mapped {
+            Some((entry, rowid)) => (Some(*entry), Some(*rowid), 0),
+            None => (None, None, 2),
+        };
+        if entry != expected_entry
+            || rowid != expected_rowid
+            || state != expected_state
             || actual != expected
-            || (mapped.is_none() && stored.frozen_vector.as_deref() != Some(input.root.as_slice()))
-            || (mapped.is_some() && stored.frozen_vector.is_some())
+            || !valid_vector
+            || s.step()? != Step::Done
         {
             return Err(corrupt(
                 "DiskANN stored topology differs from immutable candidate",
@@ -356,6 +402,7 @@ pub(crate) fn validate_step(table: &DiskAnnTable, input: &CandidateInput) -> Res
         next += 1;
     }
     mapped_statement.finish()?;
+    rows.finish()?;
     if next == u64::from(input.manifest.node_count) {
         // Indexed range seeks detect extra corrupt rows without COUNT/full scan.
         for (name, column, id) in [
@@ -392,6 +439,21 @@ pub(crate) fn validate_step(table: &DiskAnnTable, input: &CandidateInput) -> Res
     advance(table, &j, input, next, true)?;
     table.read_job(j.job_id)
 }
+fn assert_retired_count(table: &DiskAnnTable, generation: u64) -> Result<()> {
+    let g = table.read_generation(generation)?;
+    let mut s = table.connection().prepare(&format!(
+        "SELECT count(*) FROM {} WHERE generation_id=?1",
+        table.names().generation_retired
+    ))?;
+    s.bind_i64(1, checked_id(generation)?)?;
+    if s.step()? != Step::Row
+        || nonnegative(&s, 0, "retired count")? != g.total_count - g.eligible_count
+        || s.step()? != Step::Done
+    {
+        return Err(corrupt("DiskANN generation retired count mismatch"));
+    }
+    s.finish()
+}
 /// Short fenced metadata transition. Success inside BEGIN is NOT a COMMIT.
 /// Root may release RAM only after this helper returns, never as a SQL effect.
 pub(crate) fn publish(
@@ -415,6 +477,7 @@ pub(crate) fn publish(
             "publication requires fully validated candidate",
         ));
     }
+    assert_retired_count(table, j.generation_id)?;
     if let Some(old) = j.parent_generation {
         let mut s = table.connection().prepare(&format!(
             "UPDATE {} SET state=2 WHERE generation_id=?1 AND state=1",
@@ -494,7 +557,6 @@ mod tests {
     #[test]
     fn live_node_then_frozen_root_inside_one_reuse_cycle_keeps_entry_id_null() {
         let names = StorageNames::new("main", "v").unwrap();
-        // The persisted column order of the shadow table this statement writes.
         let columns: Vec<&str> = super::super::schema::LAYOUTS
             .iter()
             .find(|layout| layout.suffix == "diskann_graph_nodes")
@@ -509,35 +571,33 @@ mod tests {
                 "generation_id",
                 "native_local_id",
                 "entry_id",
+                "public_rowid",
                 "state",
-                "frozen_vector",
-                "neighbors"
+                "neighbors",
+                "vector"
             ]
         );
-        // Row 0 of one bounded chunk: a live node. Every slot of its statement is
-        // bound on this iteration.
         let live = modeled_row(
             &NodeKind::Live.sql(&names),
-            &[Some("9"), Some("0"), Some("11"), Some("adj")],
+            &[Some("9"), Some("0"), Some("11"), Some("42"), Some("adj")],
         );
+        // A live node stores no payload: the vector slot must stay SQL NULL so
+        // the row remains page-local.
         assert_eq!(
             rendered(&live),
             [
                 Some("9"),
                 Some("0"),
                 Some("11"),
+                Some("42"),
                 Some("0"),
-                None,
-                Some("adj")
+                Some("adj"),
+                None
             ]
         );
-        // Row 1 of the same chunk: the frozen root. `?3` (entry_id) is not a
-        // parameter of this statement at all, so a reset that preserved the live
-        // node's bindings still cannot give the root an entry_id; `?5`
-        // (frozen_vector) likewise cannot be inherited by a later live node.
         let root = modeled_row(
             &NodeKind::FrozenRoot.sql(&names),
-            &[Some("9"), Some("1"), Some("root"), Some("adj")],
+            &[Some("9"), Some("1"), Some("adj"), Some("root")],
         );
         assert_eq!(
             rendered(&root),
@@ -545,16 +605,12 @@ mod tests {
                 Some("9"),
                 Some("1"),
                 None,
+                None,
                 Some("2"),
-                Some("root"),
-                Some("adj")
+                Some("adj"),
+                Some("root")
             ]
         );
-        // Column 2 is entry_id and column 4 is frozen_vector in both kinds.
-        assert_eq!(live[2].as_deref(), Some("11"));
-        assert_eq!(root[2], None);
-        assert_eq!(live[4], None);
-        assert_eq!(root[4].as_deref(), Some("root"));
     }
 
     #[test]
@@ -562,18 +618,22 @@ mod tests {
         let names = StorageNames::new("main", "v").unwrap();
         assert_eq!(
             NodeKind::Live.sql(&names),
-            "INSERT INTO \"main\".\"v_diskann_graph_nodes\" VALUES(?1,?2,?3,0,NULL,?4)"
+            "INSERT INTO \"main\".\"v_diskann_graph_nodes\" VALUES(?1,?2,?3,?4,0,?5,NULL)"
         );
         assert_eq!(
             NodeKind::FrozenRoot.sql(&names),
-            "INSERT INTO \"main\".\"v_diskann_graph_nodes\" VALUES(?1,?2,NULL,2,?3,?4)"
+            "INSERT INTO \"main\".\"v_diskann_graph_nodes\" VALUES(?1,?2,NULL,NULL,2,?3,?4)"
         );
-        assert_eq!(
-            map_sql(&names),
-            "SELECT entry_id,public_rowid FROM \"main\".\"v_diskann_snapshot_map\" WHERE job_id=?1 AND ordinal=?2"
-        );
+        assert_eq!(map_sql(&names), "SELECT entry_id,public_rowid FROM \"main\".\"v_diskann_snapshot_map\" WHERE job_id=?1 AND ordinal=?2");
     }
 
+    #[test]
+    fn candidate_chunk_budget_uses_physical_degree() {
+        let per = candidate_record_bytes(1_000, 2).unwrap();
+        assert_eq!(per, 1_300 * 16 + 8 + 96);
+        assert_eq!(65_536 / per, 3);
+        assert!(candidate_record_bytes(10_000, 2).unwrap() > 65_536);
+    }
     #[test]
     fn worker_copy_errors_preserve_resource_and_stale_codes() {
         assert_eq!(

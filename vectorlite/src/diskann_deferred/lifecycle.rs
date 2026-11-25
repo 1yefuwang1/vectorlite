@@ -65,6 +65,7 @@ pub(crate) fn restart(
 pub(crate) struct CleanupResult {
     pub(crate) graph_nodes: u64,
     pub(crate) snapshot_rows: u64,
+    pub(crate) retired_rows: u64,
     pub(crate) generations: u64,
     pub(crate) jobs: u64,
     pub(crate) historical_entries: u64,
@@ -90,16 +91,19 @@ fn historical_bounds(m: &Metadata, active: Option<&Job>) -> [Option<u64>; 5] {
         m.active_job,
     ]
 }
+fn cleanup_record_bytes(vector_bytes: usize, physical_degree: usize) -> Result<usize> {
+    checked_product(physical_degree, 16, "cleanup adjacency")?
+        .checked_add(vector_bytes)
+        .and_then(|n| n.checked_add(96))
+        .ok_or_else(|| too_big("cleanup budget overflow"))
+}
 /// Bounded PK-in-SELECT-LIMIT deletion works at SQLite floor without optional
 /// SQLITE_ENABLE_UPDATE_DELETE_LIMIT. Protect current, published/staged graph and active map references,
 /// and cutoff input even BEFORE snapshot_map capture completes.
 pub(crate) fn cleanup_step(table: &DiskAnnTable, opts: StepOptions) -> Result<CleanupResult> {
     let m = jobs::metadata(table)?;
     let mut result = CleanupResult::default();
-    let per = table
-        .vector_bytes()
-        .checked_add(table.options().physical_degree() * 8 + 96)
-        .ok_or_else(|| too_big("cleanup budget overflow"))?;
+    let per = cleanup_record_bytes(table.vector_bytes(), table.options().physical_degree())?;
     if opts.max_bytes < per {
         return Err(too_big("cleanup byte budget below one record"));
     }
@@ -143,8 +147,18 @@ pub(crate) fn cleanup_step(table: &DiskAnnTable, opts: StepOptions) -> Result<Cl
                 .checked_sub(result.snapshot_rows)
                 .ok_or_else(|| corrupt("DiskANN GC snapshot delete count"))?;
         }
+        if remaining > 0 {
+            let mut s = table.connection().prepare(&format!("DELETE FROM {} WHERE (generation_id,entry_id) IN (SELECT generation_id,entry_id FROM {} WHERE generation_id=?1 ORDER BY entry_id LIMIT ?2)", table.names().generation_retired, table.names().generation_retired))?;
+            s.bind_i64(1, checked_id(generation)?)?;
+            s.bind_i64(2, checked_id(remaining)?)?;
+            done(s)?;
+            result.retired_rows = deletion_count(table)?;
+            remaining = remaining
+                .checked_sub(result.retired_rows)
+                .ok_or_else(|| corrupt("DiskANN GC retired delete count"))?;
+        }
         if remaining >= 1 {
-            let mut s=table.connection().prepare(&format!("DELETE FROM {} WHERE generation_id=?1 AND state=2 AND NOT EXISTS(SELECT 1 FROM {} WHERE generation_id=?1 LIMIT 1) AND NOT EXISTS(SELECT 1 FROM {} WHERE job_id=?2 LIMIT 1)",table.names().generations,table.names().graph_nodes,table.names().snapshot_map))?;
+            let mut s=table.connection().prepare(&format!("DELETE FROM {} WHERE generation_id=?1 AND state=2 AND NOT EXISTS(SELECT 1 FROM {} WHERE generation_id=?1 LIMIT 1) AND NOT EXISTS(SELECT 1 FROM {} WHERE job_id=?2 LIMIT 1) AND NOT EXISTS(SELECT 1 FROM {} WHERE generation_id=?1 LIMIT 1)",table.names().generations,table.names().graph_nodes,table.names().snapshot_map,table.names().generation_retired))?;
             s.bind_i64(1, checked_id(generation)?)?;
             s.bind_i64(2, checked_id(job)?)?;
             done(s)?;
@@ -268,6 +282,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cleanup_record_budget_accounts_for_sixteen_byte_slots() {
+        let per = cleanup_record_bytes(8, 1_300).unwrap();
+        assert_eq!(per, 8 + 1_300 * 16 + 96);
+        assert_eq!(65_536 / per, 3);
+        assert!(cleanup_record_bytes(8, 13_000).unwrap() > 65_536);
+        assert!(cleanup_record_bytes(8, usize::MAX).is_err());
+    }
     #[test]
     fn historical_reclamation_binds_one_metadata_snapshot_for_the_whole_cycle() {
         let names = StorageNames::new("main", "v").unwrap();

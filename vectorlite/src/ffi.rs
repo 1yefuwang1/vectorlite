@@ -316,6 +316,20 @@ pub unsafe fn vtab_in_next(v: *mut sqlite3_value, out: *mut *mut sqlite3_value) 
     // callback lifetime; set_api validated the dispatched function pointers.
     unsafe { (api_field!(vtab_in_next))(v, out) }
 }
+// --- connection change counter (D3 mutation detector) ---
+
+/// Routes `sqlite3_total_changes64`, a pure in-memory connection counter read.
+///
+/// # Safety
+/// `db` must be a live host connection accessed only from its serialized
+/// callback thread, and the host must provide the SQLite 3.38 extension prefix
+/// (the DiskANN virtual table refuses older hosts, and set_api validated this
+/// entry for that prefix).
+pub unsafe fn total_changes64(db: *mut sqlite3) -> i64 {
+    // SAFETY: the caller supplies a live connection; set_api validated the
+    // 3.38-gated function pointer this dispatch reaches.
+    unsafe { (api_field!(total_changes64))(db) }
+}
 
 // --- prepared statements on the borrowed host connection ---
 

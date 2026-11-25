@@ -11,6 +11,7 @@ import struct
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -39,8 +40,64 @@ def connect(path=":memory:", readonly=False):
     return db
 
 
-def create(db, metric="l2", schema="main", name="v"):
-    db.execute(f'CREATE VIRTUAL TABLE "{schema}"."{name}" USING vectorlite(embedding float32[2] {metric},diskann(degree=4,build_list_size=8))')
+def create(db, metric="l2", schema="main", name="v", options=None):
+    options = options or "degree=4,build_list_size=8"
+    db.execute(f'CREATE VIRTUAL TABLE "{schema}"."{name}" USING vectorlite(embedding float32[2] {metric},diskann({options}))')
+
+
+def knn(db, vector=(0, 0), k=10, search_list_size=None, filter_sql="", schema="main", name="v"):
+    """Public KNN query over one deferred DiskANN table."""
+    args = [blob(vector), k]
+    parameter = "knn_param(?,?)"
+    if search_list_size is not None:
+        parameter = "knn_param(?,?,?)"
+        args.append(json.dumps({"search_list_size": search_list_size}))
+    return db.execute(
+        f'SELECT rowid,distance FROM "{schema}"."{name}" WHERE knn_search(embedding,{parameter}) {filter_sql}',
+        args,
+    ).fetchall()
+
+
+def canonical_topk(db, vector, k, schema="main", name="v"):
+    """Brute-force top-k over canonical live rows: (rowid, f32 distance bits)."""
+    rows = db.execute(
+        f'SELECT c.public_rowid,e.vector FROM "{schema}"."{name}_diskann_current" c '
+        f'JOIN "{schema}"."{name}_diskann_entries" e ON e.entry_id=c.entry_id'
+    ).fetchall()
+    query = np.asarray(vector, dtype=np.float64)
+    scored = []
+    for rowid, payload in rows:
+        stored = np.frombuffer(payload, dtype="<f4").astype(np.float64)
+        distance = float(np.sum((stored - query) ** 2))
+        scored.append((distance, rowid))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [(rowid, struct.pack("<f", float(np.float32(distance)))) for distance, rowid in scored[:k]]
+
+
+def assert_retired_invariant(db, generation_id, schema="main", name="v"):
+    """Asserts COUNT(generation_retired) == total_count - eligible_count."""
+    row = db.execute(
+        f'SELECT total_count,eligible_count FROM "{schema}"."{name}_diskann_generations" WHERE generation_id=?',
+        (generation_id,),
+    ).fetchone()
+    assert row is not None
+    count = db.execute(
+        f'SELECT count(*) FROM "{schema}"."{name}_diskann_generation_retired" WHERE generation_id=?',
+        (generation_id,),
+    ).fetchone()[0]
+    assert count == row[0] - row[1], (generation_id, count, tuple(row))
+
+
+def retired_members(db, generation_id, schema="main", name="v"):
+    """Sorted retired entry ids recorded for one generation (the D3 read set)."""
+    return [
+        row[0]
+        for row in db.execute(
+            f'SELECT entry_id FROM "{schema}"."{name}_diskann_generation_retired" '
+            "WHERE generation_id=? ORDER BY entry_id",
+            (generation_id,),
+        )
+    ]
 
 
 def control(db, op, schema="main", name="v", **opts):
@@ -182,13 +239,31 @@ def test_real_native_candidate_import_atomic_publish_and_root(population):
         finish(db, j, result, publish=False)
         g = dict(db.execute("SELECT * FROM v_diskann_generations WHERE generation_id=?", (j["generation_id"],)).fetchone())
         assert g["state"] == 0 and g["eligible_count"] == population
-        nodes = db.execute("SELECT native_local_id,entry_id,state,frozen_vector,neighbors FROM v_diskann_graph_nodes WHERE generation_id=? ORDER BY native_local_id", (j["generation_id"],)).fetchall()
+        # Format-5 seven-column node rows and 16-byte neighbour slots.
+        nodes = db.execute(
+            "SELECT generation_id,native_local_id,entry_id,public_rowid,state,neighbors,vector "
+            "FROM v_diskann_graph_nodes WHERE generation_id=? ORDER BY native_local_id",
+            (j["generation_id"],),
+        ).fetchall()
         assert len(nodes) == (population + 1 if population else 0)
         assert g["root_local_id"] == (population if population else None)
+        assert all(node[0] == j["generation_id"] for node in nodes)
+        assert all(len(node[5]) % 16 == 0 for node in nodes)
         if population:
-            assert nodes[0][0] == 0 and nodes[0][2] == 0
-            assert tuple(nodes[-1])[:3] == (population, None, 2)
-            assert len(nodes[-1][3]) == 8
+            assert nodes[0][1] == 0 and nodes[0][4] == 0
+            assert nodes[0][2] is not None and nodes[0][3] is not None
+            assert tuple(nodes[-1])[1:5] == (population, None, None, 2)
+            assert len(nodes[-1][6]) == 8
+            # entry=0 only for the frozen root; every other slot carries a
+            # nonzero entry identity.
+            entries_by_local = {node[1]: node[2] for node in nodes if node[4] == 0}
+            for node in nodes:
+                slots = struct.unpack(f"<{len(node[5]) // 8}Q", node[5])
+                for index in range(0, len(slots), 2):
+                    target, entry = slots[index], slots[index + 1]
+                    assert (entry == 0) == (target == g["root_local_id"]), (node[1], target, entry)
+                    if entry:
+                        assert entry == entries_by_local[target]
         db.execute("BEGIN")
         control(db, "index_publish", job_id=j["job_id"], candidate_token=result["candidate_token"])
         assert db.in_transaction
@@ -215,18 +290,100 @@ def test_retirement_before_after_import_and_no_publication_reconcile():
             db.execute("INSERT INTO v(rowid,embedding) VALUES(?,?)", (i, blob((i, 1))))
         j = snapshot(db, prepare(db))
         result = candidate(db, j)
+        pre_import_retired = db.execute(
+            "SELECT entry_id FROM v_diskann_current WHERE public_rowid=0"
+        ).fetchone()[0]
         db.execute("DELETE FROM v WHERE rowid=0")  # before import
         control(db, "index_import_step", job_id=j["job_id"], candidate_token=result["candidate_token"], max_records=2, max_bytes=65536)
         assert db.execute("SELECT eligible_count FROM v_diskann_generations").fetchone()[0] == 1
+        imported = db.execute("SELECT import_cursor FROM v_diskann_jobs").fetchone()[0]
+        if imported >= 1:
+            # The pre-import retirement is import-maintained: the ineligible
+            # version is a member of the generation retired set (D3 read set).
+            # The count invariant is asserted only once import has completed.
+            assert pre_import_retired in retired_members(db, j["generation_id"])
         db.execute("UPDATE v SET embedding=? WHERE rowid=1", (blob((30, 40)),))  # after import
         assert db.execute("SELECT eligible_count FROM v_diskann_generations").fetchone()[0] == 0
+        mid_import_retired = db.execute(
+            "SELECT entry_id FROM v_diskann_entries WHERE public_rowid=1 AND retired_revision IS NOT NULL"
+        ).fetchone()[0]
+        assert mid_import_retired in retired_members(db, j["generation_id"])
         finish(db, j, result, publish=False)
+        # Import completed, so the D3 count invariant holds for the staged
+        # generation even before publication.
+        assert_retired_invariant(db, j["generation_id"])
         db.execute("DELETE FROM v WHERE rowid=2")  # after validation, before publish
         assert db.execute("SELECT eligible_count FROM v_diskann_generations").fetchone()[0] == 1
         control(db, "index_publish", job_id=j["job_id"], candidate_token=result["candidate_token"])
         assert db.execute("SELECT eligible_count,total_count FROM v_diskann_generations").fetchone()[:] == (1, 4)
+        assert_retired_invariant(db, j["generation_id"])
     finally:
         db.close()
+
+
+def test_three_phase_supported_churn_queries_match_canonical_truth():
+    """D10 row 1 (real lifecycle): churn in all three retirement phases.
+
+    A real published generation is built only through the public fenced job
+    operations, so the production import-time (!eligible_now) and retire-time
+    retired-row writers are the ones exercised. Supported UPDATE/DELETE churn is
+    applied pre-import (after the sealed capture), mid-import (between bounded
+    import steps) and post-publish. In every phase the published KNN answer must
+    equal a brute-force scan of the canonical live rows (ordered rowids and
+    distance bits), and the D3 retired-count invariant must hold.
+    """
+    options = "degree=16,build_list_size=20,search_list_size=4,max_visits=4096"
+    vector = (5.5, 0)
+    k = 6
+    l = 8
+    baseline = None
+    for phase in ("pre-import", "mid-import", "post-publish"):
+        db = connect()
+        try:
+            create(db, options=options)
+            for i in range(16):
+                db.execute("INSERT INTO v(rowid,embedding) VALUES(?,?)", (i, blob((i, 0))))
+            j = snapshot(db, prepare(db))
+            result = candidate(db, j)
+            if phase == "pre-import":
+                db.execute("DELETE FROM v WHERE rowid=7")
+                db.execute("UPDATE v SET embedding=? WHERE rowid=3", (blob((300, 0)),))
+                finish(db, j, result)
+            elif phase == "mid-import":
+                control(
+                    db,
+                    "index_import_step",
+                    job_id=j["job_id"],
+                    candidate_token=result["candidate_token"],
+                    max_records=1,
+                    max_bytes=65536,
+                )
+                db.execute("DELETE FROM v WHERE rowid=7")
+                db.execute("UPDATE v SET embedding=? WHERE rowid=3", (blob((300, 0)),))
+                finish(db, j, result)
+            else:
+                finish(db, j, result)
+                db.execute("DELETE FROM v WHERE rowid=7")
+                db.execute("UPDATE v SET embedding=? WHERE rowid=3", (blob((300, 0)),))
+            assert_retired_invariant(db, j["generation_id"])
+            retired = retired_members(db, j["generation_id"])
+            assert len(retired) == 2, (phase, retired)
+            expected = canonical_topk(db, vector, k)
+            rows = knn(db, vector=vector, k=k, search_list_size=l)
+            served = [(rowid, struct.pack("<f", distance)) for rowid, distance in rows]
+            assert served == expected, phase
+            if baseline is None:
+                baseline = expected
+            assert expected == baseline, phase
+            print(
+                "T6_JOBS_CHURN_PHASE "
+                + json.dumps(
+                    {"phase": phase, "rowids": [rowid for rowid, _ in expected], "retired": len(retired)},
+                    sort_keys=True,
+                )
+            )
+        finally:
+            db.close()
 
 
 def test_late_snapshot_sql_error_rolls_back_map_and_cursor():
@@ -361,9 +518,12 @@ def test_progressive_validation_compares_ordered_native_adjacency():
         control(db, "index_import_step", job_id=j["job_id"], candidate_token=result["candidate_token"], max_records=256, max_bytes=65536)
         assert job(db)["phase"] == 3 and job(db)["validation_cursor"] == 0
         original = db.execute("SELECT neighbors FROM v_diskann_graph_nodes WHERE native_local_id=0").fetchone()[0]
-        assert len(original) >= 16, "fixture must exercise native adjacency ordering"
-        ids = struct.unpack(f"<{len(original) // 8}Q", original)
-        changed = struct.pack(f"<{len(ids)}Q", *reversed(ids))
+        assert len(original) >= 32, "fixture must exercise native adjacency ordering"
+        # Reverse the 16-byte (id, entry) slot order while keeping every slot's
+        # internal encoding valid: same ids, degree and range, different native
+        # order, so only the ordered comparison can reject it.
+        slots = [original[offset : offset + 16] for offset in range(0, len(original), 16)]
+        changed = b"".join(reversed(slots))
         assert changed != original
         # Same valid degree/range/IDs but different native order: fault injection.
         db.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE native_local_id=0", (changed,))
@@ -395,7 +555,7 @@ def test_gc_bounded_data_rows_actual_retired_count_and_published_navigation():
         finish(db, new, candidate(db, new))
 
         def counts():
-            return tuple(db.execute(f"SELECT count(*) FROM v_diskann_{table}").fetchone()[0] for table in ["graph_nodes", "snapshot_map", "entries"])
+            return tuple(db.execute(f"SELECT count(*) FROM v_diskann_{table}").fetchone()[0] for table in ["graph_nodes", "snapshot_map", "generation_retired", "entries"])
 
         for _ in range(60):
             before = counts()

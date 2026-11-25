@@ -1518,6 +1518,7 @@ unsafe extern "C" fn x_shadow_name(suffix: *const c_char) -> c_int {
             | "diskann_current"
             | "diskann_generations"
             | "diskann_graph_nodes"
+            | "diskann_generation_retired"
             | "diskann_jobs"
             | "diskann_snapshot_map"
             | "diskann_txn"

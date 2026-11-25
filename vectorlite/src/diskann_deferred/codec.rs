@@ -1,4 +1,4 @@
-//! Checked Format4 little-endian payload and numeric policies.
+//! Checked Format5 little-endian payload and numeric policies.
 use super::*;
 pub(crate) fn corrupt(message: impl Into<String>) -> IndexError {
     IndexError::with_code(ffi::SQLITE_CORRUPT as i32, message)
@@ -86,43 +86,152 @@ pub(crate) fn bounded_blob(
     Ok(bytes)
 }
 
-pub(crate) fn encode_ids(ids: &[u64], maximum: usize, owner: Option<u64>) -> Result<Vec<u8>> {
-    validate_ids(ids, maximum, owner)?;
-    let bytes = checked_product(ids.len(), 8, "adjacency")?;
-    let mut output = Vec::new();
-    reserve(&mut output, bytes)?;
-    for &id in ids {
-        output.extend_from_slice(&id.to_le_bytes());
-    }
-    Ok(output)
-}
-
-pub(crate) fn validate_ids(ids: &[u64], maximum: usize, owner: Option<u64>) -> Result<()> {
-    if ids.len() > maximum {
+pub(crate) fn encode_ids(
+    slots: &[(u64, u64)],
+    maximum: usize,
+    owner: Option<u64>,
+    root: u64,
+) -> Result<Vec<u8>> {
+    if slots.len() > maximum {
         return Err(corrupt("DiskANN adjacency exceeds physical degree"));
     }
-    // Degree is bounded by the options; no graph-sized duplicate set is needed.
-    for (index, &id) in ids.iter().enumerate() {
-        if id > MAX_ID || owner == Some(id) || ids[..index].contains(&id) {
+    let mut output = Vec::new();
+    reserve(&mut output, checked_product(slots.len(), 16, "adjacency")?)?;
+    for (index, &(id, entry)) in slots.iter().enumerate() {
+        if id > root
+            || id > MAX_ID
+            || entry > MAX_ID
+            || (entry == 0) != (id == root)
+            || owner == Some(id)
+            || slots[..index].iter().any(|&(previous, _)| previous == id)
+        {
             return Err(corrupt(
                 "DiskANN adjacency contains an invalid, duplicate, or self ID",
             ));
         }
+        output.extend_from_slice(&id.to_le_bytes());
+        output.extend_from_slice(&entry.to_le_bytes());
+    }
+    Ok(output)
+}
+
+/// Shared adjacency envelope check: whole 16-byte slots and never more than the
+/// physical degree the caller validates against.
+fn check_slot_envelope(bytes: &[u8], maximum: usize) -> Result<()> {
+    if !bytes.len().is_multiple_of(16) || bytes.len() / 16 > maximum {
+        return Err(corrupt("DiskANN adjacency has an invalid byte length"));
     }
     Ok(())
 }
 
-pub(crate) fn decode_ids(bytes: &[u8], maximum: usize, owner: Option<u64>) -> Result<Vec<u64>> {
-    if !bytes.len().is_multiple_of(8) || bytes.len() / 8 > maximum {
-        return Err(corrupt("DiskANN adjacency has an invalid byte length"));
-    }
+/// Reads one 16-byte little-endian slot as (native local id, entry id).
+fn read_slot(chunk: &[u8; 16]) -> (u64, u64) {
+    (
+        u64::from_le_bytes(chunk[..8].try_into().expect("eight-byte slot")),
+        u64::from_le_bytes(chunk[8..].try_into().expect("eight-byte slot")),
+    )
+}
+
+/// The one adjacency-slot identity predicate shared by both decoders.
+///
+/// `duplicate` is supplied by the caller from the ids it has already accepted:
+/// the pair decoder scans its pair buffer and the streaming decoder scans the id
+/// buffer, so both perform exactly the same validation with no extra storage.
+fn slot_identity_valid(
+    id: u64,
+    entry: u64,
+    owner: Option<u64>,
+    root: u64,
+    duplicate: bool,
+) -> bool {
+    id <= root
+        && id <= MAX_ID
+        && entry <= MAX_ID
+        && (entry == 0) == (id == root)
+        && owner != Some(id)
+        && !duplicate
+}
+
+/// Decode every validated slot identity as a (native local id, entry id) pair.
+///
+/// The pair is the frozen neighbour identity the query adapter needs to score a
+/// target from the canonical entries table without a join: the entry id is the
+/// snapshot-stable identity written by import, and zero is the frozen-root
+/// sentinel that is legal only for the root id itself.
+pub(crate) fn decode_slots(
+    bytes: &[u8],
+    maximum: usize,
+    owner: Option<u64>,
+    root: u64,
+) -> Result<Vec<(u64, u64)>> {
+    check_slot_envelope(bytes, maximum)?;
     let mut output = Vec::new();
-    reserve(&mut output, bytes.len() / 8)?;
-    for chunk in bytes.as_chunks::<8>().0 {
-        output.push(u64::from_le_bytes(*chunk));
+    reserve(&mut output, bytes.len() / 16)?;
+    for chunk in bytes.as_chunks::<16>().0 {
+        let (id, entry) = read_slot(chunk);
+        if !slot_identity_valid(
+            id,
+            entry,
+            owner,
+            root,
+            output.iter().any(|&(previous, _)| previous == id),
+        ) {
+            return Err(corrupt(
+                "DiskANN adjacency contains an invalid, duplicate, or self ID",
+            ));
+        }
+        output.push((id, entry));
     }
-    validate_ids(&output, maximum, owner)?;
     Ok(output)
+}
+
+/// Validate and stream every adjacency slot in one pass, with no pair buffer.
+///
+/// This performs exactly the validation `decode_slots` performs, but emits the
+/// 8-byte native local id, in slot order, into `ids` (the order the traversal
+/// core expects) and hands the frozen `(native local id, entry id)` pair straight
+/// to `pair`. The query reader's sink writes that pair into the operation's
+/// bounded, separately budget-charged pair cache, so the decoder's transient
+/// footprint is only the caller's copied blob (16 B per slot) plus `ids`
+/// (8 B per slot) = 24 B per slot, the unchanged D6 owner adjacency term; no
+/// intermediate pair Vec exists between the two.
+///
+/// `ids` must be empty on entry: it doubles as the duplicate-detection set, so
+/// its exact reservation is the only buffer this decoder allocates.
+pub(crate) fn decode_slots_streamed(
+    bytes: &[u8],
+    maximum: usize,
+    owner: Option<u64>,
+    root: u64,
+    ids: &mut Vec<u64>,
+    mut pair: impl FnMut(u64, u64) -> Result<()>,
+) -> Result<()> {
+    check_slot_envelope(bytes, maximum)?;
+    reserve(ids, bytes.len() / 16)?;
+    for chunk in bytes.as_chunks::<16>().0 {
+        let (id, entry) = read_slot(chunk);
+        if !slot_identity_valid(id, entry, owner, root, ids.contains(&id)) {
+            return Err(corrupt(
+                "DiskANN adjacency contains an invalid, duplicate, or self ID",
+            ));
+        }
+        ids.push(id);
+        pair(id, entry)?;
+    }
+    Ok(())
+}
+
+/// Decode ids only; the validated slot identities are discarded.
+pub(crate) fn decode_ids(
+    bytes: &[u8],
+    maximum: usize,
+    owner: Option<u64>,
+    root: u64,
+) -> Result<Vec<u64>> {
+    Ok(decode_slots(bytes, maximum, owner, root)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
 }
 
 pub(crate) fn encode_vector(vector: &[f32]) -> Result<Vec<u8>> {
@@ -431,14 +540,114 @@ mod tests {
 
     #[test]
     fn adjacency_codec_checks_degree_duplicates_self_and_signed_range() {
-        let bytes = encode_ids(&[0, 17, MAX_ID], 3, Some(2)).unwrap();
-        assert_eq!(decode_ids(&bytes, 3, Some(2)).unwrap(), [0, 17, MAX_ID]);
-        assert!(decode_ids(&bytes, 2, None).is_err());
-        assert!(decode_ids(&bytes[..23], 3, None).is_err());
-        assert!(encode_ids(&[1, 1], 3, None).is_err());
-        assert!(encode_ids(&[3], 3, Some(3)).is_err());
-        assert!(encode_ids(&[MAX_ID + 1], 3, None).is_err());
-        assert!(decode_ids(&encode_ids(&[0, 1], 3, None).unwrap(), 3, Some(1)).is_err());
+        let slots = [(0, 9), (17, 22), (20, 0)];
+        let bytes = encode_ids(&slots, 3, Some(2), 20).unwrap();
+        assert_eq!(&bytes[..8], &0u64.to_le_bytes());
+        assert_eq!(&bytes[8..16], &9u64.to_le_bytes());
+        // The pair decoder preserves both frozen identity fields; only the root
+        // slot may carry the zero entry sentinel.
+        assert_eq!(
+            decode_slots(&bytes, 3, Some(2), 20).unwrap(),
+            [(0, 9), (17, 22), (20, 0)]
+        );
+        assert!(decode_slots(&bytes, 2, None, 20).is_err());
+        assert!(decode_slots(&bytes[..47], 3, None, 20).is_err());
+        assert_eq!(decode_ids(&bytes, 3, Some(2), 20).unwrap(), [0, 17, 20]);
+        assert!(decode_ids(&bytes, 2, None, 20).is_err());
+        assert!(decode_ids(&bytes[..47], 3, None, 20).is_err());
+        for bad in [
+            &[(1, 1), (1, 2)][..],
+            &[(3, 5)],
+            &[(MAX_ID + 1, 1)],
+            &[(1, 0)],
+            &[(20, 1)],
+            &[(1, MAX_ID + 1)],
+        ] {
+            assert!(encode_ids(bad, 3, Some(3), 20).is_err());
+        }
+        let mut bad = bytes.clone();
+        bad[8..16].copy_from_slice(&0u64.to_le_bytes());
+        assert!(decode_ids(&bad, 3, None, 20).is_err());
+        bad = bytes.clone();
+        bad[40..48].copy_from_slice(&1u64.to_le_bytes());
+        assert!(decode_ids(&bad, 3, None, 20).is_err());
+        assert!(decode_ids(&bytes, 3, Some(17), 20).is_err());
+        bad = bytes.clone();
+        bad[16..24].copy_from_slice(&0u64.to_le_bytes());
+        assert!(decode_ids(&bad, 3, None, 20).is_err());
+        bad = bytes.clone();
+        bad[..8].copy_from_slice(&21u64.to_le_bytes());
+        assert!(decode_ids(&bad, 3, None, 20).is_err());
+        bad = bytes.clone();
+        bad[8..16].copy_from_slice(&(MAX_ID + 1).to_le_bytes());
+        assert!(decode_ids(&bad, 3, None, 20).is_err());
+        let options = DiskAnnOptions {
+            degree: 10_000,
+            ..DiskAnnOptions::default()
+        };
+        let physical = options.physical_degree();
+        assert_eq!(physical, 13_000);
+        assert_eq!(physical * 16 + physical * 8, physical * 24);
+        assert!(physical * 24 > 64 * 1024); // owner term dominates the fixed transient buffer at max degree
+    }
+
+    #[test]
+    fn streamed_slot_decode_preserves_order_and_allocates_only_ids() {
+        let slots = [(0u64, 9u64), (17, 22), (20, 0)];
+        let bytes = encode_ids(&slots, 3, Some(2), 20).unwrap();
+        let mut ids = Vec::new();
+        let mut pairs = Vec::new();
+        decode_slots_streamed(&bytes, 3, Some(2), 20, &mut ids, |local, entry| {
+            pairs.push((local, entry));
+            Ok(())
+        })
+        .unwrap();
+        // Slot order is preserved exactly as the traversal core consumes it, and
+        // the pair sink receives the frozen identities in that same order.
+        assert_eq!(ids, [0, 17, 20]);
+        assert_eq!(pairs, slots);
+        // One exact id reservation and no pair buffer: the only streamed bytes
+        // beyond the caller's 16-byte-per-slot blob copy are 8 bytes per slot.
+        assert_eq!(ids.capacity(), slots.len());
+        assert_eq!(
+            bytes.len() + ids.capacity() * size_of::<u64>(),
+            slots.len() * (16 + 8)
+        );
+        // Validation parity with the pair decoder on every rejected shape: a
+        // streamed decode must reject exactly the bytes decode_slots rejects.
+        let mut bad_length = bytes.clone();
+        bad_length.truncate(47);
+        let mut bad_duplicate = bytes.clone();
+        bad_duplicate[16..24].copy_from_slice(&0u64.to_le_bytes());
+        let mut bad_zero_entry = bytes.clone();
+        bad_zero_entry[8..16].copy_from_slice(&0u64.to_le_bytes());
+        let mut bad_root_entry = bytes.clone();
+        bad_root_entry[40..48].copy_from_slice(&1u64.to_le_bytes());
+        let mut bad_range = bytes.clone();
+        bad_range[..8].copy_from_slice(&21u64.to_le_bytes());
+        let mut bad_entry = bytes.clone();
+        bad_entry[8..16].copy_from_slice(&(MAX_ID + 1).to_le_bytes());
+        let mut bad_self = bytes.clone();
+        bad_self[16..24].copy_from_slice(&2u64.to_le_bytes());
+        for bad in [
+            &bad_length,
+            &bad_duplicate,
+            &bad_zero_entry,
+            &bad_root_entry,
+            &bad_range,
+            &bad_entry,
+            &bad_self,
+        ] {
+            assert!(decode_slots(bad, 3, Some(2), 20).is_err());
+            let mut streamed = Vec::new();
+            assert!(
+                decode_slots_streamed(bad, 3, Some(2), 20, &mut streamed, |_, _| Ok(())).is_err()
+            );
+        }
+        // The physical-degree bound rejects an over-long stream for both decoders.
+        assert!(decode_slots(&bytes, 2, Some(2), 20).is_err());
+        let mut over = Vec::new();
+        assert!(decode_slots_streamed(&bytes, 2, Some(2), 20, &mut over, |_, _| Ok(())).is_err());
     }
 
     #[test]
@@ -459,7 +668,7 @@ mod tests {
         assert!(validate_descriptor(b"not-json", &expected).is_err());
         assert!(validate_descriptor(&vec![b' '; MAX_DESCRIPTOR_BYTES + 1], &expected).is_err());
         assert_eq!(expected["adapter_version"], "0.60");
-        assert_eq!(expected["format_version"], 4);
+        assert_eq!(expected["format_version"], 5);
         assert_eq!(expected["atomic_write_protocol"], "guard-two-row-v1");
         assert_eq!(expected["deletion_policy"], "immutable-versions-v1");
         assert_eq!(expected["maintenance"], "deferred-oneshot-v1");

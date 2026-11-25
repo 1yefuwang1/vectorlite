@@ -20,8 +20,12 @@ Supported: `float32` storage, squared L2 and cosine distance, interactive
 inserts/updates/deletes, native pointer-based batch ingestion, one native OneShot
 build worker, and explicit publication. Not included: product quantization,
 half-precision storage, parallel native graph construction (`workers` must be 1),
-inner-product indexing, Merged/partitioned building, background daemons, or
-automatic migration from the earlier experimental disk layout.
+inner-product indexing, Merged/partitioned building, or background daemons.
+
+The durable layout is **Format 5**. A Format-4 database is rejected at connect
+before any mutation, so it has to be migrated explicitly with
+[`vectorlite_index_upgrade`](#migrating-from-format-4) first; there is no
+automatic or connect-time migration.
 
 The dependency is the published crates.io `diskann` / `diskann-providers` /
 `diskann-utils` / `diskann-vector` 0.60.0 packages, pinned exactly in
@@ -89,6 +93,70 @@ Two invariants matter:
 Everything remains inside your database file. There is no sidecar index file, no
 scratch directory, and no background thread started by the extension.
 
+### Published generations (Format 5)
+
+Every published graph-node row is a single-table record:
+`<table>_diskann_graph_nodes` stores the generation id, the native node id, the
+canonical entry id, the public rowid, the node state, the adjacency and the vector.
+The adjacency column precedes the vector so expansion and identity reads never have
+to walk the payload tail (at large degrees or dimensions the adjacency blob can
+itself span overflow pages, so this is a payload-prefix decision, not a promise
+that every read is page-local).
+
+Payload authority is split (see
+[Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits)):
+the node row is authoritative for `public_rowid`, `state` and adjacency, while a
+live node's vector stays canonical in `<table>_diskann_entries`. A live data node
+(`state=0`) therefore carries its entry id, its public rowid and an adjacency blob,
+and its vector column is SQL NULL; its vector is read from the canonical entries
+row by the entry id frozen in the adjacency slot. Only the frozen start point
+(`state=2`, native id equal to the generation's `total_count`) has no entry id or
+public rowid and keeps its vector inline as a bit-copy of the built medoid.
+
+Keeping live vectors canonical is what makes the published node rows page-local:
+a row is a small identity prefix plus the adjacency blob, so the hot graph-route
+read is a single-table point read per expanded node and a single canonical
+`entries` point read per scored candidate, instead of a per-neighbour three-table
+join.
+
+The adjacency is a blob of 16-byte little-endian slots `(native_local_id,
+entry_id)`. A slot's `entry_id` is zero **only** for the frozen start point; any
+other zero entry, or a non-zero entry on the start point's slot, is corruption.
+Import validates slot count, degree, duplicates, self edges, range and that
+sentinel, and the query path decodes the ids and returns every valid target
+unchanged, so retired nodes and the frozen root stay navigation bridges. The slot's
+`entry_id` is also the canonical scoring key: each expansion's streamed decode
+fills a bounded per-expansion native-to-entry pair cache, and a scored candidate
+reads its vector from `<table>_diskann_entries` by that key. Eligibility is still
+decided from the entries row actually read (the retire-maintained set plus the
+interval rules), never from the slot alone.
+
+A generation's retired versions are recorded in a ninth shadow table,
+`<table>_diskann_generation_retired` (WITHOUT ROWID, primary key
+`(generation_id, entry_id)`). It is written in the same journaled transition that
+decrements the generation's `eligible_count` when a supported UPDATE/DELETE
+retires an already-imported version, and by import itself when a version was
+already retired before it was imported. For every staged or published generation:
+
+```
+COUNT(generation_retired rows for generation g) == total_count - eligible_count
+```
+
+Import validation and publication assert that equality for the candidate, and the
+start of every graph-route query asserts it for the published generation;
+count-changing tampering with either side fails closed with `SQLITE_CORRUPT`.
+Bounded cleanup reclaims a garbage generation's retired rows and graph nodes in
+the same bounded steps, so the equality intentionally does not hold while a
+generation is being reclaimed.
+
+Format 5 has nine shadow tables per index: `<table>_diskann_meta`,
+`_entries`, `_current`, `_generations`, `_graph_nodes`,
+`_generation_retired`, `_jobs`, `_snapshot_map` and `_txn`. Format 4 had the
+same layout without `_generation_retired` (eight tables). All nine are registered
+shadow-table suffixes of the virtual table (the module's `xShadowName` accepts
+each one), and none is an editing or import API — see
+[Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits).
+
 ### Visibility while a generation is pending
 
 * A row inserted after the published generation was built is **canonical but not
@@ -115,9 +183,10 @@ COMMIT;
 
 Public rowids are required, nonnegative, and no greater than `i64::MAX`; UPDATE
 cannot change a rowid. The vector, its immutable version record, the current
-rowid mapping and the canonical/eligible counters change inside the ordinary
-journaled statement, so a failed statement or a rolled-back transaction restores
-the previous canonical state exactly.
+rowid mapping, the canonical/eligible counters and the published/candidate
+generations' retired-entry records all change inside the ordinary journaled
+statement, so a failed statement or a rolled-back transaction restores the
+previous canonical state exactly.
 
 Mutation requires a rollback-capable journal mode. `journal_mode=OFF` is rejected
 rather than silently changing host configuration. `MEMORY` provides statement
@@ -351,9 +420,9 @@ ordinary locking, not maintenance blocking ingestion for a whole build. Publishi
 the cutoff.
 
 An UPDATE behaves the same way for eligibility: the previous version stops
-matching the current-version check immediately, so that row is absent from vector
-search until its new version is published. Rows the published generation does
-cover are unaffected.
+matching the published generation's eligibility immediately, so that row is
+absent from vector search until its new version is published. Rows the published
+generation does cover are unaffected.
 
 Rules that matter:
 
@@ -440,7 +509,7 @@ Read-only and bounded (no corpus count, no vector scan); it performs no recovery
 writes and can be called on a read-only connection:
 
 ```json
-{"format":4,"index_uuid":"idx:...","canonical_count":10100,
+{"format":5,"index_uuid":"idx:...","canonical_count":10100,
  "pending_count":100,"eligible_count":10000,"retired_count":3,"revision":412,
  "published_generation":7,"published_count":10000,"published_source_count":10000,
  "published_source_hash":"...","candidate_generation":null,"active_job":null,
@@ -455,6 +524,8 @@ writes and can be called on a read-only connection:
 
 `pending_count = canonical_count - eligible_count` is the number of stored rows
 that no published generation currently covers. It is the freshness backlog.
+`format` is the durable layout version (5 for this build; a Format-4 database
+cannot connect and is migrated with `vectorlite_index_upgrade`).
 
 ## Query
 
@@ -485,19 +556,104 @@ Like existing vectorlite tables, queries require a KNN or rowid equality/IN
 constraint. Arbitrary SQL predicates are not automatically pushed into graph
 search. Request `ORDER BY distance, rowid` when SQL-level ordering is required.
 
-Every KNN path restricts results to the published generation **and** to the
-current version of each row: pending, superseded and deleted versions are rejected
-before the top-k is truncated. This includes small rowid filters, large-k requests
-and underfilled filtered searches that take the exact streaming fallback, so
-approximate and exact paths agree on eligibility. Navigation may read retired
-immutable vectors as bridges, but they cannot appear as results. An empty
-published population returns an empty result even when rows are pending.
+On supported data, every KNN path restricts results to the published generation
+**and** to versions that are still current: pending, superseded and deleted
+versions are rejected before the top-k is truncated. This includes small rowid filters, large-k
+requests and underfilled filtered searches that take the exact streaming
+fallback, so approximate and exact paths agree on eligibility. Navigation may
+read retired immutable vectors as bridges, but they cannot appear as results. An
+empty published population returns an empty result even when rows are pending.
 
-Projected vector bytes are materialized with their distances, so a later
-same-connection update cannot mix an old distance with a changed vector. Cursors
-retain a SQLite snapshot anchor; close them promptly to release WAL snapshots.
-Other connections follow ordinary SQLite isolation and `SQLITE_BUSY_SNAPSHOT`
-rules.
+Format 5 changes how the traversal route proves liveness: it reads the published
+node row (identity, state, adjacency), decides eligibility from the per-generation
+retired table instead of joining `entries` and `current` for every neighbour and
+every scored candidate, and reads a scored live candidate's vector from canonical
+`entries` by the entry id its adjacency slot carries. On supported data this is
+strictly equivalent to the join rule - same rowids, order and distance bits, on
+every route and at every budget. The exact routes keep the indexed `current` join
+and read the canonical `entries` payload through it; the fallback route used when
+the retired set cannot be admitted still joins both tables and keeps HEAD's
+`current`-based classification. The unsupported states in which a direct shadow
+edit can make those routes disagree are enumerated in
+[Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits).
+
+Projected vector bytes are materialized from the canonical `entries` payload (the
+frozen start point from its node row) together with their distances, so a later
+same-connection update cannot mix an old distance with a changed vector. A query also verifies two stamps before it returns rows -
+SQLite's total-change counter and a shadow-schema `(count, sum(rootpage))` stamp
+over the nine shadow names - so a same-connection DML write, or a shadow-table
+rename/drop/CTAS-recreation, committed while the query runs fails closed with
+`SQLITE_BUSY` instead of returning a time-mixed answer. The guarantee covers
+changes observed after both stamps are captured; a write that lands before the
+captures complete is absorbed into the operation's snapshot (an enumerated
+unsupported-state behaviour). Cursors retain a SQLite snapshot anchor; close them
+promptly to release WAL snapshots. Other connections follow ordinary SQLite
+isolation and `SQLITE_BUSY_SNAPSHOT` rules.
+
+## Payload authority and unsupported shadow edits
+
+Format 5 splits payload authority by field, independently of the route:
+
+* **Query-time payload authority:** the published node row is authoritative for
+  `public_rowid`, `state` and adjacency on every route (including the
+  three-table fallback and the exact routes' identity checks), while **live
+  vectors are authoritative in canonical `entries`** and are read by the scored
+  candidate's entry id on every route. Only the frozen start point keeps its
+  vector inline and reads it from its node row. The traversal route scores a live
+  candidate with one canonical `entries` point read; the exact and projection
+  routes read canonical `e.vector` through their indexed join; the fallback
+  projects `e.vector` for live rows and `n.vector` for the frozen start point.
+  Authority is therefore route-independent, and `entries.vector` damage is
+  query-visible again exactly as it was in Format 4.
+* **Canonical `entries` and `current` are authoritative for ingest, build,
+  snapshot/import validation and publication**, exactly as before. The frozen start
+  point follows the same rule Format 4 already used for its frozen vector.
+
+A practical consequence is that query-time corruption detection covers both halves
+of the split: damaged published node `public_rowid`/`state`/adjacency payloads
+and every canonical vector read a query actually scores fail closed inside the
+query (every read keeps its type, length, role and interval guards), while
+canonical-row damage the query never scores is caught by the next
+snapshot/build/import validation - only for the versions that validation actually
+reads. Snapshot capture and import validation materialize a bounded, ordered window
+of versions and stop when the expected population is reached, so a trailing retired
+version can be skipped; canonical edits that satisfy those identity/window checks
+are not errors, they change what a later build captures.
+
+**Supported states are strictly equivalent.** For every state reachable through
+the supported SQL surface - INSERT/UPDATE/DELETE (including statement and
+savepoint rollback), the native batch INSERT, and the control/build/publication
+calls - and for a connection with no write during the operation, every KNN query
+returns the same rowids, in the same order, with the same distance bits as the
+previous deferred backend, on every route and at every budget, including tight
+budgets that force the three-table fallback. Recall is unchanged, and
+`max_visits` outcomes are unchanged because owner visits for the same traversal
+are unchanged.
+
+Everything below is reachable **only** by direct shadow-table writes,
+shadow-table DDL, or reentrant host callbacks. None of it is reachable through
+the supported API. The previous backend observed several of these through its
+per-read `entries`/`current` joins (typically by erroring or excluding a row);
+the rows below state what Format 5 does instead and where, if anywhere, the state
+is caught.
+
+| Unsupported state | Format 5 behaviour | Limit / where caught |
+|---|---|---|
+| `entries.vector` damaged after publication (shadow UPDATE or `sqlite3_blob_write`) | query-visible `SQLITE_CORRUPT` on the scored canonical read, exactly like Format 4 and the baseline's per-read join: the traversal route scores every candidate from `entries`, and the exact, fallback and projection routes read canonical `e.vector` too | entries a query never scores are caught by the next snapshot/build/import validation, for the versions it reads; a same-length finite-byte rewrite is not detectable by type/length guards (the B1-accepted class) |
+| `entries.retired_revision` edited, with or without deleting or restoring the matching `current` row | **retire-direction** (an unbooked retirement revision on a live entry, or a booked entry whose revision is cleared): the traversal route fails closed with `SQLITE_CORRUPT` on a scored row - interval bounds first (creation inside the snapshot, retirement after creation and no later than the anchored metadata revision), then exact agreement between the entries revision and the retire-maintained set, where a present revision outside the set and a set member with a NULL revision are both corruption. The fallback fails closed for a still-current entry carrying any retirement revision and excludes a non-current entry as a deleted bridge (HEAD's classify asymmetry); the exact routes restore HEAD's `retired_revision IS NULL` interval rule, so a current entry carrying a revision is corruption. A correctly booked non-current bridge stays navigable and is never returned. **Un-retire variant with a restored `current` row:** the traversal route still fails closed, while the fallback and the exact point/small-`IN` shapes serve the stale row as HEAD's join would and the unfiltered exact shape fails its population/`eligible_count` guard exactly as HEAD does | **fail-closed on the traversal route; route-divergent where HEAD is permissive**, and never a wrong row for the traversal route; pinned per variant on all routes, including scored-but-not-returned cases |
+| `current` row deleted or repointed without retiring the version | the traversal route does not observe the edit and can accept the row, then fails closed with `SQLITE_CORRUPT` at the accepted-row projection, so the row is never returned; exact point/`IN` probes observe the edit and exclude the row; an unfiltered exact scan fails closed on its population/identity checks; the three-table fallback observes the edit | documented divergence: the traversal route no longer reads `current`, which is exactly the per-neighbour join this format removes |
+| Count-changing tamper with `generation_retired` or the generation counters | traversal-route queries fail closed with `SQLITE_CORRUPT` at the operation-start count invariant; exact routes keep their `current`/population behaviour | pinned per variant; a **count-preserving** substitution of one retired id for another passes the count - the substituted node is scored, so the fast-route retirement-bookkeeping rule fails closed at scoring time whenever it is scored (and the accepted-row projection fails closed otherwise), so stale bytes are not returned |
+| Published node row deleted, then traversed | `SQLITE_CORRUPT` on the actual adjacency/state/identity read (the start point's vector for the frozen root) | a deleted edge target the traversal never visits can go unobserved; import validated every slot. A live row's vector column is not query authority on the traversal route; the fallback's role check still requires it to be NULL |
+| Reentrant same-connection write, or shadow-object-relocating DDL (rename, drop, CTAS recreation) during an operation | fails closed with `SQLITE_BUSY` and no rows, from the two stamps: SQLite's total-change counter and a shadow-schema `(count, sum(rootpage))` stamp over the nine shadow names | the guarantee covers changes observed after both stamps are captured; a write that lands before the captures complete is absorbed (next row) |
+| Write landing between the metadata anchor opening and the completed stamp captures | absorbed into the operation's snapshot: the query runs on a self-consistent post-write state instead of `SQLITE_BUSY`. The pinned fixture's outcome is the traversal route accepting a row whose accepted-row projection then fails closed | other collateral outcomes, including ordinary SQL errors, remain possible in this window |
+| Root-preserving shadow-definition change (column rename, `ADD COLUMN ... GENERATED ... VIRTUAL` substitution) | the stamps do not move; routes that read the altered column serve the substituted values - for example a generated substitution on `public_rowid` is served as altered labels by an unprojected graph query and fails closed at the accepted-row projection when projected, while a substitution on the no-longer-query-read live vector column changes no served row - so there is **no** wrong-rows guarantee for this class | enumerated undetected divergence; a fresh statement after the change fails closed through the schema validation |
+| Permutation of shadow-table names that preserves the aggregate `rootpage` sum (for example an `entries`<->`current` swap) | for the pinned `entries`<->`current` swap the swapped `entries` name has no `vector`/`created_revision` column, so the vector-bearing exact-point, small-`IN`, unfiltered-exact and three-table fallback plans all fail closed at the collateral reprepare with an ordinary `no such column` SQL error and serve no rows (the pre-lean stale-row outcome required the inline-vector payload); a permutation that preserves every column a route reads can still compile and is not detected | enumerated undetected divergence; deterministic probes pin every documented outcome per route |
+| Reentrant `sqlite3_blob_write` or second-connection UPDATE on a scored canonical vector mid-operation | the in-flight statement keeps its SQLite snapshot (pre-mutation bytes); a fresh statement reads the rewritten bytes, and a same-length finite rewrite passes the type/length guards, so no query-time detection is promised for the second-connection case (the B1-accepted same-length-rewrite class). A same-connection write fails closed with `SQLITE_BUSY` through the change counter | pinned per class; the published node table is `WITHOUT ROWID`, so `sqlite3_blob_write` cannot open its payload either |
+
+These limitations are why the application-facing rule stays unchanged: write
+only through the virtual table. Direct shadow edits are not a supported API, and
+the table above is the complete enumeration of what can diverge when that rule is
+bypassed.
 
 ## Vector representation and numeric policy
 
@@ -517,14 +673,51 @@ policy.
 ## Memory and limits
 
 `cache_bytes` is an **adapter/query workspace** budget: admitted result sets,
-filter/projection accounting, and bounded SQL-adapter buffers. It is not a
-process-wide RSS cap. Prepared query readers are retained only for the duration of
-one operation and are admitted from this same workspace after the owner reservation
-and the core scratch floor, with a 256 KiB reserve bound; when they cannot be
-admitted the adapter silently uses its scalar read path, so admission outcomes do
-not change. `max_visits` bounds traversal work per operation across
-roughly shared allowances. Exceeding a limit returns an explicit error; nothing is
-silently truncated.
+filter/projection accounting, and the bounded SQL-adapter buffers described
+below. It is not a process-wide RSS cap. `max_visits` bounds traversal work per
+operation across roughly shared allowances. Exceeding a limit returns an explicit
+error; nothing is silently truncated.
+
+A query admits its prepared readers from this workspace after the owner
+reservation and, on the graph route, the core scratch floor, with a 256 KiB
+aggregate reserve bound and 16 KiB reserved for transparent reprepare. There are
+five reader shapes: **NodeExpand** (published node identity plus adjacency, no
+vector), **NodeScore** (the canonical `entries` point read by the frozen slot
+entry id, carrying the interval columns and the vector), **NodeIdentity**
+(published node identity columns only - the smallest prefix, used for state/role
+checks, carry misses and decision reads), and the two indexed exact shapes that
+join canonical `entries` and `current`: **ExactUnfiltered** and the **ExactPoint**
+shape shared by point probes, `IN` probes and the accepted-row projection. Every
+reader is retained only for the duration of one operation and finalized before it
+returns. When a shape cannot be prepared or admitted, that shape silently falls
+back to its scalar prepare/step/finalize path, so admission never changes results.
+
+The graph route admits three more operation-local shapes from the same allowance:
+
+* **The published generation's retired-entry set.** One indexed count, then the
+  sorted ids when the set is non-empty. The load and its validation charge no
+  owner visits. If the set cannot be admitted, the whole query switches to the
+  Format-5-aware three-table reader, which keeps `current`-based eligibility, the
+  root-only inline payload and canonical `e.vector` projection, so no eligibility
+  rule weakens at any budget.
+* **A fixed-capacity carry of accepted-row rowids**, at most the effective search
+  list plus one entries, populated only by post-processing decision reads. It
+  removes the top-k loop's duplicate identity reads without changing visits or
+  results. At tight budgets the allowance can decline it - declining never closes
+  admission for anything else - and the final loop performs ordinary charged
+  identity reads instead; correctness and visit totals are unchanged either way.
+* **A per-expansion native-to-entry pair cache**, fixed at one 16-byte pair per
+  physical-degree slot plus container slack and charged last with the same
+  non-closing decline. The streamed adjacency decoder fills it directly, so a
+  scored candidate resolves its canonical entry id without a second read; the
+  transient decode footprint stays at the owner's existing per-slot term (16-byte
+  slot copy plus an 8-byte streamed id). When the allowance declines it, or the
+  Debug-only hook forces it off, scoring takes one `NodeIdentity` read per scored
+  id at the same owner-visit charge (zero additional visits), so results, order
+  and `max_visits` outcomes are unchanged either way.
+
+None of these shapes is a cross-query cache: all are cleared at operation end, and
+no vector payload is retained between queries.
 
 The build has a separate, explicit `memory_budget_bytes` covering the owned
 snapshot copy, native provider storage (including the frozen dense buffer), graph
@@ -548,6 +741,46 @@ Practical consequences:
 * Cancellation is cooperative: it is checked between completed native phases and
   fenced at publication, and it does not preempt arbitrary native CPU. To stop a
   build hard, terminate the worker process.
+
+### Query accounting (Debug builds)
+
+Debug builds export `vectorlite_test_*` counters so the native test host can
+account for one query exactly; release artifacts export none of them. On the
+unchurned graph-route fixture (10,000 published rows, no filter, no projection)
+the host asserts the identity
+
+```
+total statement executions == setup reads + expansions + scored candidates
+                            + decision reads + projection reads
+```
+
+where
+
+* **setup reads** are the fixed non-traversal executions (metadata, generation,
+  root node, retired count, root identity, root state, root decision, stamp
+  capture, stamp verification - nine on that fixture; other routes and
+  scalar-only admissions keep their own counts);
+* **expansions** are adjacency reads, one per expanded node;
+* **scored candidates** are canonical `entries` point reads by the frozen slot
+  entry id (batch scoring charges its rowid and vector visits exactly as before;
+  the root is served from its node row);
+* **decision reads** are the post-processing `rowid()` resolutions, which equal
+  the effective search list on that fixture;
+* **projection reads** are the accepted-row projections. Every public
+  `knn_search(embedding, ...)` references the vector column, so the adapter
+  always materializes each accepted row and this term equals k.
+
+Admitting and loading the retired set, admitting the carry, and admitting the pair
+cache, charge no owner visits. The carry resolves the final top-k loop with zero
+SQL while its `rowid()` calls still charge the same owner visits as the previous
+adapter; a carry miss (reachable only when a tight budget disabled the carry)
+performs the ordinary charged identity read. A pair-cache miss (the start point,
+a distance-cache-hit path, or a tight-budget operation whose cache was declined)
+performs the same charged-scope `NodeIdentity` read, so owner-visit totals do not
+depend on the cache being admitted. Owner-visit totals therefore match the previous
+adapter for the same traversal, so `max_visits` outcomes are unchanged. On a
+completed query `prepares == finalizes` after the cursor closes, on success and on
+a deterministic forced-error query.
 
 ### Optional host-owned pager tuning
 
@@ -586,7 +819,8 @@ fixed when comparing builds.
   connection and fail with `SQLITE_READONLY`.
 * **Retired history** is reclaimed only by bounded `index_cleanup_step` calls,
   never by unbounded `DELETE`/`DROP`. Active jobs, the current mapping, published
-  and staged graph references and snapshot inputs are protected.
+  and staged graph references, retired-entry records and snapshot inputs are
+  protected.
 
 Data automatically reopens with the database; there is no external index
 `save`/`load` command. Use normal SQLite backup/checkpoint procedures — the
@@ -596,12 +830,113 @@ these are not separate ANN index sidecars. The transaction guarantees above appl
 to DiskANN and ordinary SQLite tables, **not** to HNSW mutations in the same
 transaction.
 
-Internal shadow tables, journal-carrier rows, the private atomic function and the
-candidate token internals are **not a supported editing/import API**. Changing
-them directly can invalidate the index; attempted guard corruption or unexpected
-guard triggers are rejected before/within mutation. Invalid record lengths, node
-IDs, mappings or formats fail closed when accessed and are never reported as
-missing rows.
+The nine internal shadow tables, journal-carrier rows, the private atomic function
+and the candidate token internals are **not a supported editing/import API**.
+Changing them directly can invalidate the index; attempted guard corruption or
+unexpected guard triggers are rejected before or within the mutation, and a
+same-connection write or shadow-table relocation committed while a query runs
+fails closed with `SQLITE_BUSY`. Invalid record lengths, node IDs, mappings or
+formats fail closed when accessed and are never reported as missing rows. See
+[Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits)
+for the complete list of behaviours reachable only by bypassing the API.
+
+## Migrating from Format 4
+
+Format 5 is not wire-compatible with the earlier Format-4 deferred layout. A
+Format-4 database is rejected at connect time, before any mutation, with
+`DiskANN format version is unsupported; recreate the index or run
+vectorlite_index_upgrade before connecting`. The explicit migration scalar
+upgrades the durable layout in place without touching canonical data:
+
+```sql
+-- Run before any connection connects the virtual table.
+SELECT vectorlite_index_upgrade('main', 'embeddings');
+```
+
+The two arguments are the schema and the base table name, exactly as
+`vectorlite_index_status`. The function returns a bounded JSON document:
+
+```json
+{"format":5,"upgraded":true,"schema":"main","table":"embeddings",
+ "index_uuid":"idx:...","revision":412,"next_entry_id":10101,
+ "next_job_id":7,"next_generation_id":8,"next_fence":19,
+ "canonical_count":10100,"retired_count":3,"cleanup_entry_id":0,
+ "abandoned_published_generation":7,"abandoned_candidate_generation":null,
+ "abandoned_active_job":null}
+```
+
+**What it validates before touching anything.** The target declaration must parse
+under the same bounded declaration grammar the backend itself uses. The carried
+catalog must be exactly the frozen Format-4 shape: all eight Format-4 shadow
+tables with their exact definitions, their unique indexes, no foreign keys, no
+triggers, the two atomic guard rows, and a single metadata row. The carried
+descriptor must match the declaration verbatim; the Format-5 descriptor is derived
+from those carried bytes by parsing them and changing only `format_version`, so
+no descriptor field is ever synthesized. The preserved counters and allocators
+must be internally consistent. A database that already has a
+`generation_retired` table, or whose metadata is missing or not Format 4, is
+refused with zero mutation - a second invocation on an upgraded database reports
+`requires an unupgraded Format-4 database; found format_version 5`.
+
+**What it preserves.** `entries` (every immutable version) and `current` are
+not written. `instance_id`, `revision`, `next_entry_id`, `next_job_id`,
+`next_generation_id`, `canonical_count`, `retired_count` and
+`cleanup_entry_id` are preserved, and the derived descriptor differs only in
+`format_version`.
+
+**What it resets.** All derived state is emptied: `generations`, `graph_nodes`,
+`jobs` and `snapshot_map` rows are deleted (`graph_nodes` is dropped and recreated
+with the Format-5 shape), the additional `generation_retired` layout is created, and
+`published_generation`, `candidate_generation` and `active_job` are set to
+NULL. `next_fence` is
+incremented, so any in-flight or staged job is abandoned and no stale fence can
+reattach; the abandoned ids are reported in the result. Publication is not carried
+across: after the upgrade every canonical row is stored but unsearchable until the
+normal fenced maintenance cycle builds and publishes a Format-5 generation.
+
+**Failure behaviour.** The whole rewrite runs inside one `SAVEPOINT`: it commits
+with `RELEASE` on success and rolls back to the savepoint, preserving the primary
+error, on any failure. A failed or interrupted upgrade therefore leaves the
+Format-4 file byte-identical and retryable. It refuses before starting when
+`journal_mode=off`, when the connection is not in autocommit, when another
+statement or cursor is busy on the connection, or when an explicit outer
+transaction or `SAVEPOINT` makes the wrapper ambiguous. A concurrent writer on
+another connection produces ordinary `SQLITE_BUSY`/`locked` behaviour; retry
+after it finishes. WAL databases and attached schemas are supported - use the
+attached schema name as the first argument.
+
+**Run it before connecting the table.** A Format-4 declaration cannot be connected
+by this build at all, so the scalar is the only path and it never runs against a
+Format-4 instance. It clears any registered candidate state for the table and
+bumps the fence. A connection that nevertheless already held an instance of the
+table is not upgraded in place: the rewrite invalidates its retained statements,
+it fails closed on them, and the connection must be re-established.
+
+**Host restrictions and defensive mode.** The upgrade runs its statements as
+nested SQL from a scalar function. `SQLITE_DBCONFIG_DEFENSIVE` blocks top-level
+writes to tables that SQLite classifies as virtual-table shadow tables, and SQLite
+classifies a shadow table by name: the virtual-table name followed by a suffix
+registered through `xShadowName`, split at the **last** underscore. These
+indexes add `diskann_` to the base name, so current SQLite versions (3.50/3.51)
+do not classify `<table>_diskann_*` as shadow tables at all
+(`pragma_table_list` reports ordinary tables); defensive mode therefore neither
+blocks this upgrade nor stops top-level direct edits to those tables. Treat
+defensive mode as no substitute for the "no direct shadow edits" rule above. If a
+host, a future SQLite build, or another policy does refuse one of the upgrade's
+statements, the savepoint rolls back, the Format-4 file is untouched, and
+SQLite's error is reported. The offline fallback in that case is a rebuild: with
+the extension unloaded, read the canonical rows with plain SQLite (`SELECT
+c.public_rowid, e.vector FROM <table>_diskann_current c JOIN
+<table>_diskann_entries e ON e.entry_id = c.entry_id`), create a Format-5 table
+with the same declaration in a new database, re-ingest those vectors through the
+ordinary INSERT path (stored cosine vectors are already normalized), and run a
+normal maintenance cycle. That is a rebuild, not an in-place upgrade, and the
+Format-4 database can be kept as the backup.
+
+**The reverse route is honest.** A Format-5 database opened by a Format-4 build is
+rejected cleanly by its own format check (`DiskANN format version is unsupported`)
+instead of being misread. The upgrade itself is one-way: to go back to Format 4,
+restore the pre-upgrade file from a backup.
 
 ## Platforms and validation
 
@@ -619,7 +954,7 @@ DiskANN OneShot at matched inputs and settings; a database merely larger than th
 pager cache does not establish a physical beyond-RAM benchmark. Do not interpret
 the repository's historical HNSW figures as new DiskANN performance results.
 
-### Measured query latency (experimental, one host)
+### Measured query latency (previous adapter revision, experimental, one host)
 
 On the release build (Apple M4, macOS arm64, file-backed WAL/FULL, 100 seeded
 queries, k=10, degree 32, build list 100, `cache_bytes` 64 MiB, five interleaved
@@ -630,11 +965,21 @@ at L=10/50/100 (6.2-6.5x versus the previous adapter). The improvement comes fro
 preparing a small set of readers once per operation and reusing them, and from
 reading a candidate's identity and vector in one statement.
 
+Those figures were measured on the adapter revision that introduced reader reuse
+and the merged identity+vector read. Format 5 additionally replaces the
+per-neighbour three-table joins on the traversal route with single-table
+published-node reads (identity/adjacency) plus one canonical `entries` point read
+per scored candidate; its own measurement campaign is recorded with the delivery's
+measurement artifacts, and the numbers above are not Format-5 results.
+
 These are single-host, warm-cache measurements, not a platform, cold-disk or
-beyond-RAM claim. The SQL surface, published-generation/current-version eligibility,
-`max_visits` and `cache_bytes` remain unchanged. Query readers exist only for the
-duration of one operation; there is no cross-query vector or identity cache, so every
-query reads through SQLite and observes its own snapshot. When two faults coincide
-(for example corruption at a node whose visit would also exhaust `max_visits`), the
-reported error may differ from earlier versions; a failing query never returns rows,
-and stale or superseded versions are never returned.
+beyond-RAM claim. The SQL surface, the supported-state eligibility rule (published
+generation plus current version), `max_visits` and `cache_bytes` remain
+unchanged. Query readers exist only for the duration of one operation; there is no
+cross-query vector or identity cache, so every query reads through SQLite and
+observes its own snapshot. When two faults coincide (for example corruption at a
+node whose visit would also exhaust `max_visits`), the reported error may differ
+from earlier versions. A failing query never returns rows, and on supported states
+stale or superseded versions are never returned; the shadow-edit cases that can
+return stale/retired rows are enumerated in
+[Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits).

@@ -1,4 +1,4 @@
-"""Format4 canonical deferred storage against an explicitly fresh library.
+"""Format5 canonical deferred storage against an explicitly fresh library.
 
 Direct shadow edits below are corruption/import-protocol fault injection only.
 No test claims completed build/publication or weakens immediate-index suites.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-SUFFIXES = ("meta", "entries", "current", "generations", "graph_nodes", "jobs", "snapshot_map", "txn")
+SUFFIXES = ("meta", "entries", "current", "generations", "graph_nodes", "generation_retired", "jobs", "snapshot_map", "txn")
 
 
 def artifact():
@@ -81,9 +81,63 @@ def test_pending_point_projection_empty_knn(metric):
         # Existing SQL knn_param contract rejects k=0 before backend routing.
         with pytest.raises(sqlite3.DatabaseError, match="k should be greater than 0"):
             knn(db, filter_sql, k=0)
-    assert db.execute("SELECT format_version,canonical_count,retired_count,published_generation,candidate_generation FROM v_diskann_meta").fetchone() == (4, 2, 0, None, None)
+    assert db.execute("SELECT format_version,canonical_count,retired_count,published_generation,candidate_generation FROM v_diskann_meta").fetchone() == (5, 2, 0, None, None)
     assert db.execute("SELECT count(*) FROM v_diskann_graph_nodes").fetchone() == (0,)
     db.close()
+
+
+def test_format5_seven_column_node_rows_and_ninth_layout(db):
+    """Format 5 lean row: seven columns, root-only payload, and the ninth layout.
+
+    The published node row order is fixed as (generation_id, native_local_id,
+    entry_id, public_rowid, state, neighbors, vector). Live rows (state=0) store
+    SQL NULL for the vector, whose canonical payload stays in diskann_entries;
+    only the frozen root (state=2) carries its 8-byte vector blob. The retired-ids
+    layout is registered as the ninth shadow with its compound WITHOUT ROWID
+    primary key. The meta literal is exactly 5.
+    """
+    assert db.execute("SELECT format_version FROM v_diskann_meta").fetchone() == (5,)
+    columns = [row[1] for row in db.execute("PRAGMA table_info(v_diskann_graph_nodes)")]
+    assert columns == [
+        "generation_id",
+        "native_local_id",
+        "entry_id",
+        "public_rowid",
+        "state",
+        "neighbors",
+        "vector",
+    ]
+    retired_columns = [row[1] for row in db.execute("PRAGMA table_info(v_diskann_generation_retired)")]
+    assert retired_columns == ["generation_id", "entry_id"]
+    assert db.execute(
+        "SELECT count(*) FROM main.sqlite_schema WHERE type='table' AND name='v_diskann_generation_retired'"
+    ).fetchone() == (1,)
+    insert(db, 7, (1, 2))
+    import_fixture(db, state=1)
+    live = db.execute(
+        "SELECT entry_id,public_rowid,state,neighbors,vector FROM v_diskann_graph_nodes WHERE state=0"
+    ).fetchone()
+    assert live[0] is not None and live[1] == 7 and live[2] == 0
+    assert live[3] == b""
+    # Lean v11 payload authority: the live row stores SQL NULL; the canonical
+    # vector lives in diskann_entries (D1/D10).
+    assert live[4] is None
+    root = db.execute(
+        "SELECT entry_id,public_rowid,state,length(neighbors),length(vector) FROM v_diskann_graph_nodes WHERE state=2"
+    ).fetchone()
+    assert root == (None, None, 2, 0, 8)
+    assert db.execute(
+        "SELECT vector FROM v_diskann_entries WHERE entry_id=?", (live[0],)
+    ).fetchone() == (blob((1, 2)),)
+    # The root-only payload rule is schema-enforced: a live row with a vector and a
+    # frozen root without one are both rejected by the v5 CHECK.
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(
+            "INSERT INTO v_diskann_graph_nodes VALUES(1,10,1,7,0,X'',?)", (blob((1, 2)),)
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO v_diskann_graph_nodes VALUES(1,11,NULL,NULL,2,X'',NULL)")
+    assert db.execute("SELECT count(*) FROM v_diskann_generation_retired").fetchone() == (0,)
 
 
 def test_history_original_ids_immutable_versions_and_intervals(db):
@@ -169,10 +223,12 @@ def test_old_format_reopen_clear_readonly_rejection(tmp_path):
     db = open_db(path)
     create(db)
     db.execute("PRAGMA ignore_check_constraints=ON")
-    db.execute("UPDATE v_diskann_meta SET format_version=3")
+    db.execute("UPDATE v_diskann_meta SET format_version=4")
     db.close()
     db = open_db(path, readonly=True)
-    with pytest.raises(sqlite3.DatabaseError, match="unsupported.*Format4"):
+    # The connect-time format check is fail-closed before any mutation; the
+    # message names the unsupported stored format version.
+    with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
         get(db, 7)
     db.close()
 
@@ -222,8 +278,9 @@ def test_guard_schema_and_post_action_damage_rollback(db):
 def import_fixture(db, state=0, generation=1, entry=1):
     # Minimal schema fixture for the reverse-map contract, not real publication.
     db.execute("INSERT INTO v_diskann_generations VALUES(?,1,?,1,zeroblob(32),zeroblob(32),1,1,1)", (generation, state))
-    db.execute("INSERT INTO v_diskann_graph_nodes VALUES(?,0,?,0,NULL,X'')", (generation, entry))
-    db.execute("INSERT INTO v_diskann_graph_nodes VALUES(?,1,NULL,2,?,X'')", (generation, blob((1, 2))))
+    # Lean v11 node row: the live row stores SQL NULL; the vector stays canonical.
+    db.execute("INSERT INTO v_diskann_graph_nodes SELECT ?,0,entry_id,public_rowid,0,X'',NULL FROM v_diskann_entries WHERE entry_id=?", (generation, entry))
+    db.execute("INSERT INTO v_diskann_graph_nodes VALUES(?,1,NULL,NULL,2,X'',?)", (generation, blob((1, 2))))
     db.execute(
         "INSERT INTO v_diskann_jobs(job_id,generation_id,parent_generation,cutoff_revision,"
         "fence,owner_nonce,phase,expected_count,scan_entry_id,captured_count,import_cursor,"
@@ -423,7 +480,8 @@ def test_retirement_updates_published_and_staged_counts_without_history_scan(db)
     insert(db, 7)
     import_fixture(db, state=1)
     db.execute("INSERT INTO v_diskann_generations VALUES(2,2,0,1,zeroblob(32),zeroblob(32),1,1,1)")
-    db.execute("INSERT INTO v_diskann_graph_nodes VALUES(2,0,1,0,NULL,X'')")
+    # Lean v11 node row: live rows store SQL NULL; the vector stays canonical (D1).
+    db.execute("INSERT INTO v_diskann_graph_nodes SELECT 2,0,entry_id,public_rowid,0,X'',NULL FROM v_diskann_entries WHERE entry_id=1")
     db.execute(
         "INSERT INTO v_diskann_jobs(job_id,generation_id,parent_generation,cutoff_revision,"
         "fence,owner_nonce,phase,expected_count,scan_entry_id,captured_count,import_cursor,"
@@ -460,7 +518,7 @@ def test_bounded_open_validates_published_root_and_active_job(tmp_path, damage):
     if damage == "missing_root":
         db.execute("DELETE FROM v_diskann_graph_nodes WHERE state=2")
     elif damage == "nonfinite_root":
-        db.execute("UPDATE v_diskann_graph_nodes SET frozen_vector=? WHERE state=2", (blob((float("nan"), 0)),))
+        db.execute("UPDATE v_diskann_graph_nodes SET vector=? WHERE state=2", (blob((float("nan"), 0)),))
     elif damage == "bad_adjacency":
         db.execute("UPDATE v_diskann_graph_nodes SET neighbors=? WHERE state=2", (struct.pack("<Q", 2),))
     else:
