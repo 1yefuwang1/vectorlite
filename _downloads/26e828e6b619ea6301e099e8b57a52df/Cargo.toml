@@ -1,0 +1,52 @@
+[package]
+name = "vectorlite"
+version = "0.3.0"
+edition = "2021"
+build = "vectorlite/build.rs"
+description = "SQLite extension for fast HNSW vector search"
+license = "Apache-2.0"
+
+[lib]
+name = "vectorlite"
+path = "vectorlite/src/lib.rs"
+crate-type = ["cdylib"]
+
+[[test]]
+name = "build_support"
+path = "vectorlite/tests/build_support.rs"
+
+[[bench]]
+name = "distance_kernels"
+path = "benchmark/distance_kernels.rs"
+harness = false
+
+[dependencies]
+bytemuck = { version = "1", default-features = false, features = ["derive"] }
+# Keep the pre-1.0 graph/provider contracts behind our private SQLite adapter.
+diskann = { version = "=0.60.0", default-features = false }
+diskann-providers = { version = "=0.60.0", default-features = false }
+diskann-utils = { version = "=0.60.0", default-features = false }
+diskann-vector = { version = "=0.60.0", default-features = false }
+serde = "1"
+serde_json = "1"
+sha2 = { version = "=0.10.9", default-features = false }
+tempfile = { version = "3", default-features = false }
+# OneShot uses a private current-thread runtime on an owned coordinator; multi-thread support is for ambient-runtime qualification tests.
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "rt-multi-thread"] }
+vectorlite-sqlite-sys = { path = "vectorlite/vectorlite-sqlite-sys" }
+
+[build-dependencies]
+cc = "1"
+
+# Abort on panic so a Rust panic can never unwind across an `extern "C"` FFI
+# boundary into SQLite/hnswlib (which would be undefined behavior). `cargo test`
+# still builds its harness with unwind, so unit tests are unaffected.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+
+[workspace]
+members = ["vectorlite/vectorlite-sqlite-sys"]

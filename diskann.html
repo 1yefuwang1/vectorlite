@@ -1,0 +1,1054 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQLite-backed DiskANN &mdash; vectorlite 0.3.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=e259d695"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            vectorlite
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="markdown/overview.html">Overview of vectorlite</a></li>
+<li class="toctree-l1"><a class="reference internal" href="markdown/api.html">API reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="markdown/getting-started.html">Getting started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="markdown/news.html">News</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">vectorlite</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">SQLite-backed DiskANN</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/diskann.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="sqlite-backed-diskann">
+<h1>SQLite-backed DiskANN<a class="headerlink" href="#sqlite-backed-diskann" title="Link to this heading"></a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">diskann(...)</span></code> backend stores vectors in SQLite and builds its <strong>global
+DiskANN graph</strong> with unmodified Microsoft DiskANN 0.60.0 Rust algorithms. It is an
+alternative to HNSW, not a change to HNSW’s in-memory persistence or transaction
+behavior.</p>
+<p>This milestone is experimental and uses a <strong>store-first, deferred-indexing</strong> design:</p>
+<ol class="arabic simple">
+<li><p><strong>Ingest</strong> — ordinary INSERT/UPDATE/DELETE (including the native batch
+descriptor) commit canonical vectors transactionally. No graph is built.</p></li>
+<li><p><strong>Maintenance</strong> — an explicit SQL job builds one global graph from a frozen
+snapshot in owned RAM, then publishes it generation by generation.</p></li>
+</ol>
+<p>Vector search sees only a <strong>published</strong> generation. Until a generation is
+published, ingested vectors are stored and readable by rowid but do not appear in
+<code class="docutils literal notranslate"><span class="pre">knn_search</span></code> results.</p>
+<p>Supported: <code class="docutils literal notranslate"><span class="pre">float32</span></code> storage, squared L2 and cosine distance, interactive
+inserts/updates/deletes, native pointer-based batch ingestion, one native OneShot
+build worker, and explicit publication. Not included: product quantization,
+half-precision storage, parallel native graph construction (<code class="docutils literal notranslate"><span class="pre">workers</span></code> must be 1),
+inner-product indexing, Merged/partitioned building, or background daemons.</p>
+<p>The DiskANN deferred layout is <strong>experimental and has never shipped</strong>; this
+build’s on-disk layout (its metadata records <code class="docutils literal notranslate"><span class="pre">format_version</span></code> 5) is the only
+supported one. Because no earlier format was ever released, there is no
+migration path: connecting a database created by an older experimental build
+fails closed at connect time, before any mutation, and the index must be
+recreated (drop the table and rebuild it).</p>
+<p>The dependency is the published crates.io <code class="docutils literal notranslate"><span class="pre">diskann</span></code> / <code class="docutils literal notranslate"><span class="pre">diskann-providers</span></code> /
+<code class="docutils literal notranslate"><span class="pre">diskann-utils</span></code> / <code class="docutils literal notranslate"><span class="pre">diskann-vector</span></code> 0.60.0 packages, pinned exactly in
+<code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>. No algorithm source is vendored or patched in this repository, and
+<code class="docutils literal notranslate"><span class="pre">DiskANNIndex::multi_insert</span></code> is not used.</p>
+<section id="create-a-table">
+<h2>Create a table<a class="headerlink" href="#create-a-table" title="Link to this heading"></a></h2>
+<p>Use a <strong>file-backed SQLite database</strong> for data larger than memory. <code class="docutils literal notranslate"><span class="pre">:memory:</span></code>
+and memory-backed temporary databases store their pages in RAM, and a second
+connection cannot open them — see <a class="reference internal" href="#maintenance-on-a-worker-connection"><span class="xref myst">Maintenance on a worker connection</span></a>.
+DiskANN requires SQLite 3.38.0 or newer; loading the extension for HNSW retains
+its existing minimum-version policy.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">CREATE</span><span class="w"> </span><span class="n">VIRTUAL</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">embeddings</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">vectorlite</span><span class="p">(</span>
+<span class="w">    </span><span class="n">embedding</span><span class="w"> </span><span class="n">float32</span><span class="p">[</span><span class="mi">768</span><span class="p">]</span><span class="w"> </span><span class="n">cosine</span><span class="p">,</span>
+<span class="w">    </span><span class="n">diskann</span><span class="p">(</span><span class="n">degree</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="n">build_list_size</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+<span class="w">            </span><span class="n">search_list_size</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span><span class="w"> </span><span class="n">cache_bytes</span><span class="o">=</span><span class="mi">67108864</span><span class="p">)</span>
+<span class="p">);</span>
+</pre></div>
+</div>
+<p>All options are optional; <code class="docutils literal notranslate"><span class="pre">diskann()</span></code> uses these defaults:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head text-right"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">degree</span></code></p></td>
+<td class="text-right"><p>32</p></td>
+<td><p>Target pruned graph degree; physical lists allow the pinned algorithm’s 1.3× slack.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">build_list_size</span></code></p></td>
+<td class="text-right"><p>100</p></td>
+<td><p>Candidate window during native graph insertion.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">search_list_size</span></code></p></td>
+<td class="text-right"><p>64</p></td>
+<td><p>Default query window; effective size is at least effective k.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">alpha</span></code></p></td>
+<td class="text-right"><p>1.2</p></td>
+<td><p>Finite pruning factor, at least 1.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cache_bytes</span></code></p></td>
+<td class="text-right"><p>67108864</p></td>
+<td><p>Adapter/query workspace budget in bytes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_visits</span></code></p></td>
+<td class="text-right"><p>65536</p></td>
+<td><p>Conservative per-operation/traversal work limit.</p></td>
+</tr>
+</tbody>
+</table>
+<p>Duplicate and unknown options are errors. Degree must be between 2 and 10000.
+List sizes must be positive and no greater than <code class="docutils literal notranslate"><span class="pre">max_visits</span></code>, which is at most
+<code class="docutils literal notranslate"><span class="pre">u32::MAX</span></code>. Cache values below 4096 are rejected. These options define the
+declaration descriptor; a graph built for one declaration is never published into
+a table with a different one.</p>
+<p>There is no HNSW-style preallocated <code class="docutils literal notranslate"><span class="pre">max_elements</span></code>. Sparse public rowids are
+looked up through SQLite’s index, and committed version identifiers are monotonic
+and never reused.</p>
+</section>
+<section id="how-indexing-works">
+<h2>How indexing works<a class="headerlink" href="#how-indexing-works" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Phase</p></th>
+<th class="head"><p>Command</p></th>
+<th class="head"><p>Committed work</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Prepare</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_prepare</span></code></p></td>
+<td><p>Creates a fenced job with a fixed cutoff and expected population.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Snapshot</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_snapshot_step</span></code> (repeat)</p></td>
+<td><p>Records the frozen <code class="docutils literal notranslate"><span class="pre">version</span> <span class="pre">-&gt;</span> <span class="pre">entry</span></code> map and a resumable digest chain.</p></td>
+</tr>
+<tr class="row-even"><td><p>Claim</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_claim_build</span></code></p></td>
+<td><p>Marks the job as owned by one worker connection.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Build</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">vectorlite_index_build(...)</span></code></p></td>
+<td><p>Materializes the snapshot into owned RAM and runs native OneShot in <strong>no</strong> SQLite transaction.</p></td>
+</tr>
+<tr class="row-even"><td><p>Import</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_import_step</span></code> (repeat)</p></td>
+<td><p>Validates and stages bounded graph chunks into a candidate generation.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Validate</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_validate_step</span></code> (repeat)</p></td>
+<td><p>Re-reads staged rows against the in-memory candidate.</p></td>
+</tr>
+<tr class="row-even"><td><p>Publish</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_publish</span></code></p></td>
+<td><p>One fenced metadata transition makes the candidate the published generation.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cleanup</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">index_cleanup_step</span></code> (repeat)</p></td>
+<td><p>Bounded reclamation of garbage generations and retired history.</p></td>
+</tr>
+</tbody>
+</table>
+<p>Two invariants matter:</p>
+<ul class="simple">
+<li><p><strong>Ingest never builds a graph.</strong> INSERT/UPDATE/DELETE only write canonical
+versioned rows, so they stay O(log N) index writes.</p></li>
+<li><p><strong>Build never borrows SQLite.</strong> The expensive phase runs in owned memory with
+the connection’s transaction state verified <code class="docutils literal notranslate"><span class="pre">NONE</span></code>; other connections can keep
+reading and writing, including WAL checkpoints, throughout the build.</p></li>
+</ul>
+<p>Everything remains inside your database file. There is no sidecar index file, no
+scratch directory, and no background thread started by the extension.</p>
+<section id="published-generations-format-5">
+<h3>Published generations (Format 5)<a class="headerlink" href="#published-generations-format-5" title="Link to this heading"></a></h3>
+<p>Every published graph-node row is a single-table record:
+<code class="docutils literal notranslate"><span class="pre">&lt;table&gt;_diskann_graph_nodes</span></code> stores the generation id, the native node id, the
+canonical entry id, the public rowid, the node state, the adjacency and the vector.
+The adjacency column precedes the vector so expansion and identity reads never have
+to walk the payload tail (at large degrees or dimensions the adjacency blob can
+itself span overflow pages, so this is a payload-prefix decision, not a promise
+that every read is page-local).</p>
+<p>Payload authority is split (see
+<a class="reference internal" href="#payload-authority-and-unsupported-shadow-edits"><span class="xref myst">Payload authority and unsupported shadow edits</span></a>):
+the node row is authoritative for <code class="docutils literal notranslate"><span class="pre">public_rowid</span></code>, <code class="docutils literal notranslate"><span class="pre">state</span></code> and adjacency, while a
+live node’s vector stays canonical in <code class="docutils literal notranslate"><span class="pre">&lt;table&gt;_diskann_entries</span></code>. A live data node
+(<code class="docutils literal notranslate"><span class="pre">state=0</span></code>) therefore carries its entry id, its public rowid and an adjacency blob,
+and its vector column is SQL NULL; its vector is read from the canonical entries
+row by the entry id frozen in the adjacency slot. Only the frozen start point
+(<code class="docutils literal notranslate"><span class="pre">state=2</span></code>, native id equal to the generation’s <code class="docutils literal notranslate"><span class="pre">total_count</span></code>) has no entry id or
+public rowid and keeps its vector inline as a bit-copy of the built medoid.</p>
+<p>Keeping live vectors canonical is what makes the published node rows page-local:
+a row is a small identity prefix plus the adjacency blob, so the hot graph-route
+read is a single-table point read per expanded node and a single canonical
+<code class="docutils literal notranslate"><span class="pre">entries</span></code> point read per scored candidate, instead of a per-neighbour three-table
+join.</p>
+<p>The adjacency is a blob of 16-byte little-endian slots <code class="docutils literal notranslate"><span class="pre">(native_local_id,</span> <span class="pre">entry_id)</span></code>. A slot’s <code class="docutils literal notranslate"><span class="pre">entry_id</span></code> is zero <strong>only</strong> for the frozen start point; any
+other zero entry, or a non-zero entry on the start point’s slot, is corruption.
+Import validates slot count, degree, duplicates, self edges, range and that
+sentinel, and the query path decodes the ids and returns every valid target
+unchanged, so retired nodes and the frozen root stay navigation bridges. The slot’s
+<code class="docutils literal notranslate"><span class="pre">entry_id</span></code> is also the canonical scoring key: each expansion’s streamed decode
+fills a bounded per-expansion native-to-entry pair cache, and a scored candidate
+reads its vector from <code class="docutils literal notranslate"><span class="pre">&lt;table&gt;_diskann_entries</span></code> by that key. Eligibility is still
+decided from the entries row actually read (the retire-maintained set plus the
+interval rules), never from the slot alone.</p>
+<p>A generation’s retired versions are recorded in a ninth shadow table,
+<code class="docutils literal notranslate"><span class="pre">&lt;table&gt;_diskann_generation_retired</span></code> (WITHOUT ROWID, primary key
+<code class="docutils literal notranslate"><span class="pre">(generation_id,</span> <span class="pre">entry_id)</span></code>). It is written in the same journaled transition that
+decrements the generation’s <code class="docutils literal notranslate"><span class="pre">eligible_count</span></code> when a supported UPDATE/DELETE
+retires an already-imported version, and by import itself when a version was
+already retired before it was imported. For every staged or published generation:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">COUNT</span><span class="p">(</span><span class="n">generation_retired</span> <span class="n">rows</span> <span class="k">for</span> <span class="n">generation</span> <span class="n">g</span><span class="p">)</span> <span class="o">==</span> <span class="n">total_count</span> <span class="o">-</span> <span class="n">eligible_count</span>
+</pre></div>
+</div>
+<p>Import validation and publication assert that equality for the candidate, and the
+start of every graph-route query asserts it for the published generation;
+count-changing tampering with either side fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code>.
+Bounded cleanup reclaims a garbage generation’s retired rows and graph nodes in
+the same bounded steps, so the equality intentionally does not hold while a
+generation is being reclaimed.</p>
+<p>Format 5 has nine shadow tables per index: <code class="docutils literal notranslate"><span class="pre">&lt;table&gt;_diskann_meta</span></code>,
+<code class="docutils literal notranslate"><span class="pre">_entries</span></code>, <code class="docutils literal notranslate"><span class="pre">_current</span></code>, <code class="docutils literal notranslate"><span class="pre">_generations</span></code>, <code class="docutils literal notranslate"><span class="pre">_graph_nodes</span></code>,
+<code class="docutils literal notranslate"><span class="pre">_generation_retired</span></code>, <code class="docutils literal notranslate"><span class="pre">_jobs</span></code>, <code class="docutils literal notranslate"><span class="pre">_snapshot_map</span></code> and <code class="docutils literal notranslate"><span class="pre">_txn</span></code>. Format 4 had the
+same layout without <code class="docutils literal notranslate"><span class="pre">_generation_retired</span></code> (eight tables). All nine are registered
+shadow-table suffixes of the virtual table (the module’s <code class="docutils literal notranslate"><span class="pre">xShadowName</span></code> accepts
+each one), and none is an editing or import API — see
+<a class="reference internal" href="#payload-authority-and-unsupported-shadow-edits"><span class="xref myst">Payload authority and unsupported shadow edits</span></a>.</p>
+</section>
+<section id="visibility-while-a-generation-is-pending">
+<h3>Visibility while a generation is pending<a class="headerlink" href="#visibility-while-a-generation-is-pending" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>A row inserted after the published generation was built is <strong>canonical but not
+searchable</strong>: <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">embedding</span> <span class="pre">...</span> <span class="pre">WHERE</span> <span class="pre">rowid</span> <span class="pre">=</span> <span class="pre">?</span></code> returns it, <code class="docutils literal notranslate"><span class="pre">knn_search</span></code>
+does not.</p></li>
+<li><p>An <strong>UPDATE</strong> immediately hides the old published version from search and the
+new version stays pending. The row disappears from vector search until the next
+publication rather than returning a stale vector.</p></li>
+<li><p>A <strong>DELETE</strong> removes the row from later queries according to ordinary SQLite
+snapshot visibility; it is not removed retroactively from an already-open
+cursor.</p></li>
+<li><p>Unchanged rows keep returning results from the published generation.</p></li>
+</ul>
+<p>Query the current state with <a class="reference internal" href="#status"><span class="xref myst"><code class="docutils literal notranslate"><span class="pre">vectorlite_index_status</span></code></span></a>.</p>
+</section>
+</section>
+<section id="ingest">
+<h2>Ingest<a class="headerlink" href="#ingest" title="Link to this heading"></a></h2>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">BEGIN</span><span class="p">;</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">documents</span><span class="p">(</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">title</span><span class="p">)</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">123</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Example&#39;</span><span class="p">);</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">embeddings</span><span class="p">(</span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="p">)</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">123</span><span class="p">,</span><span class="w"> </span><span class="o">?</span><span class="p">);</span>
+<span class="k">COMMIT</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Public rowids are required, nonnegative, and no greater than <code class="docutils literal notranslate"><span class="pre">i64::MAX</span></code>; UPDATE
+cannot change a rowid. The vector, its immutable version record, the current
+rowid mapping, the canonical/eligible counters and the published/candidate
+generations’ retired-entry records all change inside the ordinary journaled
+statement, so a failed statement or a rolled-back transaction restores the
+previous canonical state exactly.</p>
+<p>Mutation requires a rollback-capable journal mode. <code class="docutils literal notranslate"><span class="pre">journal_mode=OFF</span></code> is rejected
+rather than silently changing host configuration. <code class="docutils literal notranslate"><span class="pre">MEMORY</span></code> provides statement
+rollback but no on-disk crash-recovery journal; commit/power-loss guarantees also
+depend on the host’s SQLite durability settings.</p>
+<p>Initial constraint handling is ABORT-only. A duplicate/constraint failure does not
+implement SQL <code class="docutils literal notranslate"><span class="pre">OR</span> <span class="pre">IGNORE</span></code>, <code class="docutils literal notranslate"><span class="pre">OR</span> <span class="pre">FAIL</span></code>, or <code class="docutils literal notranslate"><span class="pre">OR</span> <span class="pre">REPLACE</span></code> semantics. SQLite may roll
+back an entire transaction for I/O, interruption, or other severe errors: inspect
+the connection’s transaction state and handle SQLite’s error rather than assuming
+every failure preserves earlier statements.</p>
+<p>Virtual tables retain the existing direct-only restriction: access them from
+application SQL rather than through views or triggers. Join metadata by rowid and
+issue coordinated writes explicitly within your application transaction.</p>
+<section id="native-batch-insert">
+<h3>Native batch INSERT<a class="headerlink" href="#native-batch-insert" title="Link to this heading"></a></h3>
+<p>Native C/Rust callers can bind a <strong>tagged pointer to a versioned descriptor</strong>
+containing a contiguous row-major float32 matrix and explicit int64 rowids:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">embeddings</span><span class="p">(</span><span class="k">operation</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;insert_batch&#39;</span><span class="p">,</span><span class="w"> </span><span class="o">?</span><span class="mi">1</span><span class="p">);</span>
+
+<span class="c1">-- Optional working-chunk size; default 8, accepted range 1 through 32.</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">embeddings</span><span class="p">(</span><span class="k">operation</span><span class="p">,</span><span class="w"> </span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="n">path</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;insert_batch&#39;</span><span class="p">,</span><span class="w"> </span><span class="o">?</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;{&quot;batch_size&quot;:8}&#39;</span><span class="p">);</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">?1</span></code> must be bound using <code class="docutils literal notranslate"><span class="pre">sqlite3_bind_pointer()</span></code> with type tag
+<code class="docutils literal notranslate"><span class="pre">vectorlite.batch.f32.v1</span></code>, not as an integer address or BLOB. The standalone
+<a class="reference download internal" download="" href="_downloads/ce7d72e9b3490a3e913dbcdff486a20e/vectorlite_batch.h"><span class="xref download myst">public native header</span></a> is installed
+under <code class="docutils literal notranslate"><span class="pre">vectorlite_py/include</span></code> with the extension:</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;sqlite3.h&gt;</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;vectorlite_batch.h&quot;</span>
+
+<span class="kt">float</span><span class="w"> </span><span class="n">vectors</span><span class="p">[]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mf">1.f</span><span class="p">,</span><span class="w"> </span><span class="mf">0.f</span><span class="p">,</span><span class="w"> </span><span class="mf">0.f</span><span class="p">,</span><span class="w"> </span><span class="mf">2.f</span><span class="p">,</span><span class="w"> </span><span class="mf">3.f</span><span class="p">,</span><span class="w"> </span><span class="mf">4.f</span><span class="p">};</span>
+<span class="kt">int64_t</span><span class="w"> </span><span class="n">rowids</span><span class="p">[]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">123</span><span class="p">,</span><span class="w"> </span><span class="mi">456</span><span class="p">,</span><span class="w"> </span><span class="mi">789</span><span class="p">};</span>
+<span class="n">BatchF32V1</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">VECTORLITE_BATCH_F32_V1_ABI_VERSION</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="kt">uint32_t</span><span class="p">)</span><span class="k">sizeof</span><span class="p">(</span><span class="n">BatchF32V1</span><span class="p">),</span>
+<span class="w">    </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">vectors</span><span class="p">,</span><span class="w"> </span><span class="n">rowids</span>
+<span class="p">};</span>
+<span class="n">sqlite3_stmt</span><span class="w"> </span><span class="o">*</span><span class="n">stmt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">NULL</span><span class="p">;</span>
+<span class="kt">int</span><span class="w"> </span><span class="n">rc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sqlite3_prepare_v2</span><span class="p">(</span><span class="n">db</span><span class="p">,</span>
+<span class="w">    </span><span class="s">&quot;INSERT INTO embeddings(operation,embedding) VALUES(&#39;insert_batch&#39;,?1)&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="mi">-1</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">stmt</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">rc</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">SQLITE_OK</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">rc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sqlite3_bind_pointer</span><span class="p">(</span><span class="n">stmt</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">batch</span><span class="p">,</span>
+<span class="w">                             </span><span class="n">VECTORLITE_BATCH_F32_V1_TAG</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">rc</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">SQLITE_OK</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">do</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">rc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sqlite3_step</span><span class="p">(</span><span class="n">stmt</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">rc</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">SQLITE_ROW</span><span class="p">);</span>
+<span class="w">    </span><span class="cm">/* Success is SQLITE_DONE. SQLITE_ROW may come from count_changes=ON. */</span>
+<span class="p">}</span>
+<span class="cm">/* Preserve any error before cleanup, and check finalize&#39;s result too. */</span>
+<span class="kt">int</span><span class="w"> </span><span class="n">finalize_rc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sqlite3_finalize</span><span class="p">(</span><span class="n">stmt</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>The descriptor is 40 bytes on official 64-bit targets, with fields
+<code class="docutils literal notranslate"><span class="pre">uint32_t</span> <span class="pre">abi_version</span></code>, <code class="docutils literal notranslate"><span class="pre">uint32_t</span> <span class="pre">struct_size</span></code>, <code class="docutils literal notranslate"><span class="pre">uint64_t</span> <span class="pre">count</span></code>,
+<code class="docutils literal notranslate"><span class="pre">uint64_t</span> <span class="pre">dimension</span></code>, <code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">float</span> <span class="pre">*vectors</span></code>, and <code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">int64_t</span> <span class="pre">*rowids</span></code>.
+Rust callers use an exact <code class="docutils literal notranslate"><span class="pre">#[repr(C)]</span></code> counterpart and the same static tag.
+Native inputs are native IEEE-754 float32 values; stored/output BLOBs retain the
+little-endian float32 format.</p>
+<p><strong>The caller must keep the descriptor and both readable, aligned buffers alive
+and immutable until the binding is cleared, replaced, or finalized.</strong> Resetting
+the statement does not release bindings. With a NULL destructor the caller owns
+all buffers. Allocation validity and actual buffer length cannot be proved from a
+pointer tag; an arbitrary address with the correct tag violates the native
+contract and can cause undefined behavior. The extension checks version, layout,
+dimensions, nullness/alignment, length arithmetic and rowids before accessing the
+bounded input. It never interprets SQL numbers as addresses.</p>
+<p>Only <code class="docutils literal notranslate"><span class="pre">operation</span></code>, the vector column and optional <code class="docutils literal notranslate"><span class="pre">path</span></code> may be supplied; rowids
+come from the descriptor and a <code class="docutils literal notranslate"><span class="pre">distance</span></code> input is rejected. Duplicate rowids
+within/across chunks or already in the table abort the operation; this is
+insert-only, not upsert. Empty batches are no-ops. Numeric/range checks and cosine
+normalization follow ordinary DiskANN ingestion and do not modify caller buffers.</p>
+<p>A single INSERT may describe any number of vectors. The extension copies and
+normalizes bounded working chunks (8 by default, at most 32) and commits them as
+one statement: <strong>the entire INSERT has one rollback boundary</strong>, so a failure in a
+later chunk restores earlier chunks’ vectors, mappings and counters. Chunking
+does not commit partial results. Callers needing separate commits can issue
+several bounded INSERTs, optionally under one explicit application transaction.</p>
+<p>Canonical ingestion performs no graph work and needs no runtime: it is available
+from any SQLite callback context, including inside an application Tokio runtime.
+Python’s standard-library <code class="docutils literal notranslate"><span class="pre">sqlite3.execute()</span></code> cannot bind tagged native pointers;
+this interface is for native C/Rust clients, not a raw-address Python workaround.</p>
+</section>
+</section>
+<section id="maintenance-on-a-worker-connection">
+<h2>Maintenance on a worker connection<a class="headerlink" href="#maintenance-on-a-worker-connection" title="Link to this heading"></a></h2>
+<p>Build steps are ordinary SQL, issued by your application. This worker helper runs
+the whole lifecycle for a <strong>quiescent bulk load</strong> - the application has finished
+writing before maintenance starts - and elects a no-op if the table is empty.
+Writes that land on another connection after the captured cutoff are valid and
+simply stay pending; see <a class="reference internal" href="#post-cutoff-writes"><span class="xref myst">Post-cutoff writes</span></a>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">sqlite3</span>
+
+<span class="n">TABLE</span> <span class="o">=</span> <span class="s2">&quot;embeddings&quot;</span>          <span class="c1"># the DiskANN virtual table</span>
+<span class="n">SCHEMA</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span>
+<span class="n">PHASE_CAPTURING</span><span class="p">,</span> <span class="n">PHASE_IMPORT</span><span class="p">,</span> <span class="n">PHASE_VALIDATING</span><span class="p">,</span> <span class="n">PHASE_VALIDATED</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span>
+<span class="n">MAX_RECORDS</span> <span class="o">=</span> <span class="mi">256</span>             <span class="c1"># default bounded step size</span>
+<span class="n">BUDGET</span> <span class="o">=</span> <span class="mi">512</span> <span class="o">*</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span>    <span class="c1"># admission estimate, not an RSS cap</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">status</span><span class="p">(</span><span class="n">worker</span><span class="p">):</span>
+    <span class="c1"># Read-only and bounded. Always refresh from SQL after a committed step:</span>
+    <span class="c1"># the value you read before a step is stale once that step commits.</span>
+    <span class="k">return</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">worker</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span>
+        <span class="s2">&quot;SELECT vectorlite_index_status(?,?)&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">SCHEMA</span><span class="p">,</span> <span class="n">TABLE</span><span class="p">))</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">])</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="n">operation</span><span class="p">,</span> <span class="o">**</span><span class="n">options</span><span class="p">):</span>
+    <span class="c1"># One autocommit statement per step; never wrap the campaign in BEGIN.</span>
+    <span class="n">worker</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;INSERT INTO </span><span class="si">{</span><span class="n">TABLE</span><span class="si">}</span><span class="s2">(operation, path) VALUES (?, ?)&quot;</span><span class="p">,</span>
+                   <span class="p">(</span><span class="n">operation</span><span class="p">,</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">options</span><span class="p">,</span> <span class="n">separators</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">,</span> <span class="s2">&quot;:&quot;</span><span class="p">))))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">maintain</span><span class="p">(</span><span class="n">database</span><span class="p">,</span> <span class="n">extension</span><span class="p">):</span>
+    <span class="n">worker</span> <span class="o">=</span> <span class="n">sqlite3</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">database</span><span class="p">,</span> <span class="n">isolation_level</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">worker</span><span class="o">.</span><span class="n">enable_load_extension</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">worker</span><span class="o">.</span><span class="n">load_extension</span><span class="p">(</span><span class="n">extension</span><span class="p">)</span>
+
+        <span class="c1"># This helper elects a no-op on an empty table: a bulk loader has nothing</span>
+        <span class="c1"># to capture. The protocol itself CAN publish an explicit empty generation</span>
+        <span class="c1"># (a build of population 0 yields zero graph nodes); it is just pointless</span>
+        <span class="c1"># work here.</span>
+        <span class="k">if</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)[</span><span class="s2">&quot;canonical_count&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)</span>
+
+        <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_prepare&quot;</span><span class="p">)</span>                 <span class="c1"># or &quot;consolidate&quot;</span>
+        <span class="n">current</span> <span class="o">=</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)[</span><span class="s2">&quot;current_job&quot;</span><span class="p">]</span>
+        <span class="n">job</span><span class="p">,</span> <span class="n">fence</span> <span class="o">=</span> <span class="n">current</span><span class="p">[</span><span class="s2">&quot;job_id&quot;</span><span class="p">],</span> <span class="n">current</span><span class="p">[</span><span class="s2">&quot;fence&quot;</span><span class="p">]</span>
+
+        <span class="c1"># 1. Capture the frozen snapshot in bounded steps until it is sealed.</span>
+        <span class="k">while</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)[</span><span class="s2">&quot;phase&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">PHASE_CAPTURING</span><span class="p">:</span>
+            <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_snapshot_step&quot;</span><span class="p">,</span>
+                    <span class="n">job_id</span><span class="o">=</span><span class="n">job</span><span class="p">,</span> <span class="n">fence</span><span class="o">=</span><span class="n">fence</span><span class="p">,</span> <span class="n">max_records</span><span class="o">=</span><span class="n">MAX_RECORDS</span><span class="p">)</span>
+
+        <span class="c1"># 2. Claim the job for this connection, then build in owned RAM with no</span>
+        <span class="c1">#    SQLite transaction. The candidate token is bound to this connection.</span>
+        <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_claim_build&quot;</span><span class="p">,</span> <span class="n">job_id</span><span class="o">=</span><span class="n">job</span><span class="p">,</span> <span class="n">fence</span><span class="o">=</span><span class="n">fence</span><span class="p">)</span>
+        <span class="n">candidate</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">worker</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span>
+            <span class="s2">&quot;SELECT vectorlite_index_build(?,?,?)&quot;</span><span class="p">,</span>
+            <span class="p">(</span><span class="n">SCHEMA</span><span class="p">,</span> <span class="n">TABLE</span><span class="p">,</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span>
+                <span class="p">{</span><span class="s2">&quot;job_id&quot;</span><span class="p">:</span> <span class="n">job</span><span class="p">,</span> <span class="s2">&quot;fence&quot;</span><span class="p">:</span> <span class="n">fence</span><span class="p">,</span>
+                 <span class="s2">&quot;memory_budget_bytes&quot;</span><span class="p">:</span> <span class="n">BUDGET</span><span class="p">},</span> <span class="n">separators</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">,</span> <span class="s2">&quot;:&quot;</span><span class="p">))),</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">fetchone</span><span class="p">()[</span><span class="mi">0</span><span class="p">])</span>
+        <span class="n">token</span> <span class="o">=</span> <span class="n">candidate</span><span class="p">[</span><span class="s2">&quot;candidate_token&quot;</span><span class="p">]</span>
+
+        <span class="c1"># 3. Import bounded chunks, then validate every chunk. Both phases are</span>
+        <span class="c1">#    repeated: one step can never cover a population larger than a chunk.</span>
+        <span class="k">while</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)[</span><span class="s2">&quot;phase&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">PHASE_IMPORT</span><span class="p">:</span>
+            <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_import_step&quot;</span><span class="p">,</span> <span class="n">job_id</span><span class="o">=</span><span class="n">job</span><span class="p">,</span> <span class="n">fence</span><span class="o">=</span><span class="n">fence</span><span class="p">,</span>
+                    <span class="n">candidate_token</span><span class="o">=</span><span class="n">token</span><span class="p">,</span> <span class="n">max_records</span><span class="o">=</span><span class="n">MAX_RECORDS</span><span class="p">)</span>
+        <span class="k">while</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)[</span><span class="s2">&quot;phase&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">PHASE_VALIDATING</span><span class="p">:</span>
+            <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_validate_step&quot;</span><span class="p">,</span> <span class="n">job_id</span><span class="o">=</span><span class="n">job</span><span class="p">,</span> <span class="n">fence</span><span class="o">=</span><span class="n">fence</span><span class="p">,</span>
+                    <span class="n">candidate_token</span><span class="o">=</span><span class="n">token</span><span class="p">,</span> <span class="n">max_records</span><span class="o">=</span><span class="n">MAX_RECORDS</span><span class="p">)</span>
+
+        <span class="c1"># 4. Publish atomically, then release the retained candidate RAM only</span>
+        <span class="c1">#    after the publishing transaction has committed.</span>
+        <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_publish&quot;</span><span class="p">,</span> <span class="n">job_id</span><span class="o">=</span><span class="n">job</span><span class="p">,</span> <span class="n">fence</span><span class="o">=</span><span class="n">fence</span><span class="p">,</span>
+                <span class="n">candidate_token</span><span class="o">=</span><span class="n">token</span><span class="p">)</span>
+
+        <span class="c1"># Publication clears the active job and makes the captured population</span>
+        <span class="c1"># searchable. pending_count is whatever arrived after the cutoff, so it is</span>
+        <span class="c1"># reported rather than asserted: a concurrent writer legitimately leaves a</span>
+        <span class="c1"># backlog.</span>
+        <span class="n">final</span> <span class="o">=</span> <span class="n">status</span><span class="p">(</span><span class="n">worker</span><span class="p">)</span>
+        <span class="k">assert</span> <span class="n">final</span><span class="p">[</span><span class="s2">&quot;active_job&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="kc">None</span>
+        <span class="k">assert</span> <span class="n">final</span><span class="p">[</span><span class="s2">&quot;published_generation&quot;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="n">control</span><span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="s2">&quot;index_cleanup_step&quot;</span><span class="p">,</span> <span class="n">max_records</span><span class="o">=</span><span class="n">MAX_RECORDS</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">final</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">worker</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>   <span class="c1"># closing the connection also drops any candidate RAM</span>
+
+
+<span class="n">final</span> <span class="o">=</span> <span class="n">maintain</span><span class="p">(</span><span class="s2">&quot;vectors.db&quot;</span><span class="p">,</span> <span class="s2">&quot;vectorlite.dylib&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">final</span><span class="p">[</span><span class="s2">&quot;published_generation&quot;</span><span class="p">],</span> <span class="n">final</span><span class="p">[</span><span class="s2">&quot;eligible_count&quot;</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>The phase numbers match the durable job encoding (0 capturing, 1 sealed, 2
+building/importing, 3 validating, 4 validated, 5 completed, 6 abandoned), and
+<code class="docutils literal notranslate"><span class="pre">index_status</span></code> reports them with the fence and cursors. Notes:</p>
+<ul class="simple">
+<li><p>Capturing is phase 0 and ends when the snapshot is sealed (phase 1); the loops
+above therefore stop on the first committed step that leaves their phase.</p></li>
+<li><p>Every loop condition is re-read from SQL after the previous step committed, so a
+finished phase is never re-run and a partially imported generation is never
+published.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">index_publish</span></code> only accepts a fully validated candidate, so the validation
+loop must terminate on phase 4 before publication; skipping it fails closed.</p></li>
+<li><p>A successful publication clears the active job, so <code class="docutils literal notranslate"><span class="pre">index_status</span></code> then reports
+<code class="docutils literal notranslate"><span class="pre">active_job:</span> <span class="pre">null</span></code> and a <code class="docutils literal notranslate"><span class="pre">published_generation</span></code>. <code class="docutils literal notranslate"><span class="pre">pending_count</span></code> is NOT
+necessarily 0 - it counts canonical rows the published generation does not cover,
+which includes everything written after the captured cutoff. Import and validation
+cursors count native graph nodes: the captured population plus the retained
+frozen root.</p></li>
+<li><p>A lost candidate (worker killed, connection closed, job superseded) needs
+<code class="docutils literal notranslate"><span class="pre">index_restart</span></code> with a fresh fence and a new build rather than reusing partial
+SQL progress. <code class="docutils literal notranslate"><span class="pre">index_cancel</span></code> abandons the job; <code class="docutils literal notranslate"><span class="pre">index_cleanup_step</span></code> reclaims
+garbage generations and retired history in bounded chunks.</p></li>
+<li><p>The example elects a no-op on an empty table because a bulk loader has nothing
+to index. The protocol itself supports population 0: prepare, capture (nothing to
+capture), claim, build (an explicit empty generation, no native constructor),
+import and validate (no nodes) and publish all succeed, which is how to publish
+an empty generation deliberately.</p></li>
+</ul>
+<section id="post-cutoff-writes">
+<h3>Post-cutoff writes<a class="headerlink" href="#post-cutoff-writes" title="Link to this heading"></a></h3>
+<p>Native compute holds no SQLite transaction, so it does not stop ingestion: a row
+committed on another connection after the job captured its cutoff is ordinary
+canonical data - readable by rowid, counted in <code class="docutils literal notranslate"><span class="pre">pending_count</span></code>, absent from
+<code class="docutils literal notranslate"><span class="pre">knn_search</span></code> results of the currently published generation, and picked up by the
+next maintenance cycle. The bounded capture, import, validation and publication
+steps are ordinary journaled SQLite statements, so like any writer they hold the
+database write lock briefly and a concurrent writer can see <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code>; that is
+ordinary locking, not maintenance blocking ingestion for a whole build. Publishing a candidate built from an older cutoff is therefore still a
+<strong>success</strong>; its post-publication status is <code class="docutils literal notranslate"><span class="pre">active_job:</span> <span class="pre">null</span></code>,
+<code class="docutils literal notranslate"><span class="pre">published_generation</span></code> set and <code class="docutils literal notranslate"><span class="pre">pending_count</span></code> equal to the rows written after
+the cutoff.</p>
+<p>An UPDATE behaves the same way for eligibility: the previous version stops
+matching the published generation’s eligibility immediately, so that row is
+absent from vector search until its new version is published. Rows the published
+generation does cover are unaffected.</p>
+<p>Rules that matter:</p>
+<ul class="simple">
+<li><p><strong>Do not wrap the campaign in one <code class="docutils literal notranslate"><span class="pre">BEGIN</span></code>/<code class="docutils literal notranslate"><span class="pre">COMMIT</span></code>.</strong> Each step must commit
+before it is durable. A control call that returns inside your transaction is
+not committed until you commit, and the writer lock is held until then.</p></li>
+<li><p><strong>Use a separate worker connection for a file-backed database.</strong> The build call
+occupies its own connection for the whole native build while holding no SQLite
+transaction; your application connection keeps working. <code class="docutils literal notranslate"><span class="pre">:memory:</span></code> and
+<code class="docutils literal notranslate"><span class="pre">TEMP</span></code> databases cannot be opened by a second connection, so run maintenance on
+the owning connection there.</p></li>
+<li><p><strong>The build call is compute-only.</strong> While it runs, the worker connection is
+busy inside that statement, but its transaction state must be <code class="docutils literal notranslate"><span class="pre">NONE</span></code>: it is
+rejected before any native construction if the connection is in an explicit
+transaction, inside a <code class="docutils literal notranslate"><span class="pre">SAVEPOINT</span></code>, holding another cursor, or already building.
+Those rejections are deliberate, not incidental.</p></li>
+<li><p><strong>The candidate lives in worker RAM.</strong> The opaque <code class="docutils literal notranslate"><span class="pre">candidate_token</span></code> is only
+valid for that connection, schema/table lifetime, job, fence and attempt. If the
+worker process exits, the candidate is gone: cancel or restart the job (which
+allocates a fresh fence) and run a new build; durable canonical data and the
+job’s SQL progress are unaffected.</p></li>
+<li><p><strong>Publication is a bounded metadata transition.</strong> It does not rescan the
+population; full validation happened in the bounded validation steps.</p></li>
+<li><p><strong>Loading the extension twice on one connection fails closed</strong> rather than
+overwriting the existing Vectorlite functions.</p></li>
+</ul>
+<p>Applications can also run these calls inline, for example once after a bulk
+import, accepting that the calling connection is busy during the build.</p>
+</section>
+<section id="control-operations">
+<h3>Control operations<a class="headerlink" href="#control-operations" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">path</span></code> is a TEXT JSON object. Every identifier is a JSON integer or string, never
+a pointer or address.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Operation</p></th>
+<th class="head"><p>JSON</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">index_prepare</span></code> (or <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which is an alias)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{}</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">index_snapshot_step</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>; optional <code class="docutils literal notranslate"><span class="pre">max_records</span></code>, <code class="docutils literal notranslate"><span class="pre">max_bytes</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">index_claim_build</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">index_import_step</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>, <code class="docutils literal notranslate"><span class="pre">candidate_token</span></code>; optional <code class="docutils literal notranslate"><span class="pre">max_records</span></code>, <code class="docutils literal notranslate"><span class="pre">max_bytes</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">index_validate_step</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>, <code class="docutils literal notranslate"><span class="pre">candidate_token</span></code>; optional <code class="docutils literal notranslate"><span class="pre">max_records</span></code>, <code class="docutils literal notranslate"><span class="pre">max_bytes</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">index_publish</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>, <code class="docutils literal notranslate"><span class="pre">candidate_token</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">index_cancel</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>; optional <code class="docutils literal notranslate"><span class="pre">force</span></code> (default false)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">index_restart</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>; optional <code class="docutils literal notranslate"><span class="pre">force</span></code> (default false)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">index_cleanup_step</span></code></p></td>
+<td><p>optional <code class="docutils literal notranslate"><span class="pre">max_records</span></code>, <code class="docutils literal notranslate"><span class="pre">max_bytes</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p><code class="docutils literal notranslate"><span class="pre">max_records</span></code> defaults to 256 and accepts 1 through 256. <code class="docutils literal notranslate"><span class="pre">max_bytes</span></code> defaults to
+1 MiB and must be positive and no larger than the declared <code class="docutils literal notranslate"><span class="pre">cache_bytes</span></code>.
+Only one job may be active per index. Stale fences, other connections’ claims and
+lost candidates are reported as conflicts (<code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code>) rather than silently
+reused; state-changing calls always re-read the current owner and fence inside the
+journaled statement.</p>
+<p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> is retained as an alias for <code class="docutils literal notranslate"><span class="pre">index_prepare</span></code>: it no longer performs
+a synchronous rebuild.</p>
+</section>
+<section id="build">
+<h3>Build<a class="headerlink" href="#build" title="Link to this heading"></a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">vectorlite_index_build</span><span class="p">(</span><span class="s1">&#39;main&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;embeddings&#39;</span><span class="p">,</span><span class="w"> </span><span class="o">?</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>The third argument is a JSON object with required positive integers <code class="docutils literal notranslate"><span class="pre">job_id</span></code> and
+<code class="docutils literal notranslate"><span class="pre">fence</span></code>, required positive <code class="docutils literal notranslate"><span class="pre">memory_budget_bytes</span></code>, and optional <code class="docutils literal notranslate"><span class="pre">workers</span></code> which
+must be 1. The result is bounded JSON describing the candidate:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;candidate_token&quot;</span><span class="p">:</span><span class="s2">&quot;cand:...&quot;</span><span class="p">,</span><span class="nt">&quot;population&quot;</span><span class="p">:</span><span class="mi">10000</span><span class="p">,</span><span class="nt">&quot;node_count&quot;</span><span class="p">:</span><span class="mi">10001</span><span class="p">,</span><span class="nt">&quot;root&quot;</span><span class="p">:</span><span class="mi">10000</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;medoid_ordinal&quot;</span><span class="p">:</span><span class="mi">123</span><span class="p">,</span><span class="nt">&quot;edge_count&quot;</span><span class="p">:</span><span class="mi">320032</span><span class="p">,</span><span class="nt">&quot;input_hash&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="nt">&quot;config_hash&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;candidate_hash&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="nt">&quot;retained_bytes&quot;</span><span class="p">:</span><span class="mi">409152</span><span class="p">,</span><span class="nt">&quot;stats&quot;</span><span class="p">:{</span><span class="err">...</span><span class="p">}}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">root</span></code> is the native frozen start point (equal to the population), and native
+node IDs <code class="docutils literal notranslate"><span class="pre">0..population-1</span></code> are ordinary data. An empty population produces an
+explicit empty generation with no native constructor call.</p>
+</section>
+<section id="status">
+<h3>Status<a class="headerlink" href="#status" title="Link to this heading"></a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">vectorlite_index_status</span><span class="p">(</span><span class="s1">&#39;main&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;embeddings&#39;</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Read-only and bounded (no corpus count, no vector scan); it performs no recovery
+writes and can be called on a read-only connection:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;format&quot;</span><span class="p">:</span><span class="mi">5</span><span class="p">,</span><span class="nt">&quot;index_uuid&quot;</span><span class="p">:</span><span class="s2">&quot;idx:...&quot;</span><span class="p">,</span><span class="nt">&quot;canonical_count&quot;</span><span class="p">:</span><span class="mi">10100</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;pending_count&quot;</span><span class="p">:</span><span class="mi">100</span><span class="p">,</span><span class="nt">&quot;eligible_count&quot;</span><span class="p">:</span><span class="mi">10000</span><span class="p">,</span><span class="nt">&quot;retired_count&quot;</span><span class="p">:</span><span class="mi">3</span><span class="p">,</span><span class="nt">&quot;revision&quot;</span><span class="p">:</span><span class="mi">412</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;published_generation&quot;</span><span class="p">:</span><span class="mi">7</span><span class="p">,</span><span class="nt">&quot;published_count&quot;</span><span class="p">:</span><span class="mi">10000</span><span class="p">,</span><span class="nt">&quot;published_source_count&quot;</span><span class="p">:</span><span class="mi">10000</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;published_source_hash&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="nt">&quot;candidate_generation&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;active_job&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;current_job&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;fence&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;failure&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;cleanup_entry_id&quot;</span><span class="p">:</span><span class="mi">0</span><span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">current_job</span></code>, when present, reports <code class="docutils literal notranslate"><span class="pre">job_id</span></code>, <code class="docutils literal notranslate"><span class="pre">generation_id</span></code>,
+<code class="docutils literal notranslate"><span class="pre">parent_generation</span></code>, <code class="docutils literal notranslate"><span class="pre">phase</span></code>, <code class="docutils literal notranslate"><span class="pre">fence</span></code>, <code class="docutils literal notranslate"><span class="pre">cutoff_revision</span></code>, <code class="docutils literal notranslate"><span class="pre">cutoff_entry_id</span></code>,
+<code class="docutils literal notranslate"><span class="pre">expected_count</span></code>, <code class="docutils literal notranslate"><span class="pre">captured_count</span></code>, <code class="docutils literal notranslate"><span class="pre">scan_entry_id</span></code>, <code class="docutils literal notranslate"><span class="pre">import_cursor</span></code>,
+<code class="docutils literal notranslate"><span class="pre">validation_cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">cleanup_cursor</span></code>, <code class="docutils literal notranslate"><span class="pre">source_hash</span></code>, <code class="docutils literal notranslate"><span class="pre">config_hash</span></code>,
+<code class="docutils literal notranslate"><span class="pre">candidate_hash</span></code>, <code class="docutils literal notranslate"><span class="pre">snapshot_chain</span></code> and <code class="docutils literal notranslate"><span class="pre">failure_code</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">pending_count</span> <span class="pre">=</span> <span class="pre">canonical_count</span> <span class="pre">-</span> <span class="pre">eligible_count</span></code> is the number of stored rows
+that no published generation currently covers. It is the freshness backlog.
+<code class="docutils literal notranslate"><span class="pre">format</span></code> is the durable layout version (5 for this build). The deferred layout
+is experimental and has never shipped, so a database from an older experimental
+build fails closed at connect time and must be recreated.</p>
+</section>
+</section>
+<section id="query">
+<h2>Query<a class="headerlink" href="#query" title="Link to this heading"></a></h2>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">distance</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">embeddings</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">knn_search</span><span class="p">(</span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="n">knn_param</span><span class="p">(</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">));</span>
+
+<span class="c1">-- DiskANN&#39;s named speed/recall setting, applied to this query only.</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">distance</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">embeddings</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">knn_search</span><span class="p">(</span><span class="n">embedding</span><span class="p">,</span>
+<span class="w">                 </span><span class="n">knn_param</span><span class="p">(</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;{&quot;search_list_size&quot;:100}&#39;</span><span class="p">));</span>
+
+<span class="c1">-- Only matching rows may enter the output. Other graph nodes can still provide</span>
+<span class="c1">-- navigation bridges; this is not filtering an already-selected global top-k.</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">distance</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">embeddings</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">knn_search</span><span class="p">(</span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="n">knn_param</span><span class="p">(</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">))</span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">rowid</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="mi">123</span><span class="p">,</span><span class="w"> </span><span class="mi">456</span><span class="p">,</span><span class="w"> </span><span class="mi">789</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>The two-argument <code class="docutils literal notranslate"><span class="pre">knn_param(vector,</span> <span class="pre">k)</span></code> form works with either backend. A numeric
+third argument remains <strong>HNSW <code class="docutils literal notranslate"><span class="pre">ef</span></code></strong> and is rejected by DiskANN. DiskANN accepts a
+JSON object containing only a positive integer <code class="docutils literal notranslate"><span class="pre">search_list_size</span></code>.</p>
+<p>Like existing vectorlite tables, queries require a KNN or rowid equality/IN
+constraint. Arbitrary SQL predicates are not automatically pushed into graph
+search. Request <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span> <span class="pre">distance,</span> <span class="pre">rowid</span></code> when SQL-level ordering is required.</p>
+<p>On supported data, every KNN path restricts results to the published generation
+<strong>and</strong> to versions that are still current: pending, superseded and deleted
+versions are rejected before the top-k is truncated. This includes small rowid filters, large-k
+requests and underfilled filtered searches that take the exact streaming
+fallback, so approximate and exact paths agree on eligibility. Navigation may
+read retired immutable vectors as bridges, but they cannot appear as results. An
+empty published population returns an empty result even when rows are pending.</p>
+<p>Format 5 changes how the traversal route proves liveness: it reads the published
+node row (identity, state, adjacency), decides eligibility from the per-generation
+retired table instead of joining <code class="docutils literal notranslate"><span class="pre">entries</span></code> and <code class="docutils literal notranslate"><span class="pre">current</span></code> for every neighbour and
+every scored candidate, and reads a scored live candidate’s vector from canonical
+<code class="docutils literal notranslate"><span class="pre">entries</span></code> by the entry id its adjacency slot carries. On supported data this is
+strictly equivalent to the join rule - same rowids, order and distance bits, on
+every route and at every budget. The exact routes keep the indexed <code class="docutils literal notranslate"><span class="pre">current</span></code> join
+and read the canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> payload through it; the fallback route used when
+the retired set cannot be admitted still joins both tables and keeps HEAD’s
+<code class="docutils literal notranslate"><span class="pre">current</span></code>-based classification. The unsupported states in which a direct shadow
+edit can make those routes disagree are enumerated in
+<a class="reference internal" href="#payload-authority-and-unsupported-shadow-edits"><span class="xref myst">Payload authority and unsupported shadow edits</span></a>.</p>
+<p>Projected vector bytes are materialized from the canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> payload (the
+frozen start point from its node row) together with their distances, so a later
+same-connection update cannot mix an old distance with a changed vector. A query also verifies two stamps before it returns rows -
+SQLite’s total-change counter and a shadow-schema <code class="docutils literal notranslate"><span class="pre">(count,</span> <span class="pre">sum(rootpage))</span></code> stamp
+over the nine shadow names - so a same-connection DML write, or a shadow-table
+rename/drop/CTAS-recreation, committed while the query runs fails closed with
+<code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code> instead of returning a time-mixed answer. The guarantee covers
+changes observed after both stamps are captured; a write that lands before the
+captures complete is absorbed into the operation’s snapshot (an enumerated
+unsupported-state behaviour). Cursors retain a SQLite snapshot anchor; close them
+promptly to release WAL snapshots. Other connections follow ordinary SQLite
+isolation and <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY_SNAPSHOT</span></code> rules.</p>
+</section>
+<section id="payload-authority-and-unsupported-shadow-edits">
+<h2>Payload authority and unsupported shadow edits<a class="headerlink" href="#payload-authority-and-unsupported-shadow-edits" title="Link to this heading"></a></h2>
+<p>Format 5 splits payload authority by field, independently of the route:</p>
+<ul class="simple">
+<li><p><strong>Query-time payload authority:</strong> the published node row is authoritative for
+<code class="docutils literal notranslate"><span class="pre">public_rowid</span></code>, <code class="docutils literal notranslate"><span class="pre">state</span></code> and adjacency on every route (including the
+three-table fallback and the exact routes’ identity checks), while <strong>live
+vectors are authoritative in canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code></strong> and are read by the scored
+candidate’s entry id on every route. Only the frozen start point keeps its
+vector inline and reads it from its node row. The traversal route scores a live
+candidate with one canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> point read; the exact and projection
+routes read canonical <code class="docutils literal notranslate"><span class="pre">e.vector</span></code> through their indexed join; the fallback
+projects <code class="docutils literal notranslate"><span class="pre">e.vector</span></code> for live rows and <code class="docutils literal notranslate"><span class="pre">n.vector</span></code> for the frozen start point.
+Authority is therefore route-independent, and <code class="docutils literal notranslate"><span class="pre">entries.vector</span></code> damage is
+query-visible again exactly as it was in Format 4.</p></li>
+<li><p><strong>Canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> and <code class="docutils literal notranslate"><span class="pre">current</span></code> are authoritative for ingest, build,
+snapshot/import validation and publication</strong>, exactly as before. The frozen start
+point follows the same rule Format 4 already used for its frozen vector.</p></li>
+</ul>
+<p>A practical consequence is that query-time corruption detection covers both halves
+of the split: damaged published node <code class="docutils literal notranslate"><span class="pre">public_rowid</span></code>/<code class="docutils literal notranslate"><span class="pre">state</span></code>/adjacency payloads
+and every canonical vector read a query actually scores fail closed inside the
+query (every read keeps its type, length, role and interval guards), while
+canonical-row damage the query never scores is caught by the next
+snapshot/build/import validation - only for the versions that validation actually
+reads. Snapshot capture and import validation materialize a bounded, ordered window
+of versions and stop when the expected population is reached, so a trailing retired
+version can be skipped; canonical edits that satisfy those identity/window checks
+are not errors, they change what a later build captures.</p>
+<p><strong>Supported states are strictly equivalent.</strong> For every state reachable through
+the supported SQL surface - INSERT/UPDATE/DELETE (including statement and
+savepoint rollback), the native batch INSERT, and the control/build/publication
+calls - and for a connection with no write during the operation, every KNN query
+returns the same rowids, in the same order, with the same distance bits as the
+previous deferred backend, on every route and at every budget, including tight
+budgets that force the three-table fallback. Recall is unchanged, and
+<code class="docutils literal notranslate"><span class="pre">max_visits</span></code> outcomes are unchanged because owner visits for the same traversal
+are unchanged.</p>
+<p>Everything below is reachable <strong>only</strong> by direct shadow-table writes,
+shadow-table DDL, or reentrant host callbacks. None of it is reachable through
+the supported API. The previous backend observed several of these through its
+per-read <code class="docutils literal notranslate"><span class="pre">entries</span></code>/<code class="docutils literal notranslate"><span class="pre">current</span></code> joins (typically by erroring or excluding a row);
+the rows below state what Format 5 does instead and where, if anywhere, the state
+is caught.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Unsupported state</p></th>
+<th class="head"><p>Format 5 behaviour</p></th>
+<th class="head"><p>Limit / where caught</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">entries.vector</span></code> damaged after publication (shadow UPDATE or <code class="docutils literal notranslate"><span class="pre">sqlite3_blob_write</span></code>)</p></td>
+<td><p>query-visible <code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code> on the scored canonical read, exactly like Format 4 and the baseline’s per-read join: the traversal route scores every candidate from <code class="docutils literal notranslate"><span class="pre">entries</span></code>, and the exact, fallback and projection routes read canonical <code class="docutils literal notranslate"><span class="pre">e.vector</span></code> too</p></td>
+<td><p>entries a query never scores are caught by the next snapshot/build/import validation, for the versions it reads; a same-length finite-byte rewrite is not detectable by type/length guards (the B1-accepted class)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">entries.retired_revision</span></code> edited, with or without deleting or restoring the matching <code class="docutils literal notranslate"><span class="pre">current</span></code> row</p></td>
+<td><p><strong>retire-direction</strong> (an unbooked retirement revision on a live entry, or a booked entry whose revision is cleared): the traversal route fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code> on a scored row - interval bounds first (creation inside the snapshot, retirement after creation and no later than the anchored metadata revision), then exact agreement between the entries revision and the retire-maintained set, where a present revision outside the set and a set member with a NULL revision are both corruption. The fallback fails closed for a still-current entry carrying any retirement revision and excludes a non-current entry as a deleted bridge (HEAD’s classify asymmetry); the exact routes restore HEAD’s <code class="docutils literal notranslate"><span class="pre">retired_revision</span> <span class="pre">IS</span> <span class="pre">NULL</span></code> interval rule, so a current entry carrying a revision is corruption. A correctly booked non-current bridge stays navigable and is never returned. <strong>Un-retire variant with a restored <code class="docutils literal notranslate"><span class="pre">current</span></code> row:</strong> the traversal route still fails closed, while the fallback and the exact point/small-<code class="docutils literal notranslate"><span class="pre">IN</span></code> shapes serve the stale row as HEAD’s join would and the unfiltered exact shape fails its population/<code class="docutils literal notranslate"><span class="pre">eligible_count</span></code> guard exactly as HEAD does</p></td>
+<td><p><strong>fail-closed on the traversal route; route-divergent where HEAD is permissive</strong>, and never a wrong row for the traversal route; pinned per variant on all routes, including scored-but-not-returned cases</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current</span></code> row deleted or repointed without retiring the version</p></td>
+<td><p>the traversal route does not observe the edit and can accept the row, then fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code> at the accepted-row projection, so the row is never returned; exact point/<code class="docutils literal notranslate"><span class="pre">IN</span></code> probes observe the edit and exclude the row; an unfiltered exact scan fails closed on its population/identity checks; the three-table fallback observes the edit</p></td>
+<td><p>documented divergence: the traversal route no longer reads <code class="docutils literal notranslate"><span class="pre">current</span></code>, which is exactly the per-neighbour join this format removes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Count-changing tamper with <code class="docutils literal notranslate"><span class="pre">generation_retired</span></code> or the generation counters</p></td>
+<td><p>traversal-route queries fail closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code> at the operation-start count invariant; exact routes keep their <code class="docutils literal notranslate"><span class="pre">current</span></code>/population behaviour</p></td>
+<td><p>pinned per variant; a <strong>count-preserving</strong> substitution of one retired id for another passes the count - the substituted node is scored, so the fast-route retirement-bookkeeping rule fails closed at scoring time whenever it is scored (and the accepted-row projection fails closed otherwise), so stale bytes are not returned</p></td>
+</tr>
+<tr class="row-even"><td><p>Published node row deleted, then traversed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SQLITE_CORRUPT</span></code> on the actual adjacency/state/identity read (the start point’s vector for the frozen root)</p></td>
+<td><p>a deleted edge target the traversal never visits can go unobserved; import validated every slot. A live row’s vector column is not query authority on the traversal route; the fallback’s role check still requires it to be NULL</p></td>
+</tr>
+<tr class="row-odd"><td><p>Reentrant same-connection write, or shadow-object-relocating DDL (rename, drop, CTAS recreation) during an operation</p></td>
+<td><p>fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code> and no rows, from the two stamps: SQLite’s total-change counter and a shadow-schema <code class="docutils literal notranslate"><span class="pre">(count,</span> <span class="pre">sum(rootpage))</span></code> stamp over the nine shadow names</p></td>
+<td><p>the guarantee covers changes observed after both stamps are captured; a write that lands before the captures complete is absorbed (next row)</p></td>
+</tr>
+<tr class="row-even"><td><p>Write landing between the metadata anchor opening and the completed stamp captures</p></td>
+<td><p>absorbed into the operation’s snapshot: the query runs on a self-consistent post-write state instead of <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code>. The pinned fixture’s outcome is the traversal route accepting a row whose accepted-row projection then fails closed</p></td>
+<td><p>other collateral outcomes, including ordinary SQL errors, remain possible in this window</p></td>
+</tr>
+<tr class="row-odd"><td><p>Root-preserving shadow-definition change (column rename, <code class="docutils literal notranslate"><span class="pre">ADD</span> <span class="pre">COLUMN</span> <span class="pre">...</span> <span class="pre">GENERATED</span> <span class="pre">...</span> <span class="pre">VIRTUAL</span></code> substitution)</p></td>
+<td><p>the stamps do not move; routes that read the altered column serve the substituted values - for example a generated substitution on <code class="docutils literal notranslate"><span class="pre">public_rowid</span></code> is served as altered labels by an unprojected graph query and fails closed at the accepted-row projection when projected, while a substitution on the no-longer-query-read live vector column changes no served row - so there is <strong>no</strong> wrong-rows guarantee for this class</p></td>
+<td><p>enumerated undetected divergence; a fresh statement after the change fails closed through the schema validation</p></td>
+</tr>
+<tr class="row-even"><td><p>Permutation of shadow-table names that preserves the aggregate <code class="docutils literal notranslate"><span class="pre">rootpage</span></code> sum (for example an <code class="docutils literal notranslate"><span class="pre">entries</span></code>&lt;-&gt;<code class="docutils literal notranslate"><span class="pre">current</span></code> swap)</p></td>
+<td><p>for the pinned <code class="docutils literal notranslate"><span class="pre">entries</span></code>&lt;-&gt;<code class="docutils literal notranslate"><span class="pre">current</span></code> swap the swapped <code class="docutils literal notranslate"><span class="pre">entries</span></code> name has no <code class="docutils literal notranslate"><span class="pre">vector</span></code>/<code class="docutils literal notranslate"><span class="pre">created_revision</span></code> column, so the vector-bearing exact-point, small-<code class="docutils literal notranslate"><span class="pre">IN</span></code>, unfiltered-exact and three-table fallback plans all fail closed at the collateral reprepare with an ordinary <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">such</span> <span class="pre">column</span></code> SQL error and serve no rows (the pre-lean stale-row outcome required the inline-vector payload); a permutation that preserves every column a route reads can still compile and is not detected</p></td>
+<td><p>enumerated undetected divergence; deterministic probes pin every documented outcome per route</p></td>
+</tr>
+<tr class="row-odd"><td><p>Reentrant <code class="docutils literal notranslate"><span class="pre">sqlite3_blob_write</span></code> or second-connection UPDATE on a scored canonical vector mid-operation</p></td>
+<td><p>the in-flight statement keeps its SQLite snapshot (pre-mutation bytes); a fresh statement reads the rewritten bytes, and a same-length finite rewrite passes the type/length guards, so no query-time detection is promised for the second-connection case (the B1-accepted same-length-rewrite class). A same-connection write fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code> through the change counter</p></td>
+<td><p>pinned per class; the published node table is <code class="docutils literal notranslate"><span class="pre">WITHOUT</span> <span class="pre">ROWID</span></code>, so <code class="docutils literal notranslate"><span class="pre">sqlite3_blob_write</span></code> cannot open its payload either</p></td>
+</tr>
+</tbody>
+</table>
+<p>These limitations are why the application-facing rule stays unchanged: write
+only through the virtual table. Direct shadow edits are not a supported API, and
+the table above is the complete enumeration of what can diverge when that rule is
+bypassed.</p>
+</section>
+<section id="vector-representation-and-numeric-policy">
+<h2>Vector representation and numeric policy<a class="headerlink" href="#vector-representation-and-numeric-policy" title="Link to this heading"></a></h2>
+<p>SQL inputs and outputs remain little-endian float32 BLOBs. L2 stores float32
+values unchanged and reports <strong>squared</strong> distance. Cosine normalizes both stored
+vectors and queries once, at ingest, using the existing SIMD policy and reports
+<code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">-</span> <span class="pre">dot</span></code>; reading the vector column returns the normalized representation, not
+the original unscaled input. Zero vectors retain the existing zero-normalization
+behavior. A build consumes already-normalized bytes and never renormalizes them.</p>
+<p>DiskANN rejects NaN/infinity and dimensions that do not match the declaration. To
+avoid overflow in graph distances, L2 inputs require squared norm no greater than
+<code class="docutils literal notranslate"><span class="pre">f32::MAX</span> <span class="pre">/</span> <span class="pre">4</span></code>. Cosine inputs require a finite float32-compatible norm. Nonfinite
+computed distances are errors. These DiskANN checks do not change HNSW’s numeric
+policy.</p>
+</section>
+<section id="memory-and-limits">
+<h2>Memory and limits<a class="headerlink" href="#memory-and-limits" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">cache_bytes</span></code> is an <strong>adapter/query workspace</strong> budget: admitted result sets,
+filter/projection accounting, and the bounded SQL-adapter buffers described
+below. It is not a process-wide RSS cap. <code class="docutils literal notranslate"><span class="pre">max_visits</span></code> bounds traversal work per
+operation across roughly shared allowances. Exceeding a limit returns an explicit
+error; nothing is silently truncated.</p>
+<p>A query admits its prepared readers from this workspace after the owner
+reservation and, on the graph route, the core scratch floor, with a 256 KiB
+aggregate reserve bound and 16 KiB reserved for transparent reprepare. There are
+five reader shapes: <strong>NodeExpand</strong> (published node identity plus adjacency, no
+vector), <strong>NodeScore</strong> (the canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> point read by the frozen slot
+entry id, carrying the interval columns and the vector), <strong>NodeIdentity</strong>
+(published node identity columns only - the smallest prefix, used for state/role
+checks, carry misses and decision reads), and the two indexed exact shapes that
+join canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> and <code class="docutils literal notranslate"><span class="pre">current</span></code>: <strong>ExactUnfiltered</strong> and the <strong>ExactPoint</strong>
+shape shared by point probes, <code class="docutils literal notranslate"><span class="pre">IN</span></code> probes and the accepted-row projection. Every
+reader is retained only for the duration of one operation and finalized before it
+returns. When a shape cannot be prepared or admitted, that shape silently falls
+back to its scalar prepare/step/finalize path, so admission never changes results.</p>
+<p>The graph route admits three more operation-local shapes from the same allowance:</p>
+<ul class="simple">
+<li><p><strong>The published generation’s retired-entry set.</strong> One indexed count, then the
+sorted ids when the set is non-empty. The load and its validation charge no
+owner visits. If the set cannot be admitted, the whole query switches to the
+Format-5-aware three-table reader, which keeps <code class="docutils literal notranslate"><span class="pre">current</span></code>-based eligibility, the
+root-only inline payload and canonical <code class="docutils literal notranslate"><span class="pre">e.vector</span></code> projection, so no eligibility
+rule weakens at any budget.</p></li>
+<li><p><strong>A fixed-capacity carry of accepted-row rowids</strong>, at most the effective search
+list plus one entries, populated only by post-processing decision reads. It
+removes the top-k loop’s duplicate identity reads without changing visits or
+results. At tight budgets the allowance can decline it - declining never closes
+admission for anything else - and the final loop performs ordinary charged
+identity reads instead; correctness and visit totals are unchanged either way.</p></li>
+<li><p><strong>A per-expansion native-to-entry pair cache</strong>, fixed at one 16-byte pair per
+physical-degree slot plus container slack and charged last with the same
+non-closing decline. The streamed adjacency decoder fills it directly, so a
+scored candidate resolves its canonical entry id without a second read; the
+transient decode footprint stays at the owner’s existing per-slot term (16-byte
+slot copy plus an 8-byte streamed id). When the allowance declines it, or the
+Debug-only hook forces it off, scoring takes one <code class="docutils literal notranslate"><span class="pre">NodeIdentity</span></code> read per scored
+id at the same owner-visit charge (zero additional visits), so results, order
+and <code class="docutils literal notranslate"><span class="pre">max_visits</span></code> outcomes are unchanged either way.</p></li>
+</ul>
+<p>None of these shapes is a cross-query cache: all are cleared at operation end, and
+no vector payload is retained between queries.</p>
+<p>The build has a separate, explicit <code class="docutils literal notranslate"><span class="pre">memory_budget_bytes</span></code> covering the owned
+snapshot copy, native provider storage (including the frozen dense buffer), graph
+and construction scratch, extraction overlap and the retained candidate. It is an
+admission estimate, not an allocator-enforced RSS cap, and it does not include the
+2 MiB worker stack or the native coordinator stack, which admission accounts for
+separately. Two coexistence costs are charged before the native constructor runs:
+the guard’s owned worker stack and any other retained candidate on the connection.</p>
+<p>Practical consequences:</p>
+<ul class="simple">
+<li><p>If admission rejects the build with <code class="docutils literal notranslate"><span class="pre">SQLITE_TOOBIG</span></code>, raise
+<code class="docutils literal notranslate"><span class="pre">memory_budget_bytes</span></code> or reduce the population; the previous published
+generation and all canonical rows are untouched, and those rows stay pending.</p></li>
+<li><p>Native allocation failures and panics are <strong>not</strong> recoverable errors. This
+library is built with <code class="docutils literal notranslate"><span class="pre">panic</span> <span class="pre">=</span> <span class="pre">&quot;abort&quot;</span></code>, and the native builder uses infallible
+Rust allocations, so an out-of-memory condition can terminate the host process.
+Applications that cannot accept that should run maintenance in their own worker
+process. The database file is unaffected because the build holds no SQLite
+transaction.</p></li>
+<li><p>Cancellation is cooperative: it is checked between completed native phases and
+fenced at publication, and it does not preempt arbitrary native CPU. To stop a
+build hard, terminate the worker process.</p></li>
+</ul>
+<section id="query-accounting-debug-builds">
+<h3>Query accounting (Debug builds)<a class="headerlink" href="#query-accounting-debug-builds" title="Link to this heading"></a></h3>
+<p>Debug builds export <code class="docutils literal notranslate"><span class="pre">vectorlite_test_*</span></code> counters so the native test host can
+account for one query exactly; release artifacts export none of them. On the
+unchurned graph-route fixture (10,000 published rows, no filter, no projection)
+the host asserts the identity</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">total</span> <span class="n">statement</span> <span class="n">executions</span> <span class="o">==</span> <span class="n">setup</span> <span class="n">reads</span> <span class="o">+</span> <span class="n">expansions</span> <span class="o">+</span> <span class="n">scored</span> <span class="n">candidates</span>
+                            <span class="o">+</span> <span class="n">decision</span> <span class="n">reads</span> <span class="o">+</span> <span class="n">projection</span> <span class="n">reads</span>
+</pre></div>
+</div>
+<p>where</p>
+<ul class="simple">
+<li><p><strong>setup reads</strong> are the fixed non-traversal executions (metadata, generation,
+root node, retired count, root identity, root state, root decision, stamp
+capture, stamp verification - nine on that fixture; other routes and
+scalar-only admissions keep their own counts);</p></li>
+<li><p><strong>expansions</strong> are adjacency reads, one per expanded node;</p></li>
+<li><p><strong>scored candidates</strong> are canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> point reads by the frozen slot
+entry id (batch scoring charges its rowid and vector visits exactly as before;
+the root is served from its node row);</p></li>
+<li><p><strong>decision reads</strong> are the post-processing <code class="docutils literal notranslate"><span class="pre">rowid()</span></code> resolutions, which equal
+the effective search list on that fixture;</p></li>
+<li><p><strong>projection reads</strong> are the accepted-row projections. Every public
+<code class="docutils literal notranslate"><span class="pre">knn_search(embedding,</span> <span class="pre">...)</span></code> references the vector column, so the adapter
+always materializes each accepted row and this term equals k.</p></li>
+</ul>
+<p>Admitting and loading the retired set, admitting the carry, and admitting the pair
+cache, charge no owner visits. The carry resolves the final top-k loop with zero
+SQL while its <code class="docutils literal notranslate"><span class="pre">rowid()</span></code> calls still charge the same owner visits as the previous
+adapter; a carry miss (reachable only when a tight budget disabled the carry)
+performs the ordinary charged identity read. A pair-cache miss (the start point,
+a distance-cache-hit path, or a tight-budget operation whose cache was declined)
+performs the same charged-scope <code class="docutils literal notranslate"><span class="pre">NodeIdentity</span></code> read, so owner-visit totals do not
+depend on the cache being admitted. Owner-visit totals therefore match the previous
+adapter for the same traversal, so <code class="docutils literal notranslate"><span class="pre">max_visits</span></code> outcomes are unchanged. On a
+completed query <code class="docutils literal notranslate"><span class="pre">prepares</span> <span class="pre">==</span> <span class="pre">finalizes</span></code> after the cursor closes, on success and on
+a deterministic forced-error query.</p>
+</section>
+<section id="optional-host-owned-pager-tuning">
+<h3>Optional host-owned pager tuning<a class="headerlink" href="#optional-host-owned-pager-tuning" title="Link to this heading"></a></h3>
+<p>SQLite pager memory is separate from both budgets. For an index in <code class="docutils literal notranslate"><span class="pre">main</span></code>, this
+is an explicit application-owned example, not an extension default:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">PRAGMA</span><span class="w"> </span><span class="n">main</span><span class="p">.</span><span class="n">cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">-</span><span class="mi">32768</span><span class="p">;</span><span class="w"> </span><span class="c1">-- suggested 32 MiB pager budget</span>
+</pre></div>
+</div>
+<p>Negative <code class="docutils literal notranslate"><span class="pre">cache_size</span></code> uses KiB. It is a SQLite cache hint, not a hard RSS cap.
+The setting affects other tables in that database on the connection. For an
+attached database, use its schema instead of <code class="docutils literal notranslate"><span class="pre">main</span></code>, and budget concurrent
+connections separately. The extension never silently sets this or changes the
+application’s journal, synchronous, spill or mmap policy. Keep durability settings
+fixed when comparing builds.</p>
+</section>
+</section>
+<section id="failure-recovery-and-cleanup">
+<h2>Failure, recovery and cleanup<a class="headerlink" href="#failure-recovery-and-cleanup" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Statement/transaction rollback</strong> restores canonical rows and counters exactly,
+including inside <code class="docutils literal notranslate"><span class="pre">SAVEPOINT</span></code>s.</p></li>
+<li><p><strong>A failed build</strong> abandons the candidate and reports the failure; the previously
+published generation keeps serving queries and canonical rows stay pending.
+Repeat computation needs an explicit fresh fence (<code class="docutils literal notranslate"><span class="pre">index_restart</span></code>), never reuse
+of a partly imported candidate.</p></li>
+<li><p><strong>A worker crash</strong> leaves SQL progress durable but the RAM candidate lost. Reopen
+the database, read <code class="docutils literal notranslate"><span class="pre">vectorlite_index_status</span></code> to confirm the job’s phase and
+fence, then continue with <code class="docutils literal notranslate"><span class="pre">index_restart</span></code> (fresh fence) followed by a new build,
+import and publish. A crashed build never exposes a partial graph.</p></li>
+<li><p><strong>SQLite rollback cannot undo RAM side effects.</strong> If a transaction that released
+candidate memory later rolls back, the restored job cannot reuse that memory;
+cancel/restart and build again. Commit publication before calling
+<code class="docutils literal notranslate"><span class="pre">index_cleanup_step</span></code> so the retained candidate is still available for a retry.</p></li>
+<li><p><strong>Read-only connections</strong> can open, read, query the published generation and call
+<code class="docutils literal notranslate"><span class="pre">vectorlite_index_status</span></code>; build and control operations need a writable
+connection and fail with <code class="docutils literal notranslate"><span class="pre">SQLITE_READONLY</span></code>.</p></li>
+<li><p><strong>Retired history</strong> is reclaimed only by bounded <code class="docutils literal notranslate"><span class="pre">index_cleanup_step</span></code> calls,
+never by unbounded <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>/<code class="docutils literal notranslate"><span class="pre">DROP</span></code>. Active jobs, the current mapping, published
+and staged graph references, retired-entry records and snapshot inputs are
+protected.</p></li>
+</ul>
+<p>Data automatically reopens with the database; there is no external index
+<code class="docutils literal notranslate"><span class="pre">save</span></code>/<code class="docutils literal notranslate"><span class="pre">load</span></code> command. Use normal SQLite backup/checkpoint procedures — the
+canonical vectors, published graph and job progress are all inside the database
+file. A running WAL database can have ordinary SQLite WAL/shared-memory files;
+these are not separate ANN index sidecars. The transaction guarantees above apply
+to DiskANN and ordinary SQLite tables, <strong>not</strong> to HNSW mutations in the same
+transaction.</p>
+<p>The nine internal shadow tables, journal-carrier rows, the private atomic function
+and the candidate token internals are <strong>not a supported editing/import API</strong>.
+Changing them directly can invalidate the index; attempted guard corruption or
+unexpected guard triggers are rejected before or within the mutation, and a
+same-connection write or shadow-table relocation committed while a query runs
+fails closed with <code class="docutils literal notranslate"><span class="pre">SQLITE_BUSY</span></code>. Invalid record lengths, node IDs, mappings or
+formats fail closed when accessed and are never reported as missing rows. See
+<a class="reference internal" href="#payload-authority-and-unsupported-shadow-edits"><span class="xref myst">Payload authority and unsupported shadow edits</span></a>
+for the complete list of behaviours reachable only by bypassing the API.</p>
+</section>
+<section id="platforms-and-validation">
+<h2>Platforms and validation<a class="headerlink" href="#platforms-and-validation" title="Link to this heading"></a></h2>
+<p>The release targets remain Linux x64, Windows x64, and macOS arm64 ≥11. Native
+macOS dependencies must be built with the pinned deployment floor, not merely
+relinked into a dylib tagged 11.0. CI/package checks inspect the resulting native
+artifacts and notices. Tests on a current macOS host are not evidence of execution
+on an actual macOS 11 machine.</p>
+<p>Performance is workload-dependent. Report, separately: canonical ingest latency and
+lock hold time, maintenance phase times, time-to-searchable and freshness coverage
+(<code class="docutils literal notranslate"><span class="pre">pending_count</span></code>), native build wall time and peak admission, query latency and
+recall, and database/WAL size. Recall must be compared against unmodified native
+DiskANN OneShot at matched inputs and settings; a database merely larger than the
+pager cache does not establish a physical beyond-RAM benchmark. Do not interpret
+the repository’s historical HNSW figures as new DiskANN performance results.</p>
+<section id="measured-query-latency-previous-adapter-revision-experimental-one-host">
+<h3>Measured query latency (previous adapter revision, experimental, one host)<a class="headerlink" href="#measured-query-latency-previous-adapter-revision-experimental-one-host" title="Link to this heading"></a></h3>
+<p>On the release build (Apple M4, macOS arm64, file-backed WAL/FULL, 100 seeded
+queries, k=10, degree 32, build list 100, <code class="docutils literal notranslate"><span class="pre">cache_bytes</span></code> 64 MiB, five interleaved
+AB/BA runs) the SQL <code class="docutils literal notranslate"><span class="pre">knn_search</span></code> p50 fell from <strong>14.276 ms to 1.903 ms</strong> at
+10,000 x 128 with L=10 (7.50x) and from <strong>77.667 ms to 10.749 ms</strong> at L=100 (7.23x),
+with identical recall&#64;10. At 10,000 x 768 the p50 is <strong>2.078 / 6.974 / 12.637 ms</strong>
+at L=10/50/100 (6.2-6.5x versus the previous adapter). The improvement comes from
+preparing a small set of readers once per operation and reusing them, and from
+reading a candidate’s identity and vector in one statement.</p>
+<p>Those figures were measured on the adapter revision that introduced reader reuse
+and the merged identity+vector read. Format 5 additionally replaces the
+per-neighbour three-table joins on the traversal route with single-table
+published-node reads (identity/adjacency) plus one canonical <code class="docutils literal notranslate"><span class="pre">entries</span></code> point read
+per scored candidate; its own measurement campaign is recorded with the delivery’s
+measurement artifacts, and the numbers above are not Format-5 results.</p>
+<p>These are single-host, warm-cache measurements, not a platform, cold-disk or
+beyond-RAM claim. The SQL surface, the supported-state eligibility rule (published
+generation plus current version), <code class="docutils literal notranslate"><span class="pre">max_visits</span></code> and <code class="docutils literal notranslate"><span class="pre">cache_bytes</span></code> remain
+unchanged. Query readers exist only for the duration of one operation; there is no
+cross-query vector or identity cache, so every query reads through SQLite and
+observes its own snapshot. When two faults coincide (for example corruption at a
+node whose visit would also exhaust <code class="docutils literal notranslate"><span class="pre">max_visits</span></code>), the reported error may differ
+from earlier versions. A failing query never returns rows, and on supported states
+stale or superseded versions are never returned; the shadow-edit cases that can
+return stale/retired rows are enumerated in
+<a class="reference internal" href="#payload-authority-and-unsupported-shadow-edits"><span class="xref myst">Payload authority and unsupported shadow edits</span></a>.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright vectorlite contributors.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
