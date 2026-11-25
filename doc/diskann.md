@@ -22,10 +22,12 @@ build worker, and explicit publication. Not included: product quantization,
 half-precision storage, parallel native graph construction (`workers` must be 1),
 inner-product indexing, Merged/partitioned building, or background daemons.
 
-The durable layout is **Format 5**. A Format-4 database is rejected at connect
-before any mutation, so it has to be migrated explicitly with
-[`vectorlite_index_upgrade`](#migrating-from-format-4) first; there is no
-automatic or connect-time migration.
+The DiskANN deferred layout is **experimental and has never shipped**; this
+build's on-disk layout (its metadata records `format_version` 5) is the only
+supported one. Because no earlier format was ever released, there is no
+migration path: connecting a database created by an older experimental build
+fails closed at connect time, before any mutation, and the index must be
+recreated (drop the table and rebuild it).
 
 The dependency is the published crates.io `diskann` / `diskann-providers` /
 `diskann-utils` / `diskann-vector` 0.60.0 packages, pinned exactly in
@@ -524,8 +526,9 @@ writes and can be called on a read-only connection:
 
 `pending_count = canonical_count - eligible_count` is the number of stored rows
 that no published generation currently covers. It is the freshness backlog.
-`format` is the durable layout version (5 for this build; a Format-4 database
-cannot connect and is migrated with `vectorlite_index_upgrade`).
+`format` is the durable layout version (5 for this build). The deferred layout
+is experimental and has never shipped, so a database from an older experimental
+build fails closed at connect time and must be recreated.
 
 ## Query
 
@@ -839,104 +842,6 @@ fails closed with `SQLITE_BUSY`. Invalid record lengths, node IDs, mappings or
 formats fail closed when accessed and are never reported as missing rows. See
 [Payload authority and unsupported shadow edits](#payload-authority-and-unsupported-shadow-edits)
 for the complete list of behaviours reachable only by bypassing the API.
-
-## Migrating from Format 4
-
-Format 5 is not wire-compatible with the earlier Format-4 deferred layout. A
-Format-4 database is rejected at connect time, before any mutation, with
-`DiskANN format version is unsupported; recreate the index or run
-vectorlite_index_upgrade before connecting`. The explicit migration scalar
-upgrades the durable layout in place without touching canonical data:
-
-```sql
--- Run before any connection connects the virtual table.
-SELECT vectorlite_index_upgrade('main', 'embeddings');
-```
-
-The two arguments are the schema and the base table name, exactly as
-`vectorlite_index_status`. The function returns a bounded JSON document:
-
-```json
-{"format":5,"upgraded":true,"schema":"main","table":"embeddings",
- "index_uuid":"idx:...","revision":412,"next_entry_id":10101,
- "next_job_id":7,"next_generation_id":8,"next_fence":19,
- "canonical_count":10100,"retired_count":3,"cleanup_entry_id":0,
- "abandoned_published_generation":7,"abandoned_candidate_generation":null,
- "abandoned_active_job":null}
-```
-
-**What it validates before touching anything.** The target declaration must parse
-under the same bounded declaration grammar the backend itself uses. The carried
-catalog must be exactly the frozen Format-4 shape: all eight Format-4 shadow
-tables with their exact definitions, their unique indexes, no foreign keys, no
-triggers, the two atomic guard rows, and a single metadata row. The carried
-descriptor must match the declaration verbatim; the Format-5 descriptor is derived
-from those carried bytes by parsing them and changing only `format_version`, so
-no descriptor field is ever synthesized. The preserved counters and allocators
-must be internally consistent. A database that already has a
-`generation_retired` table, or whose metadata is missing or not Format 4, is
-refused with zero mutation - a second invocation on an upgraded database reports
-`requires an unupgraded Format-4 database; found format_version 5`.
-
-**What it preserves.** `entries` (every immutable version) and `current` are
-not written. `instance_id`, `revision`, `next_entry_id`, `next_job_id`,
-`next_generation_id`, `canonical_count`, `retired_count` and
-`cleanup_entry_id` are preserved, and the derived descriptor differs only in
-`format_version`.
-
-**What it resets.** All derived state is emptied: `generations`, `graph_nodes`,
-`jobs` and `snapshot_map` rows are deleted (`graph_nodes` is dropped and recreated
-with the Format-5 shape), the additional `generation_retired` layout is created, and
-`published_generation`, `candidate_generation` and `active_job` are set to
-NULL. `next_fence` is
-incremented, so any in-flight or staged job is abandoned and no stale fence can
-reattach; the abandoned ids are reported in the result. Publication is not carried
-across: after the upgrade every canonical row is stored but unsearchable until the
-normal fenced maintenance cycle builds and publishes a Format-5 generation.
-
-**Failure behaviour.** The whole rewrite runs inside one `SAVEPOINT`: it commits
-with `RELEASE` on success and rolls back to the savepoint, preserving the primary
-error, on any failure. A failed or interrupted upgrade therefore leaves the
-Format-4 file byte-identical and retryable. It refuses before starting when
-`journal_mode=off`, when the connection is not in autocommit, when another
-statement or cursor is busy on the connection, or when an explicit outer
-transaction or `SAVEPOINT` makes the wrapper ambiguous. A concurrent writer on
-another connection produces ordinary `SQLITE_BUSY`/`locked` behaviour; retry
-after it finishes. WAL databases and attached schemas are supported - use the
-attached schema name as the first argument.
-
-**Run it before connecting the table.** A Format-4 declaration cannot be connected
-by this build at all, so the scalar is the only path and it never runs against a
-Format-4 instance. It clears any registered candidate state for the table and
-bumps the fence. A connection that nevertheless already held an instance of the
-table is not upgraded in place: the rewrite invalidates its retained statements,
-it fails closed on them, and the connection must be re-established.
-
-**Host restrictions and defensive mode.** The upgrade runs its statements as
-nested SQL from a scalar function. `SQLITE_DBCONFIG_DEFENSIVE` blocks top-level
-writes to tables that SQLite classifies as virtual-table shadow tables, and SQLite
-classifies a shadow table by name: the virtual-table name followed by a suffix
-registered through `xShadowName`, split at the **last** underscore. These
-indexes add `diskann_` to the base name, so current SQLite versions (3.50/3.51)
-do not classify `<table>_diskann_*` as shadow tables at all
-(`pragma_table_list` reports ordinary tables); defensive mode therefore neither
-blocks this upgrade nor stops top-level direct edits to those tables. Treat
-defensive mode as no substitute for the "no direct shadow edits" rule above. If a
-host, a future SQLite build, or another policy does refuse one of the upgrade's
-statements, the savepoint rolls back, the Format-4 file is untouched, and
-SQLite's error is reported. The offline fallback in that case is a rebuild: with
-the extension unloaded, read the canonical rows with plain SQLite (`SELECT
-c.public_rowid, e.vector FROM <table>_diskann_current c JOIN
-<table>_diskann_entries e ON e.entry_id = c.entry_id`), create a Format-5 table
-with the same declaration in a new database, re-ingest those vectors through the
-ordinary INSERT path (stored cosine vectors are already normalized), and run a
-normal maintenance cycle. That is a rebuild, not an in-place upgrade, and the
-Format-4 database can be kept as the backup.
-
-**The reverse route is honest.** A Format-5 database opened by a Format-4 build is
-rejected cleanly by its own format check (`DiskANN format version is unsupported`)
-instead of being misread. The upgrade itself is one-way: to go back to Format 4,
-restore the pre-upgrade file from a backup.
 
 ## Platforms and validation
 

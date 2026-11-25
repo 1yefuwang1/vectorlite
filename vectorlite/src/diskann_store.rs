@@ -112,7 +112,7 @@ pub(crate) struct QueryRows {
     pub(crate) anchor: Statement<'static>,
 }
 /// IDs are committed non-reused allocators; rolled-back IDs never escape SQL.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Metadata {
     pub(crate) instance_id: [u8; 16],
     pub(crate) revision: u64,
@@ -508,35 +508,6 @@ fn canonical_workspace_floor(names: &StorageNames, vector_bytes: usize) -> Resul
         .ok_or_else(|| too_big("DiskANN canonical workspace overflow"))
 }
 
-/// Format-5 CREATE TABLE statement for one shadow layout, byte-identical to
-/// the DDL `create_schema` emits for it. The D7 migration surface recreates
-/// the metadata/graph shapes without opening a Format-5 store, so the DDL must
-/// come from the same layout constants instead of a second hand-written copy.
-pub(crate) fn format5_create_table_sql(
-    names: &StorageNames,
-    suffix: &str,
-    vector_bytes: usize,
-    adjacency_bytes: usize,
-) -> Result<Option<String>> {
-    let Some(layout) = schema::LAYOUTS.iter().find(|l| l.suffix == suffix) else {
-        return Ok(None);
-    };
-    let definition = layout
-        .definition
-        .replace("{vector_bytes}", &vector_bytes.to_string())
-        .replace("{adjacency_bytes}", &adjacency_bytes.to_string());
-    Ok(Some(format!(
-        "CREATE TABLE {} ({}){}",
-        names.qualified(suffix)?,
-        definition,
-        if layout.without_rowid {
-            " WITHOUT ROWID"
-        } else {
-            ""
-        }
-    )))
-}
-
 impl DiskAnnTable {
     pub(crate) fn open(
         connection: Connection<'static>,
@@ -576,7 +547,8 @@ impl DiskAnnTable {
             handle.require_rollback_journal()?;
             handle.create_schema()?;
         }
-        // Format is checked first: an old database never gets a mutation or migration.
+        // Format is checked first: an old experimental database never gets a
+        // mutation or reinterpretation, so it fails closed before anything else.
         handle.check_format()?;
         handle.validate_schema()?;
         let (metadata, anchor) = handle.read_metadata()?;
@@ -718,7 +690,7 @@ impl DiskAnnTable {
                 }
                 if nonnegative(s, 0, "format version")? != FORMAT_VERSION as u64 {
                     return Err(corrupt(
-                    "DiskANN format version is unsupported; recreate the index or run vectorlite_index_upgrade before connecting",
+                    "DiskANN experimental layout version is unsupported; this unreleased on-disk format never shipped, so the index must be recreated (drop the table and rebuild it)",
                 ));
                 }
                 if s.step()? != Step::Done {

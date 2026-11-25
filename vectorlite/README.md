@@ -88,8 +88,7 @@ versions, fenced job helpers and published-generation query adapter;
 candidate registry; [diskann_build_guard.rs](<src/diskann_build_guard.rs>) for the
 transaction-free admission check; [diskann_target.rs](<src/diskann_target.rs>) for
 the bounded declaration parser; [diskann_control.rs](<src/diskann_control.rs>)
-(including the `vectorlite_index_upgrade` Format-4 migration scalar) and
-[diskann_registration.rs](<src/diskann_registration.rs>) for the public SQL
+and [diskann_registration.rs](<src/diskann_registration.rs>) for the public SQL
 frontend; plus [diskann_core.rs](<src/diskann_core.rs>) (read-path provider glue),
 [atomic_callback.rs](<src/atomic_callback.rs>), [sqlite.rs](<src/sqlite.rs>),
 [batch_input.rs](<src/batch_input.rs>) and [index_error.rs](<src/index_error.rs>).

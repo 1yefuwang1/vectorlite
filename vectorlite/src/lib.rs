@@ -49,7 +49,7 @@ unsafe extern "C" fn registry_destroy(p: *mut c_void) {
 /// Deletion invokes each owned scalar's matching xDestroy exactly once.
 struct RegistrationCleanup {
     db: *mut sqlite3,
-    functions: [Option<(&'static str, c_int)>; 10],
+    functions: [Option<(&'static str, c_int)>; 9],
     count: usize,
     armed: bool,
 }
@@ -98,7 +98,6 @@ fn preflight_functions(
         (atomic_callback::FUNCTION_NAME, 2),
         ("vectorlite_index_status", 2),
         ("vectorlite_index_build", 3),
-        ("vectorlite_index_upgrade", 2),
     ] {
         let args = vec!["NULL"; argc].join(",");
         match connection.prepare(&format!("SELECT {name}({args})")) {
@@ -181,7 +180,7 @@ pub unsafe extern "C" fn sqlite3_extension_init(
         unsafe extern "C" fn(*mut ffi::sqlite3_context, c_int, *mut *mut ffi::sqlite3_value);
     let mut cleanup = RegistrationCleanup {
         db,
-        functions: [None; 10],
+        functions: [None; 9],
         count: 0,
         armed: true,
     };
@@ -231,11 +230,6 @@ pub unsafe extern "C" fn sqlite3_extension_init(
             "vectorlite_index_build",
             3,
             diskann_control::index_build as ScalarFn,
-        ),
-        (
-            "vectorlite_index_upgrade",
-            2,
-            diskann_control::index_upgrade as ScalarFn,
         ),
     ] {
         let name = CString::new(function_name).unwrap();
