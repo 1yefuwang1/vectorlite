@@ -3,7 +3,7 @@
 Plan version: v2
 Date: 2026-11-13 (Asia/Shanghai)
 Status: COMPLETE UNDER EXPLICIT WAIVER W1. All three original reviewers APPROVED the complete integrated delivery with no blockers. The original1.10x primary target was not achieved (actual1.031279x); only that numerical gate was user-waived. All remaining technical/review gates pass. Verification and review were completed before the user’s separate commit-and-push request.
-Canonical plan: [DiskANN insertion performance](</Volumes/external/vectorlite/plan/2026-11-13-diskann-insertion-performance/plan.md>)
+Canonical plan: [DiskANN insertion performance](</Volumes/external/vectorlite/plans/2026-11-13-diskann-insertion-performance/plan.md>)
 
 ## 1. Request and confirmed decisions
 
@@ -55,7 +55,7 @@ Current source was read to establish the following, rather than assuming old pat
 - [Existing adversarial tests](<../vectorlite/tests/test_diskann.py#L1284-L1427>) cover persistent/TEMP triggers, attached databases, dynamic DDL, and incremental BLOB poisoning that does not change `total_changes64`. Trigger absence or a stable change count is not a safe cache-coherence proof.
 - [Existing native timer](<../benchmark/diskann_batch_benchmark.c#L211-L243>) includes BEGIN, INSERT prepare/bind/step/finalize, and COMMIT. The [paired verifier](<../benchmark/diskann_identity_benchmark.py#L349-L364>) fingerprints inputs/binaries and compares ordered graph/query data. It does not yet expose the required pager/durability grid.
 
-Historical context only, not current measurements: [single-table read optimizations](<../plan/2026-11-11-sqlite-native-diskann-optimizations/results.md#L7-L43>) reported 1.62x on the primary workload, while a prior storage split regressed. Neither historical speedup nor old test totals are acceptance evidence for this work. Prior comparative research motivates the hypotheses; no other database's QPS claim is used as a matched insertion-speed estimate.
+Historical context only, not current measurements: [single-table read optimizations](<../plans/2026-11-11-sqlite-native-diskann-optimizations/results.md#L7-L43>) reported 1.62x on the primary workload, while a prior storage split regressed. Neither historical speedup nor old test totals are acceptance evidence for this work. Prior comparative research motivates the hypotheses; no other database's QPS claim is used as a matched insertion-speed estimate.
 
 ## 4. Goal and release acceptance
 

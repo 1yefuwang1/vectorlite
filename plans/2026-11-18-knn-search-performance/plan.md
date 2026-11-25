@@ -1,6 +1,6 @@
 # DiskANN knn query latency: self-contained published generation (Format 5)
 
-Canonical path: /Volumes/external/vectorlite/plan/2026-11-18-knn-search-performance/plan.md
+Canonical path: /Volumes/external/vectorlite/plans/2026-11-18-knn-search-performance/plan.md
 
 Plan version: v20
 Date: 2026-11-18 (Asia/Shanghai); v2 2026-11-19 after round 1; v3 2026-11-19 after round 2; v4 2026-11-22 after round 3; v5/v6 2026-11-23 after rounds 4-5; v7 2026-11-23 after round 6; v8 2026-11-23 after round 7 (rounds 4-7 user-authorized; round 6 narrowed the reentrant-DDL promise by user decision; round 7 was the honesty fix)
@@ -20,7 +20,7 @@ Status: **plan gate passed — 3/3 APPROVED on v7 (2026-11-23); v8 folds only th
 - **Constraints (user, verbatim):** "What ever it takes as long as the search result is correct. Existing storage format, sql api can be changed." Correctness of search results is the hard requirement; storage-format and SQL API changes are explicitly authorized, including a `format_version` bump.
 - **Verification workload (user, verbatim):** "repo benchmark with 3000 vectors and 10000 vectors".
 - **Direction (user selected):** "A + B: denormalized generation + cleanups". Proposal C (whole-generation workspace materialization) was explained and not chosen; B-only was rejected as too small.
-- **Plan path (user selected twice):** `plan/2026-11-18-knn-search-performance/plan.md`.
+- **Plan path (user selected twice):** `plans/2026-11-18-knn-search-performance/plan.md`.
 - **Round-4 authorization (user, 2026-11-22):** after round 3 ended 2 APPROVED / 1 REVISE with all three blockers independently verified by the main agent, the user selected "Authorize round 4".
 - **Round-5 authorization (user, 2026-11-23):** after round 4 ended 2 APPROVED / 1 REVISE with one new blocker (reentrant zero-counter DDL replacement bypassing the mutation detector), independently verified by the main agent against the SQLite source, the user selected "Round 5: detect the DDL class".
 - **Round-7 authorization (user, 2026-11-23):** after round 6 ended 2 APPROVED / 1 REVISE, where the REVISE was a verified honesty defect inside the chosen narrowing (the permutation row claimed no wrong-rows outcome while a churned exact-point probe under an entries<->current swap returns a retired published row), the user selected "Round 7: honesty fix" — the enumeration is made accurate and probed; no machinery, no promise change.
@@ -34,7 +34,7 @@ Cut SQLite-backed DiskANN `knn_search` query latency by making each published ge
 
 ## 4. Success criteria (all required)
 
-**C1 Equivalence contract, scoped explicitly.** Inherits the 11-16 delivery's relaxed failure-path contract (recorded user decision, plan/2026-11-16-diskann-query-latency/plan.md section 3) plus the scope below.
+**C1 Equivalence contract, scoped explicitly.** Inherits the 11-16 delivery's relaxed failure-path contract (recorded user decision, plans/2026-11-16-diskann-query-latency/plan.md section 3) plus the scope below.
 - *Success path (quiescent connection):* for every query where the baseline returns rows and no same-connection write occurs during the operation, the candidate returns the same rowids in the same order with the same distance bits, for all recorded workloads — including churned fixtures in all three retirement phases (pre-import, mid-import, post-publish) and fallback-exercising tight budgets — and the full test suite. Strict.
 - *Visit accounting:* total owner visits per query are identical to baseline for the same traversal, so `max_visits` outcomes are unchanged. Under the actual call map (6.2), batch scoring charges rowid+vector (2) per scored candidate and `post_process` decision calls charge 1 each, exactly as HEAD does on the same path; the carry (D5) removes duplicate SQL executions in the final loop, never charges; the retired-state load/validation and identity/state checks charge exactly as HEAD does (zero).
 - *Failure path:* where the baseline errors, the candidate also errors, never partial/wrong rows, on supported-API states; single-fault error classes stay stable; coincident-fault ordering may differ (11-16 relaxation).
@@ -71,7 +71,7 @@ Non-goals: HNSW path changes; cross-query caches or memos; store-level row-conte
 
 ### 6.1 Where the remaining time goes (post-11-16 delivery)
 
-Every graph-route query executes, per expanded node: 1 single-table graph read plus **one 3-table identity join per neighbour target** ([query.rs:617-631](../../vectorlite/src/diskann_deferred/query.rs#L617) `node_sql`; executed per target in `PublishedGraph::neighbors`), and per scored candidate: 1 combined 3-table join + vector projection. At degree 32, L=10 (~10-13 expansions), that is roughly 450-650 multi-table executions per query. The 11-16 cached-plan probe (plan/2026-11-16-diskann-query-latency/plan.md section 5.1) measured: 3-table identity join 2.16 us, 3-table join + vector 2.57 us, graph row + vector projection 1.80 us. The join exists only because the published node row stores a bare `entry_id`: resolving the public rowid requires `entries`, and proving live-ness requires `current` ([query.rs:673-725](../../vectorlite/src/diskann_deferred/query.rs#L673) `classify`).
+Every graph-route query executes, per expanded node: 1 single-table graph read plus **one 3-table identity join per neighbour target** ([query.rs:617-631](../../vectorlite/src/diskann_deferred/query.rs#L617) `node_sql`; executed per target in `PublishedGraph::neighbors`), and per scored candidate: 1 combined 3-table join + vector projection. At degree 32, L=10 (~10-13 expansions), that is roughly 450-650 multi-table executions per query. The 11-16 cached-plan probe (plans/2026-11-16-diskann-query-latency/plan.md section 5.1) measured: 3-table identity join 2.16 us, 3-table join + vector 2.57 us, graph row + vector projection 1.80 us. The join exists only because the published node row stores a bare `entry_id`: resolving the public rowid requires `entries`, and proving live-ness requires `current` ([query.rs:673-725](../../vectorlite/src/diskann_deferred/query.rs#L673) `classify`).
 
 ### 6.2 The actual call map (verified against the pinned upstream source in round 3; replaces v3's incorrect map)
 
@@ -92,7 +92,7 @@ Reader executions fall from ~450-650 multi-table joins to ~(expansions + scored 
 
 - HEAD `78c808078773bcf1a5f5a28f3de823d821231a55` on `feat/sqlite-backed-diskann`, in sync with upstream (+0/-0); **at the start of the engagement** the tracked tree was clean, with only untracked `.cache-tmp/` (user's) and this plan bundle. It now carries the uncommitted T1-T6 and lean-spike implementation (see the status line); §7's fingerprints describe the HEAD commit, not the working tree.
 - Fingerprints (SHA-256) of files this work may touch: query.rs `62fef78b...`, schema.rs `c6f8ddd0...`, codec.rs `84aceaa0...`, import.rs `ab5a6c75...`, lifecycle.rs `a0df32a3...`, jobs.rs `bc00185a...`, diskann_core.rs `eaf0d0a4...`, diskann_store.rs `92cd94a9...`, diskann_registration.rs `62d69453...`, virtual_table.rs `727dc7cc...`, registry.rs `123b3a4a...`; also in scope: `diskann_worker.rs`, `diskann_control.rs`, and `lib.rs` (fingerprints recorded in T0).
-- Historical evidence: plan/2026-11-16-diskann-query-latency/plan.md (delivered; 3/3 APPROVED); plan/2026-11-11-sqlite-native-diskann-optimizations/results.md (B1 reentrant `sqlite3_blob_write` attack; store-level caches were removed for fail-closed parity); plan/2026-11-17-diskann-write-path-statement-elimination/plan.md (retained-DML carrier assertion history that D6's writer-slot rule respects).
+- Historical evidence: plans/2026-11-16-diskann-query-latency/plan.md (delivered; 3/3 APPROVED); plans/2026-11-11-sqlite-native-diskann-optimizations/results.md (B1 reentrant `sqlite3_blob_write` attack; store-level caches were removed for fail-closed parity); plans/2026-11-17-diskann-write-path-statement-elimination/plan.md (retained-DML carrier assertion history that D6's writer-slot rule respects).
 - Review verdicts: round 1 — carbon REVISE (B1-B7), glm53 REVISE (4), sol REVISE (B1-B5); round 2 — carbon REVISE (B1-B4), glm53 REVISE (2), sol failed twice (no verdict), later revived; round 3 — glm53 APPROVED (5 nits), carbon APPROVED (4 nits), sol REVISE (3 blockers B1-B3, 4 nits), all three blockers independently verified by the main agent against the code and the pinned upstream source. Round 4 — glm53 APPROVED (4 nits), carbon APPROVED (2 nits), sol REVISE (one new blocker: zero-counter reentrant DDL replacement bypassing the detector, with sol explicitly confirming its round-3 B1/B2/B3 closed; 4 nits), the blocker independently verified by the main agent against the SQLite source (CTAS inserts omit OPFLAG_NCHANGE). Round 5 — glm53 APPROVED (3 nits incl. the swap-variant finding), carbon APPROVED (2 nits), sol REVISE (one new blocker: root-preserving ALTER column attacks evading the aggregate stamp, verified by the main agent against the SQLite source: column rename rewrites catalog sql in place; VIRTUAL generated columns are legal on populated tables; nested catalog writes suppress the change flags). Round 6 — glm53 APPROVED (3 nits incl. the pre-capture window), carbon APPROVED (2 nits), sol REVISE (one verified honesty defect: the swap row's no-wrong-rows claim falsified by a churned exact-point probe under an entries<->current swap — the earlier traces covered only unfiltered scans, whose population check fires only when rowid is None, query.rs:1111; sol explicitly accepted the narrowing and requested only accurate enumeration plus probes). Round 7 — glm53 APPROVED (2 nits), carbon APPROVED (2 nits), sol APPROVED (3 nits, with sol's closing assessment: "None remaining for the written, explicitly narrowed contract"). **The plan gate passes 3/3 on v7.** All seven nits are folded into v8 as the reviewers' own listed non-blocking corrections. Consolidated responses in sections 17-20.
 
 ## 8. Design decisions
@@ -209,7 +209,7 @@ ctest --test-dir build/release --output-on-failure
 # stage and SHA-verify the platform binary, then:
 (cd bindings/nodejs/packages/vectorlite && npm test)
 # Release instrumentation absence per platform (nm -D --defined-only / nm -gU / dumpbin /exports,
-# inspection success distinct from symbol absence), as recorded in plan/2026-11-16-diskann-query-latency/plan.md section 9.
+# inspection success distinct from symbol absence), as recorded in plans/2026-11-16-diskann-query-latency/plan.md section 9.
 ```
 
 ## 11. Risks and mitigations

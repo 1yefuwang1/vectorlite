@@ -1,6 +1,6 @@
 # DiskANN write-path statement reuse
 
-Canonical path: /Volumes/external/vectorlite/plan/2026-11-17-diskann-write-path-statement-elimination/plan.md
+Canonical path: /Volumes/external/vectorlite/plans/2026-11-17-diskann-write-path-statement-elimination/plan.md
 
 Plan version: v15
 Date: 2026-11-17 (Asia/Shanghai)

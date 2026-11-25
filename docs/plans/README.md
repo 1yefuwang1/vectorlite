@@ -1,6 +1,6 @@
 # Plans
 
-DiskANN-related bundles are in the root [plan directory](<../../plan/README.md>).
+DiskANN-related bundles are in the root [plans directory](<../../plans/README.md>).
 This directory retains the other historical plans.
 
 Keep each plan and its supporting documents together:

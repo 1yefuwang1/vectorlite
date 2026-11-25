@@ -1,6 +1,6 @@
 # DiskANN query latency: reused prepared readers (relaxed equivalence)
 
-Canonical path: /Volumes/external/vectorlite/plan/2026-11-16-diskann-query-latency/plan.md
+Canonical path: /Volumes/external/vectorlite/plans/2026-11-16-diskann-query-latency/plan.md
 
 Plan version: v8
 Date: 2026-11-16 (Asia/Shanghai)
