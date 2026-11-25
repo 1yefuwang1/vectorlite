@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::diskann_registration::Registration;
 
 use crate::core::Index;
 use crate::vector_space::NamedVectorSpace;
@@ -23,8 +26,8 @@ pub struct IndexEntry {
     pub index_options_str: String,
 }
 
-#[derive(Default)]
 pub struct Registry {
+    pub(crate) registration: Option<Arc<Registration>>,
     // Each connected VTab retains an Rc too. Disconnect can therefore release
     // the wrapper without deleting the index, and callbacks need no map lookup.
     // SQLite serializes this connection's callbacks; no cross-thread Rust
@@ -33,9 +36,18 @@ pub struct Registry {
 }
 
 impl Registry {
+    #[cfg(test)]
     pub fn new() -> Self {
         Registry {
             handles: HashMap::new(),
+            registration: None,
+        }
+    }
+
+    pub(crate) fn with_registration(registration: Arc<Registration>) -> Self {
+        Self {
+            handles: HashMap::new(),
+            registration: Some(registration),
         }
     }
 

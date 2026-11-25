@@ -15,6 +15,7 @@ pub struct KnnParam {
     pub query_vector: Vec<f32>,
     pub k: u64,
     pub ef: Option<u64>,
+    pub diskann_search_list_size: Option<u64>,
 }
 
 unsafe extern "C" fn knn_param_destroy(ptr: *mut c_void) {
@@ -68,17 +69,33 @@ fn knn_param_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
     if k <= 0 {
         return Err("k should be greater than 0".into());
     }
-    let ef = if args.len() == 3 {
-        if args[2].kind() != ffi::SQLITE_INTEGER as c_int {
-            return Err("ef(3rd param of knn_param) should be of type INTEGER".into());
+    let (ef, diskann_search_list_size) = if args.len() == 3 {
+        if args[2].kind() == ffi::SQLITE_TEXT as c_int {
+            let options: serde_json::Value = serde_json::from_str(args[2].text()?)
+                .map_err(|error| format!("Invalid DiskANN search options: {error}"))?;
+            let object = options.as_object().ok_or_else(|| {
+                "DiskANN search options must be a JSON object with search_list_size".to_owned()
+            })?;
+            if object.len() != 1 || !object.contains_key("search_list_size") {
+                return Err("DiskANN search options support only search_list_size".into());
+            }
+            let search_list_size = object["search_list_size"]
+                .as_u64()
+                .filter(|&size| size > 0 && size <= i64::MAX as u64)
+                .ok_or_else(|| "DiskANN search_list_size must be a positive integer".to_owned())?;
+            (None, Some(search_list_size))
+        } else {
+            if args[2].kind() != ffi::SQLITE_INTEGER as c_int {
+                return Err("ef(3rd param of knn_param) should be of type INTEGER".into());
+            }
+            let ef = args[2].int64();
+            if ef <= 0 {
+                return Err("ef should be greater than 0".into());
+            }
+            (Some(ef as u64), None)
         }
-        let ef = args[2].int64();
-        if ef <= 0 {
-            return Err("ef should be greater than 0".into());
-        }
-        Some(ef as u64)
     } else {
-        None
+        (None, None)
     };
     // KNN parameters outlive this callback, so retain exactly one owned vector.
     let query_vector = vector::view_from_blob(args[0].blob()?)
@@ -88,6 +105,7 @@ fn knn_param_impl(ctx: &Context, args: &mut [Value<'_>]) -> Result<(), String> {
         query_vector,
         k: k as u64,
         ef,
+        diskann_search_list_size,
     });
     // SAFETY: the static tag is NUL-terminated and shared with xFilter. SQLite
     // owns this Box until its value is released, using the matching destructor.

@@ -1,0 +1,12 @@
+[package]
+name = "vectorlite-batch-tokio-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone native host: do not pull the extension crate into this executable.
+# It loads the already built shared extension through the host SQLite API.
+[workspace]
+
+[dependencies]
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "rt-multi-thread"] }
